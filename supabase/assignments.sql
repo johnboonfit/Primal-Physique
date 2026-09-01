@@ -52,10 +52,29 @@ create policy "Coaches can delete their own assignments"
 -- stand, every coach can see every client account — there's no per-coach
 -- client roster yet. Fine while you're testing; worth tightening before
 -- real coaches and clients are both using this.
+--
+-- A policy on `profiles` can't safely query `profiles` directly inside
+-- itself — Postgres has to re-run that table's policies to resolve the
+-- subquery, which re-triggers this same policy, and so on forever
+-- ("infinite recursion detected in policy for relation profiles"). The
+-- fix is to do that lookup inside a SECURITY DEFINER function instead,
+-- which runs with elevated privileges and skips that recursive check.
+create or replace function public.is_coach()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.profiles where id = auth.uid() and role = 'coach'
+  );
+$$;
+
 drop policy if exists "Coaches can view client profiles" on public.profiles;
 create policy "Coaches can view client profiles"
   on public.profiles for select
   using (
     role = 'client'
-    and exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'coach')
+    and public.is_coach()
   );
