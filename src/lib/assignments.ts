@@ -17,6 +17,19 @@ export type AssignmentSummary = {
   assignedDate: string;
 };
 
+export type ClientAssignmentSummary = {
+  id: string;
+  workoutName: string;
+  assignedDate: string;
+};
+
+export type AssignmentDetail = {
+  id: string;
+  workoutName: string;
+  assignedDate: string;
+  exercises: { id: string; name: string; setsReps: string }[];
+};
+
 export async function listCoachWorkoutOptions(coachId: string): Promise<WorkoutOption[]> {
   const { data, error } = await supabase
     .from('workouts')
@@ -64,4 +77,47 @@ export async function listAssignments(coachId: string): Promise<AssignmentSummar
     clientEmail: (row.profiles as unknown as { email: string } | null)?.email ?? 'Unknown client',
     assignedDate: row.assigned_date as string,
   }));
+}
+
+export async function listMyAssignments(clientId: string): Promise<ClientAssignmentSummary[]> {
+  const { data, error } = await supabase
+    .from('assignments')
+    .select('id, assigned_date, workouts(name)')
+    .eq('client_id', clientId)
+    .order('assigned_date', { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    workoutName: (row.workouts as unknown as { name: string } | null)?.name ?? 'Unknown workout',
+    assignedDate: row.assigned_date as string,
+  }));
+}
+
+export async function getAssignmentDetail(assignmentId: string): Promise<AssignmentDetail> {
+  const { data, error } = await supabase
+    .from('assignments')
+    .select('id, assigned_date, workouts(name, workout_exercises(id, name, sets_reps, position))')
+    .eq('id', assignmentId)
+    .single();
+
+  if (error) throw error;
+
+  const workout = data.workouts as unknown as {
+    name: string;
+    workout_exercises: { id: string; name: string; sets_reps: string; position: number }[];
+  } | null;
+
+  const exercises = (workout?.workout_exercises ?? [])
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((exercise) => ({ id: exercise.id, name: exercise.name, setsReps: exercise.sets_reps }));
+
+  return {
+    id: data.id as string,
+    workoutName: workout?.name ?? 'Unknown workout',
+    assignedDate: data.assigned_date as string,
+    exercises,
+  };
 }

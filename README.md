@@ -113,6 +113,20 @@ Note: there's no coach/client roster yet, so every coach currently sees every cl
 5. In Supabase's Table Editor, open `assignments` — confirm one row with the right `coach_id`, `client_id`, `workout_id`, and `assigned_date`.
 6. Log in as the client account and confirm there's no "Assignments" link, and that typing `/assignments` into the URL bar redirects back to home.
 
+## Client: seeing assigned workouts
+
+Run `supabase/client-access.sql` in the SQL Editor after `schema.sql`, `workouts.sql`, and `assignments.sql`. This adds read-only rules letting a client see their own assignments and the workout + exercises linked to each one — before this, a client could only see their own profile row.
+
+Log in as a client and the home screen now shows a **"Your assigned workouts"** section directly (no extra link to tap — it's right there), listing each assignment as "workout name / date". Tapping one opens a detail screen showing every exercise in that workout (name + sets/reps), read-only — no logging sets or marking anything done yet, that's a later chunk.
+
+**Verify it works:**
+
+1. Make sure a workout is already assigned to your client account (from the previous step).
+2. Log in as that client account. On home, confirm **"Your assigned workouts"** shows "Push Day / [date]".
+3. Tap it — confirm the detail screen shows "Push Day" and both exercises ("Bench Press — 3x10", "Overhead Press — 3x12").
+4. Tap **Back**, confirm it returns to home.
+5. Log in as a *different* client account (one nothing has been assigned to) and confirm it shows "Nothing assigned yet." instead of someone else's workout.
+
 ## Project structure reference
 
 ```
@@ -123,7 +137,7 @@ src/
       login.tsx
       signup.tsx
     (app)/
-      home.tsx          # shows the logged-in user's role
+      home.tsx          # shows role; client's assigned-workouts list lives here
       workouts/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's workouts
@@ -132,14 +146,17 @@ src/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of assignments the coach has made
         new.tsx          # pick workout + client + date, save
+      assigned/
+        [id].tsx          # client's read-only view of one assigned workout
   context/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() database calls
-    assignments.ts         # createAssignment() / listAssignments() / option lookups
+    assignments.ts         # coach + client assignment database calls
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
   assignments.sql           # paste in after workouts.sql, adds assignments + client visibility
+  client-access.sql          # paste in after assignments.sql, lets clients read their own data
 ```
