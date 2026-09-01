@@ -1,122 +1,57 @@
-import { Link, router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { Link, Redirect } from 'expo-router';
+import { Pressable, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
 
+/** The coach's home screen. Clients now live under /client's tabs instead. */
 export default function HomeScreen() {
   const { session, profile, loadingProfile, signOut } = useAuth();
 
-  const [assignments, setAssignments] = useState<ClientAssignmentSummary[]>([]);
-  const [loadingAssignments, setLoadingAssignments] = useState(true);
-  const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
-
-  // Only fetch for clients — coaches don't have assignments made "to" them,
-  // and re-fetches every time this screen regains focus so a workout
-  // assigned while you were away shows up when you come back to home.
-  useFocusEffect(
-    useCallback(() => {
-      if (!session || profile?.role !== 'client') {
-        setLoadingAssignments(false);
-        return;
-      }
-      let cancelled = false;
-
-      setLoadingAssignments(true);
-      listMyAssignments(session.user.id)
-        .then((data) => {
-          if (!cancelled) setAssignments(data);
-        })
-        .catch((err) => {
-          if (!cancelled) setAssignmentsError(err instanceof Error ? err.message : 'Failed to load your workouts.');
-        })
-        .finally(() => {
-          if (!cancelled) setLoadingAssignments(false);
-        });
-
-      return () => {
-        cancelled = true;
-      };
-    }, [session, profile?.role])
-  );
+  if (!loadingProfile && profile?.role === 'client') {
+    return <Redirect href="/client" />;
+  }
 
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          <ThemedView type="backgroundElement" style={styles.card}>
-            <ThemedText type="title" style={styles.title}>
-              Primal Physique
-            </ThemedText>
+        <ThemedView type="backgroundElement" style={styles.card}>
+          <ThemedText type="title" style={styles.title}>
+            Primal Physique
+          </ThemedText>
 
-            {loadingProfile && <ThemedText themeColor="textSecondary">Loading your profile...</ThemedText>}
+          {loadingProfile && <ThemedText themeColor="textSecondary">Loading your profile...</ThemedText>}
 
-            {!loadingProfile && profile && (
-              <ThemedText type="subtitle" style={styles.roleText}>
-                You&apos;re logged in as{' '}
-                <ThemedText type="subtitle" style={styles.roleHighlight}>
-                  {profile.role === 'coach' ? 'Coach' : 'Client'}
-                </ThemedText>
+          {!loadingProfile && profile && (
+            <ThemedText type="subtitle" style={styles.roleText}>
+              You&apos;re logged in as{' '}
+              <ThemedText type="subtitle" style={styles.roleHighlight}>
+                Coach
               </ThemedText>
-            )}
-
-            {!loadingProfile && !profile && (
-              <ThemedText themeColor="textSecondary" style={styles.roleText}>
-                We couldn&apos;t find a profile for this account. Check the profiles table in Supabase.
-              </ThemedText>
-            )}
-
-            <ThemedText themeColor="textSecondary" type="small">
-              {session?.user.email}
             </ThemedText>
-
-            {profile?.role === 'coach' && (
-              <Link href="/workouts" style={styles.linkSpacing}>
-                <ThemedText type="linkPrimary">My Workouts</ThemedText>
-              </Link>
-            )}
-
-            {profile?.role === 'coach' && (
-              <Link href="/assignments" style={styles.linkSpacing}>
-                <ThemedText type="linkPrimary">Assignments</ThemedText>
-              </Link>
-            )}
-          </ThemedView>
-
-          {profile?.role === 'client' && (
-            <ThemedView style={styles.assignmentsSection}>
-              <ThemedText type="smallBold">Your assigned workouts</ThemedText>
-
-              {loadingAssignments && <ActivityIndicator style={styles.loader} />}
-
-              {!loadingAssignments && assignmentsError && (
-                <ThemedText style={styles.error}>{assignmentsError}</ThemedText>
-              )}
-
-              {!loadingAssignments && !assignmentsError && assignments.length === 0 && (
-                <ThemedText themeColor="textSecondary">Nothing assigned yet.</ThemedText>
-              )}
-
-              {!loadingAssignments &&
-                !assignmentsError &&
-                assignments.map((assignment) => (
-                  <Pressable key={assignment.id} onPress={() => router.push(`/assigned/${assignment.id}`)}>
-                    <ThemedView type="backgroundElement" style={styles.assignmentRow}>
-                      <ThemedText type="smallBold">{assignment.workoutName}</ThemedText>
-                      <ThemedText type="small" themeColor="textSecondary">
-                        {assignment.assignedDate}
-                      </ThemedText>
-                    </ThemedView>
-                  </Pressable>
-                ))}
-            </ThemedView>
           )}
-        </ScrollView>
+
+          {!loadingProfile && !profile && (
+            <ThemedText themeColor="textSecondary" style={styles.roleText}>
+              We couldn&apos;t find a profile for this account. Check the profiles table in Supabase.
+            </ThemedText>
+          )}
+
+          <ThemedText themeColor="textSecondary" type="small">
+            {session?.user.email}
+          </ThemedText>
+
+          <Link href="/workouts" style={styles.linkSpacing}>
+            <ThemedText type="linkPrimary">My Workouts</ThemedText>
+          </Link>
+
+          <Link href="/assignments" style={styles.linkSpacing}>
+            <ThemedText type="linkPrimary">Assignments</ThemedText>
+          </Link>
+        </ThemedView>
 
         <Pressable style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]} onPress={signOut}>
           <ThemedText type="smallBold" style={styles.signOutText}>
@@ -134,13 +69,9 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
+    justifyContent: 'center',
     paddingHorizontal: Spacing.four,
-    paddingTop: Spacing.four,
-    gap: Spacing.three,
-  },
-  scrollContent: {
-    gap: Spacing.three,
-    paddingBottom: Spacing.three,
+    gap: Spacing.four,
   },
   card: {
     borderRadius: Spacing.four,
@@ -160,20 +91,6 @@ const styles = StyleSheet.create({
   },
   linkSpacing: {
     marginTop: Spacing.two,
-  },
-  assignmentsSection: {
-    gap: Spacing.two,
-  },
-  loader: {
-    marginTop: Spacing.two,
-  },
-  error: {
-    color: Accent,
-  },
-  assignmentRow: {
-    borderRadius: Spacing.two,
-    padding: Spacing.three,
-    gap: Spacing.half,
   },
   signOutButton: {
     borderRadius: Spacing.two,

@@ -24,6 +24,7 @@ export type ClientAssignmentSummary = {
   id: string;
   workoutName: string;
   assignedDate: string;
+  status: AssignmentStatus;
 };
 
 export type AssignmentDetail = {
@@ -114,7 +115,7 @@ export async function listAssignments(coachId: string): Promise<AssignmentSummar
 export async function listMyAssignments(clientId: string): Promise<ClientAssignmentSummary[]> {
   const { data, error } = await supabase
     .from('assignments')
-    .select('id, assigned_date, workouts(name)')
+    .select('id, assigned_date, status, workouts(name)')
     .eq('client_id', clientId)
     .order('assigned_date', { ascending: false });
 
@@ -124,6 +125,7 @@ export async function listMyAssignments(clientId: string): Promise<ClientAssignm
     id: row.id as string,
     workoutName: (row.workouts as unknown as { name: string } | null)?.name ?? 'Unknown workout',
     assignedDate: row.assigned_date as string,
+    status: row.status as AssignmentStatus,
   }));
 }
 

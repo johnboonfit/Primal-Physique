@@ -153,28 +153,63 @@ The coach's Assignments list now shows each row's status ("Pending" or "Complete
 2. Tap the completed one — confirm the detail screen shows the client's email, the date, "Completed", and for each exercise both "Prescribed: 3x10" (or whatever it was set to) and "Actual: 135 weight · 10 reps" (matching what the client logged) — plus "Actual: — weight · — reps" for the one left blank.
 3. Tap **Back**, tap a **Pending** assignment instead — confirm it shows "The client hasn't logged this workout yet." and no actual numbers.
 
+## Client: main navigation and home dashboard
+
+Run `supabase/client-name.sql` in the SQL Editor after `coach-log-visibility.sql`. This adds a `full_name` column to `profiles` and updates the signup trigger to save it — needed so the dashboard can greet a client by name.
+
+**This changes where things live.** The client no longer shares the coach's `/home` screen — logging in as a client now goes straight to a 5-tab layout:
+
+- **Home** — a real dashboard: "Good morning/afternoon/evening, [name]" (based on the time on your device), and an **Up Next** section listing pending assignments, each with a **Start** button that opens the same workout-logging screen from Chunk 4/5.
+- **Training** — the client's full assignment history, pending and completed, with a status badge on each row (this is what used to be the whole client home screen, moved here).
+- **Nutrition**, **Progress**, **Calendar** — placeholders that just say "Coming soon."
+
+Sign-out moved too — it's now a small link at the top of the Home tab, since there's no shared screen to put it on anymore.
+
+Note: **signup now asks for a name**, required for new accounts going forward. Any account created *before* this change has a blank name in the database — the dashboard falls back to using their email in that case, so nothing breaks, but their greeting will read like "Good morning, jane" instead of "Good morning, Jane." Nothing to do about that except having them (or you, in Supabase's Table Editor) fill in `full_name` on `profiles` by hand if it bothers you.
+
+**Verify it works:**
+
+1. Sign up a **brand new** client account so you can test the name field — fill in a full name this time.
+2. Confirm it lands straight on a screen with 5 tabs at the bottom: Home, Training, Nutrition, Progress, Calendar.
+3. On Home, confirm the greeting matches the current time of day and shows the name you typed.
+4. Have your coach account assign a workout to this new client (same flow as before), then pull-to-refresh isn't needed — just leave and come back to the Home tab, and confirm it now appears under **Up Next**.
+5. Tap **Start** on it — confirm it opens the same logging screen as before, log some numbers, tap **Mark Complete**.
+6. Go to the **Training** tab — confirm that same workout now shows there marked **Completed**, alongside any others still **Pending**.
+7. Tap **Nutrition**, **Progress**, and **Calendar** — confirm each just shows its name and "Coming soon."
+8. Tap **Sign out** on the Home tab — confirm it returns to the login screen.
+9. Log in as your **coach** account and confirm nothing changed there — still the plain Home screen with My Workouts and Assignments links, no tabs.
+
 ## Project structure reference
 
 ```
 src/
   app/
-    index.tsx          # routes to /login or /home based on session
+    index.tsx          # routes to /login, coach /home, or client /client
     (auth)/
       login.tsx
-      signup.tsx
+      signup.tsx        # now also collects full name
     (app)/
-      home.tsx          # shows role; client's assigned-workouts list lives here
+      home.tsx          # coach's home screen only; redirects clients to /client
       workouts/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's workouts
         new.tsx          # create-workout form
       assignments/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of assignments, now with status
+        index.tsx        # list of assignments, with status
         new.tsx          # pick workout + client + date, save
         [id].tsx          # coach's view of one assignment — prescribed vs. actual
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
+      client/
+        _layout.tsx      # client-only guard + the 5-tab bar
+        index.tsx        # Home tab — greeting + Up Next
+        training.tsx      # Training tab — full assignment history
+        nutrition.tsx      # placeholder
+        progress.tsx       # placeholder
+        calendar.tsx        # placeholder
+  components/
+    coming-soon.tsx     # shared "X — Coming soon." screen for the 3 placeholder tabs
   context/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
@@ -188,4 +223,5 @@ supabase/
   client-access.sql          # paste in after assignments.sql, lets clients read their own data
   workout-logs.sql            # paste in after client-access.sql, adds logging + completed status
   coach-log-visibility.sql     # paste in after workout-logs.sql, lets coaches see logged results
+  client-name.sql               # paste in after coach-log-visibility.sql, adds full_name
 ```

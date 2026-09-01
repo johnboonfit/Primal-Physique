@@ -17,6 +17,7 @@ const ROLES: { value: UserRole; label: string }[] = [
 
 export default function SignUpScreen() {
   const theme = useTheme();
+  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<UserRole>('client');
@@ -26,6 +27,10 @@ export default function SignUpScreen() {
 
   const handleSignUp = async () => {
     setError(null);
+    if (!fullName.trim()) {
+      setError('Enter your name.');
+      return;
+    }
     if (!email || !password) {
       setError('Enter an email and password.');
       return;
@@ -38,7 +43,7 @@ export default function SignUpScreen() {
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: email.trim(),
       password,
-      options: { data: { role } },
+      options: { data: { role, full_name: fullName.trim() } },
     });
     setLoading(false);
 
@@ -81,6 +86,15 @@ export default function SignUpScreen() {
         <ThemedText type="title" style={styles.title}>
           Create account
         </ThemedText>
+
+        <TextInput
+          value={fullName}
+          onChangeText={setFullName}
+          placeholder="Full name"
+          placeholderTextColor={theme.textSecondary}
+          autoComplete="name"
+          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+        />
 
         <ThemedText themeColor="textSecondary" style={styles.roleLabel}>
           I am a...
