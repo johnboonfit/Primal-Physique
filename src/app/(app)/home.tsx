@@ -44,6 +44,12 @@ export default function HomeScreen() {
               <ThemedText type="linkPrimary">My Workouts</ThemedText>
             </Link>
           )}
+
+          {profile?.role === 'coach' && (
+            <Link href="/assignments" style={styles.workoutsLink}>
+              <ThemedText type="linkPrimary">Assignments</ThemedText>
+            </Link>
+          )}
         </ThemedView>
 
         <Pressable style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]} onPress={signOut}>

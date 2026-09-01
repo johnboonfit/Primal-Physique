@@ -93,6 +93,26 @@ Log in as a coach account and the home screen now shows a **"My Workouts"** link
 4. In Supabase's Table Editor, open `workouts` — confirm a row with that name and your coach account's id in `coach_id`. Open `workout_exercises` — confirm two rows pointing at that workout's id.
 5. Log in as a client account and confirm there's no "My Workouts" link on home, and that typing `/workouts` into the URL bar (if testing on web) redirects back to home instead of showing the list.
 
+## Coach: assigning a workout to a client
+
+Run `supabase/assignments.sql` in the SQL Editor after `schema.sql` and `workouts.sql`. This adds an `assignments` table (workout + client + date) and one extra rule that lets a coach see the list of client accounts — before this, a coach could only see their own profile row.
+
+Log in as a coach and the home screen now also shows an **Assignments** link. From there:
+
+- **+ New** shows your saved workouts as a tappable list, all client accounts as a tappable list, and a date field (pre-filled with today, editable as `YYYY-MM-DD`). Pick one of each and tap **Save assignment**.
+- Saving takes you back to the list, which now shows the assignment as "workout name — client email · date".
+
+Note: there's no coach/client roster yet, so every coach currently sees every client account in the picker. Fine for testing; this is the same simplification flagged when workouts shipped, and needs tightening before multiple coaches are using this for real.
+
+**Verify it works:**
+
+1. Make sure you have at least one saved workout (e.g. "Push Day" from the previous step) and at least one client account signed up.
+2. Log in as your coach account, tap **Assignments**, tap **+ New**.
+3. Pick "Push Day", pick your client's email, leave today's date (or change it), tap **Save assignment**.
+4. You should land back on the list and see "Push Day — [client email] · [date]".
+5. In Supabase's Table Editor, open `assignments` — confirm one row with the right `coach_id`, `client_id`, `workout_id`, and `assigned_date`.
+6. Log in as the client account and confirm there's no "Assignments" link, and that typing `/assignments` into the URL bar redirects back to home.
+
 ## Project structure reference
 
 ```
@@ -108,12 +128,18 @@ src/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's workouts
         new.tsx          # create-workout form
+      assignments/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # list of assignments the coach has made
+        new.tsx          # pick workout + client + date, save
   context/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() database calls
+    assignments.ts         # createAssignment() / listAssignments() / option lookups
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
+  assignments.sql           # paste in after workouts.sql, adds assignments + client visibility
 ```
