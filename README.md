@@ -210,6 +210,16 @@ One structural note: **the app no longer follows your device's light/dark settin
 
 If any screen still shows a plain grey/white button, a hardcoded blue link, or a status label in red instead of teal, that's the one screen that got missed — tell me which one and I'll fix just that spot rather than re-touching everything.
 
+## Brand logo
+
+The logo (`assets/images/logo.jpg`) is mounted once, in the root layout, as a fixed overlay — not something added to each screen individually, which is what guarantees it's on literally every screen without exception. It's small (26×26), sits just inside the top-left safe-area corner, and is rendered with no tint or recolor — exactly the file as provided.
+
+**Verify it works:**
+
+1. On any screen, confirm the logo appears top-left, in its original red/black colors (not shifted teal or any other app color).
+2. Navigate through several different screens (login → signup → coach home → workouts → assignments → client tabs) and confirm it's in the exact same spot every time — it shouldn't shift, resize, or disappear anywhere.
+3. **Specifically check the screens whose content starts right at the top-left** — My Workouts, Assignments, the client's Home and Training tabs, and the New Workout/New Assignment forms. I verified the login and signup screens render cleanly myself (their content is centered, so there was no risk there), but I couldn't check these top-anchored screens without a live login session. If the logo visually touches or overlaps any heading/text on those, tell me which screen and I'll add clearance there.
+
 ## Project structure reference
 
 ```
@@ -242,6 +252,7 @@ src/
   components/
     coming-soon.tsx     # shared "X — Coming soon." screen for the 3 placeholder tabs
     hero-stat.tsx        # the glowing teal oversized-number card used on every list screen
+    brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
   context/
