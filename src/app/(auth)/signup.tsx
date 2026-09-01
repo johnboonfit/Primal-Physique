@@ -6,21 +6,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
-import type { UserRole } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { supabase } from '@/lib/supabase';
-
-const ROLES: { value: UserRole; label: string }[] = [
-  { value: 'client', label: 'Client' },
-  { value: 'coach', label: 'Coach' },
-];
 
 export default function SignUpScreen() {
   const theme = useTheme();
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('client');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmationSent, setConfirmationSent] = useState(false);
@@ -40,10 +33,12 @@ export default function SignUpScreen() {
       return;
     }
     setLoading(true);
+    // Every signup becomes a client — there's no role choice here anymore.
+    // Coach accounts are granted by hand in Supabase, not chosen at signup.
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: email.trim(),
       password,
-      options: { data: { role, full_name: fullName.trim() } },
+      options: { data: { full_name: fullName.trim() } },
     });
     setLoading(false);
 
@@ -95,25 +90,6 @@ export default function SignUpScreen() {
           autoComplete="name"
           style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
         />
-
-        <ThemedText themeColor="textSecondary" style={styles.roleLabel}>
-          I am a...
-        </ThemedText>
-        <ThemedView type="backgroundElement" style={styles.roleToggle}>
-          {ROLES.map(({ value, label }) => {
-            const selected = role === value;
-            return (
-              <Pressable
-                key={value}
-                onPress={() => setRole(value)}
-                style={[styles.roleOption, selected && styles.roleOptionSelected]}>
-                <ThemedText type="smallBold" style={selected ? styles.roleTextSelected : undefined}>
-                  {label}
-                </ThemedText>
-              </Pressable>
-            );
-          })}
-        </ThemedView>
 
         <TextInput
           value={email}
@@ -174,29 +150,6 @@ const styles = StyleSheet.create({
   subtitle: {
     textAlign: 'center',
     marginBottom: Spacing.three,
-  },
-  roleLabel: {
-    textAlign: 'center',
-    marginTop: Spacing.two,
-  },
-  roleToggle: {
-    flexDirection: 'row',
-    borderRadius: Spacing.two,
-    padding: Spacing.half,
-    gap: Spacing.half,
-  },
-  roleOption: {
-    flex: 1,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.two - 2,
-    alignItems: 'center',
-  },
-  roleOptionSelected: {
-    ...Glow.oxblood,
-    backgroundColor: Accent,
-  },
-  roleTextSelected: {
-    color: Colors.text,
   },
   input: {
     borderWidth: 1,

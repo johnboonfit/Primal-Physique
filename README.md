@@ -69,12 +69,13 @@ This prints a QR code and a menu. Press `w` to open it in a web browser (fastest
 
 ## Verifying it works
 
-1. **Sign up as a client.** On the signup screen, leave the toggle on "Client", enter an email and a password (6+ characters), and submit. You should land straight on the home screen (no email confirmation needed, since we turned that off) reading **"You're logged in as Client."**
-2. **Check the database.** In Supabase's Table Editor, open `profiles` — you should see a new row with that email and `role = client`.
-3. **Sign out and sign up again as a coach.** Use a different email, switch the toggle to "Coach" before submitting. The home screen should now say **"You're logged in as Coach."**, and a second row should appear in `profiles` with `role = coach`.
-4. **Log out and log back in.** Confirm the sign-out button on the home screen returns you to the login screen, and that logging back in with either account takes you straight to home showing the correct role.
+> Superseded by "Coach role is locked down" further below — signup no longer has a role toggle, every new account is a client, and coach accounts are granted by hand in Supabase. The steps below describe the original bootstrap flow; keep them in mind as history, not as today's actual signup screen.
 
-If any of those don't match, that's the thing to fix before building further — everything downstream (coach dashboards, client views, etc.) depends on this working correctly.
+1. **Sign up.** On the signup screen, enter a name, email, and password (6+ characters), and submit. You should land straight on the client experience (no email confirmation needed, since we turned that off).
+2. **Check the database.** In Supabase's Table Editor, open `profiles` — you should see a new row with that email and `role = client`.
+3. **Log out and log back in.** Confirm the sign-out link returns you to the login screen, and that logging back in takes you straight back to where you left off.
+
+If any of those don't match, that's the thing to fix before building further — everything downstream depends on this working correctly.
 
 ## Coach: creating workouts
 
@@ -252,6 +253,29 @@ The **Progress** tab is no longer a placeholder. It shows a weight input and a b
 5. Leave the Progress tab and come back — confirm the input is pre-filled with "179" (not blank), and History still shows it.
 6. Log in as a different client account and confirm their Progress tab starts empty — weight history doesn't leak between clients.
 
+## Coach role is locked down
+
+Run `supabase/lock-coach-role.sql` in the SQL Editor after `weight-logs.sql`. This is a security fix, not a feature — read it before running it.
+
+**What was wrong:** the signup screen had a Client/Coach toggle, and the database trusted whatever role value arrived with the signup request. That's fine as long as the only thing calling signup is your app's UI — but it means anyone who called Supabase's signup API directly (skipping your app entirely) could set `role: 'coach'` themselves and get coach-level access to every client's data. The toggle wasn't just an inconvenience to remove later; it was an open door.
+
+**What changed:**
+- The signup screen no longer has a role toggle at all — just name, email, password.
+- The database trigger that creates a profile row on signup now **always** sets `role = 'client'`, regardless of what any signup request sends. Even someone bypassing the app entirely can no longer self-grant coach access.
+- **The only way to create a coach account now:** have them sign up normally (they'll get a client account), then you open Supabase's Table Editor → `profiles` → find their row → change `role` from `client` to `coach` by hand.
+
+This does **not** change any account that already exists — your existing coach account keeps its `role = coach` untouched. It only changes what happens on new signups from here on.
+
+Still open, deliberately not addressed in this pass: every coach can still see and assign to *every* client account — there's no per-coach roster yet. Fine with one coach; worth a real fix before a second coach ever uses this.
+
+**Verify it works:**
+
+1. Sign up a **brand new** test account (any email you haven't used before).
+2. Confirm it lands on the client experience — 5 tabs, no way to reach coach screens.
+3. In Supabase's Table Editor, open `profiles`, find that new row — confirm `role` shows `client`.
+4. To prove the lockdown actually works (not just the UI): change that row's `role` to `coach` by hand, save, then log out and back in with that account in the app. Confirm it now lands on the coach's Home screen with My Workouts and Assignments — this proves promotion via the Table Editor is the real, working path.
+5. Confirm your **original** coach account still logs in as coach exactly as before — this change shouldn't have touched it.
+
 ## Project structure reference
 
 ```
@@ -260,7 +284,7 @@ src/
     index.tsx          # routes to /login, coach /home, or client /client
     (auth)/
       login.tsx
-      signup.tsx        # now also collects full name
+      signup.tsx        # name/email/password only — no role choice; every signup is a client
     (app)/
       home.tsx          # coach's home screen only; redirects clients to /client
       workouts/
@@ -305,4 +329,5 @@ supabase/
   client-name.sql               # paste in after coach-log-visibility.sql, adds full_name
   food-logs.sql                  # paste in after client-name.sql, adds food_logs
   weight-logs.sql                  # paste in after food-logs.sql, adds weight_logs
+  lock-coach-role.sql                # paste in after weight-logs.sql — security fix, read it first
 ```
