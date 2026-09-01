@@ -23,11 +23,26 @@ export type ClientAssignmentSummary = {
   assignedDate: string;
 };
 
+export type AssignmentStatus = 'pending' | 'completed';
+
 export type AssignmentDetail = {
   id: string;
   workoutName: string;
   assignedDate: string;
-  exercises: { id: string; name: string; setsReps: string }[];
+  status: AssignmentStatus;
+  exercises: {
+    id: string;
+    name: string;
+    setsReps: string;
+    loggedWeight: number | null;
+    loggedReps: number | null;
+  }[];
+};
+
+export type ExerciseLogEntry = {
+  exerciseId: string;
+  weight: number | null;
+  reps: number | null;
 };
 
 export async function listCoachWorkoutOptions(coachId: string): Promise<WorkoutOption[]> {
@@ -98,7 +113,7 @@ export async function listMyAssignments(clientId: string): Promise<ClientAssignm
 export async function getAssignmentDetail(assignmentId: string): Promise<AssignmentDetail> {
   const { data, error } = await supabase
     .from('assignments')
-    .select('id, assigned_date, workouts(name, workout_exercises(id, name, sets_reps, position))')
+    .select('id, assigned_date, status, workouts(name, workout_exercises(id, name, sets_reps, position))')
     .eq('id', assignmentId)
     .single();
 
@@ -109,15 +124,66 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
     workout_exercises: { id: string; name: string; sets_reps: string; position: number }[];
   } | null;
 
+  const { data: logs, error: logsError } = await supabase
+    .from('workout_logs')
+    .select('exercise_id, weight, reps')
+    .eq('assignment_id', assignmentId);
+
+  if (logsError) throw logsError;
+
+  const logsByExercise = new Map<string, { weight: number | null; reps: number | null }>();
+  (logs ?? []).forEach((log) => {
+    logsByExercise.set(log.exercise_id as string, {
+      weight: log.weight as number | null,
+      reps: log.reps as number | null,
+    });
+  });
+
   const exercises = (workout?.workout_exercises ?? [])
     .slice()
     .sort((a, b) => a.position - b.position)
-    .map((exercise) => ({ id: exercise.id, name: exercise.name, setsReps: exercise.sets_reps }));
+    .map((exercise) => {
+      const logged = logsByExercise.get(exercise.id);
+      return {
+        id: exercise.id,
+        name: exercise.name,
+        setsReps: exercise.sets_reps,
+        loggedWeight: logged?.weight ?? null,
+        loggedReps: logged?.reps ?? null,
+      };
+    });
 
   return {
     id: data.id as string,
     workoutName: workout?.name ?? 'Unknown workout',
     assignedDate: data.assigned_date as string,
+    status: data.status as AssignmentStatus,
     exercises,
   };
+}
+
+/** Saves whatever weight/reps were entered, skipping exercises left blank
+ * entirely, then flips the assignment to 'completed'. */
+export async function logWorkout(clientId: string, assignmentId: string, entries: ExerciseLogEntry[]) {
+  const rows = entries
+    .filter((entry) => entry.weight !== null || entry.reps !== null)
+    .map((entry) => ({
+      assignment_id: assignmentId,
+      client_id: clientId,
+      exercise_id: entry.exerciseId,
+      weight: entry.weight,
+      reps: entry.reps,
+    }));
+
+  if (rows.length > 0) {
+    const { error: logError } = await supabase.from('workout_logs').insert(rows);
+    if (logError) throw logError;
+  }
+
+  const { error: statusError } = await supabase
+    .from('assignments')
+    .update({ status: 'completed' })
+    .eq('id', assignmentId);
+
+  if (statusError) throw statusError;
 }

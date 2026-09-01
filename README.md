@@ -127,6 +127,20 @@ Log in as a client and the home screen now shows a **"Your assigned workouts"** 
 4. Tap **Back**, confirm it returns to home.
 5. Log in as a *different* client account (one nothing has been assigned to) and confirm it shows "Nothing assigned yet." instead of someone else's workout.
 
+## Client: logging actual performance
+
+Run `supabase/workout-logs.sql` in the SQL Editor after `client-access.sql`. This adds a `status` column to `assignments` (`pending` or `completed`, defaulting to `pending`), a new `workout_logs` table (one row per exercise actually logged — weight + reps), and permission for a client to flip their own assignment to `completed`.
+
+On the assigned-workout detail screen, each exercise now shows two number inputs (Weight, Reps) instead of nothing — both start empty, and either can be left blank. A **Mark Complete** button at the bottom saves whatever was entered and flips the assignment to completed. Once completed, reopening that screen replaces the inputs with the logged numbers, read-only, and the button disappears — there's no editing a log after it's submitted (a later chunk if you want it).
+
+**Verify it works:**
+
+1. Log in as the client account with "Push Day" assigned (should still show "Pending" if you haven't completed it yet).
+2. Open it, enter weight/reps for one exercise (e.g. "135" / "10") and leave the other blank, tap **Mark Complete**.
+3. The screen should now show "Completed" next to the date, "Logged: 135 weight · 10 reps" for the one you filled in, and "Logged: — weight · — reps" for the one you left blank. No inputs, no button.
+4. Tap Back, tap the same assignment again from home — confirm it still shows the same logged values (not blank inputs), proving it saved rather than just updating on-screen.
+5. In Supabase's Table Editor: open `assignments`, confirm that row's `status` is now `completed`. Open `workout_logs`, confirm exactly one row (for the exercise you filled in — the blank one shouldn't have created a row), with the right `assignment_id`, `client_id`, `exercise_id`, `weight`, and `reps`.
+
 ## Project structure reference
 
 ```
@@ -147,16 +161,17 @@ src/
         index.tsx        # list of assignments the coach has made
         new.tsx          # pick workout + client + date, save
       assigned/
-        [id].tsx          # client's read-only view of one assigned workout
+        [id].tsx          # client's workout view — logs performance, or shows it once completed
   context/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() database calls
-    assignments.ts         # coach + client assignment database calls
+    assignments.ts         # coach + client assignment + workout-log database calls
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
   assignments.sql           # paste in after workouts.sql, adds assignments + client visibility
   client-access.sql          # paste in after assignments.sql, lets clients read their own data
+  workout-logs.sql            # paste in after client-access.sql, adds logging + completed status
 ```
