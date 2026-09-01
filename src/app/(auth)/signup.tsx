@@ -1,0 +1,214 @@
+import { Link, router } from 'expo-router';
+import { useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, TextInput } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import { Accent, Spacing } from '@/constants/theme';
+import type { UserRole } from '@/context/auth-context';
+import { useTheme } from '@/hooks/use-theme';
+import { supabase } from '@/lib/supabase';
+
+const ROLES: { value: UserRole; label: string }[] = [
+  { value: 'client', label: 'Client' },
+  { value: 'coach', label: 'Coach' },
+];
+
+export default function SignUpScreen() {
+  const theme = useTheme();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState<UserRole>('client');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmationSent, setConfirmationSent] = useState(false);
+
+  const handleSignUp = async () => {
+    setError(null);
+    if (!email || !password) {
+      setError('Enter an email and password.');
+      return;
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    setLoading(true);
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: { data: { role } },
+    });
+    setLoading(false);
+
+    if (signUpError) {
+      setError(signUpError.message);
+      return;
+    }
+
+    if (!data.session) {
+      // Supabase has "Confirm email" turned on for this project, so the
+      // account exists but can't log in until the link in that email is clicked.
+      setConfirmationSent(true);
+      return;
+    }
+
+    router.replace('/home');
+  };
+
+  if (confirmationSent) {
+    return (
+      <ThemedView style={styles.container}>
+        <SafeAreaView style={styles.safeArea}>
+          <ThemedText type="title" style={styles.title}>
+            Check your email
+          </ThemedText>
+          <ThemedText themeColor="textSecondary" style={styles.subtitle}>
+            We sent a confirmation link to {email}. Click it, then come back and log in.
+          </ThemedText>
+          <Pressable style={styles.linkButton} onPress={() => router.replace('/login')}>
+            <ThemedText type="linkPrimary">Back to login</ThemedText>
+          </Pressable>
+        </SafeAreaView>
+      </ThemedView>
+    );
+  }
+
+  return (
+    <ThemedView style={styles.container}>
+      <SafeAreaView style={styles.safeArea}>
+        <ThemedText type="title" style={styles.title}>
+          Create account
+        </ThemedText>
+
+        <ThemedText themeColor="textSecondary" style={styles.roleLabel}>
+          I am a...
+        </ThemedText>
+        <ThemedView type="backgroundElement" style={styles.roleToggle}>
+          {ROLES.map(({ value, label }) => {
+            const selected = role === value;
+            return (
+              <Pressable
+                key={value}
+                onPress={() => setRole(value)}
+                style={[styles.roleOption, selected && styles.roleOptionSelected]}>
+                <ThemedText type="smallBold" style={selected ? styles.roleTextSelected : undefined}>
+                  {label}
+                </ThemedText>
+              </Pressable>
+            );
+          })}
+        </ThemedView>
+
+        <TextInput
+          value={email}
+          onChangeText={setEmail}
+          placeholder="Email"
+          placeholderTextColor={theme.textSecondary}
+          autoCapitalize="none"
+          autoComplete="email"
+          keyboardType="email-address"
+          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+        />
+        <TextInput
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Password (min 6 characters)"
+          placeholderTextColor={theme.textSecondary}
+          secureTextEntry
+          autoComplete="password-new"
+          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+        />
+
+        {error && <ThemedText style={styles.error}>{error}</ThemedText>}
+
+        <Pressable
+          style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+          onPress={handleSignUp}
+          disabled={loading}>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <ThemedText type="smallBold" style={styles.primaryButtonText}>
+              Create account
+            </ThemedText>
+          )}
+        </Pressable>
+
+        <Link href="/login" style={styles.linkButton}>
+          <ThemedText type="linkPrimary">Already have an account? Log in</ThemedText>
+        </Link>
+      </SafeAreaView>
+    </ThemedView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  safeArea: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.four,
+    gap: Spacing.three,
+  },
+  title: {
+    textAlign: 'center',
+  },
+  subtitle: {
+    textAlign: 'center',
+    marginBottom: Spacing.three,
+  },
+  roleLabel: {
+    textAlign: 'center',
+    marginTop: Spacing.two,
+  },
+  roleToggle: {
+    flexDirection: 'row',
+    borderRadius: Spacing.two,
+    padding: Spacing.half,
+    gap: Spacing.half,
+  },
+  roleOption: {
+    flex: 1,
+    paddingVertical: Spacing.two,
+    borderRadius: Spacing.two - 2,
+    alignItems: 'center',
+  },
+  roleOptionSelected: {
+    backgroundColor: Accent,
+  },
+  roleTextSelected: {
+    color: '#ffffff',
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.three,
+    fontSize: 16,
+  },
+  error: {
+    color: Accent,
+    textAlign: 'center',
+  },
+  primaryButton: {
+    backgroundColor: Accent,
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.three,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pressed: {
+    opacity: 0.85,
+  },
+  primaryButtonText: {
+    color: '#ffffff',
+  },
+  linkButton: {
+    alignSelf: 'center',
+    marginTop: Spacing.two,
+  },
+});
