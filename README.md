@@ -220,6 +220,23 @@ The logo (`assets/images/logo.jpg`) is mounted once, in the root layout, as a fi
 2. Navigate through several different screens (login → signup → coach home → workouts → assignments → client tabs) and confirm it's in the exact same spot every time — it shouldn't shift, resize, or disappear anywhere.
 3. **Specifically check the screens whose content starts right at the top-left** — My Workouts, Assignments, the client's Home and Training tabs, and the New Workout/New Assignment forms. I verified the login and signup screens render cleanly myself (their content is centered, so there was no risk there), but I couldn't check these top-anchored screens without a live login session. If the logo visually touches or overlaps any heading/text on those, tell me which screen and I'll add clearance there.
 
+## Client: basic food logging
+
+Run `supabase/food-logs.sql` in the SQL Editor after `client-name.sql`. This adds a `food_logs` table — one row per food entry, tied to a client, a date, and a meal (`breakfast`, `lunch`, `dinner`, or `snacks`). Locked down so a client can only see and add their own entries; nobody else's, including their coach.
+
+The **Nutrition** tab is no longer a placeholder. It shows today's date, a hero number for total calories logged today, and four sections (Breakfast, Lunch, Dinner, Snacks). Tapping **+ Add** under any section opens a small popup — food name and calories, both required — and saving adds it to that section's list and updates the running total immediately.
+
+Note: entries are tied to **today's date only** — there's no way yet to view or add to a past day, and no way to edit or delete an entry once saved. Both are natural next steps if you want them; flagging rather than assuming.
+
+**Verify it works:**
+
+1. Log in as a client, tap the **Nutrition** tab. Confirm today's date shows, the hero number reads **0**, and all four sections say "Nothing logged yet."
+2. Tap **+ Add** under **Breakfast**, enter "Oatmeal" and "350", tap **Save**. Confirm the popup closes, "Oatmeal — 350 cal" appears under Breakfast, Breakfast's subtotal shows "350 cal", and the hero number at the top updates to **350**.
+3. Add a second entry under **Lunch** (e.g. "Chicken Salad" / "450"). Confirm the hero number updates to **800**, and Lunch shows its own entry and subtotal separately from Breakfast.
+4. In Supabase's Table Editor, open `food_logs` — confirm two rows, both with today's date, the right `client_id`, correct `meal` values (`breakfast`/`lunch`), and matching `food_name`/`calories`.
+5. Leave the Nutrition tab (tap another tab) and come back — confirm both entries and the running total are still there (proving it's reading from the database, not just local state).
+6. Log in as a different client account and confirm their Nutrition tab starts empty — these entries don't leak between clients.
+
 ## Project structure reference
 
 ```
@@ -246,11 +263,11 @@ src/
         _layout.tsx      # client-only guard + the 5-tab bar
         index.tsx        # Home tab — greeting + Up Next
         training.tsx      # Training tab — full assignment history
-        nutrition.tsx      # placeholder
+        nutrition.tsx      # Nutrition tab — 4 meal sections, add-entry popup, calorie total
         progress.tsx       # placeholder
         calendar.tsx        # placeholder
   components/
-    coming-soon.tsx     # shared "X — Coming soon." screen for the 3 placeholder tabs
+    coming-soon.tsx     # shared "X — Coming soon." screen for the 2 remaining placeholder tabs
     hero-stat.tsx        # the glowing teal oversized-number card used on every list screen
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
   constants/
@@ -261,6 +278,7 @@ src/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() database calls
     assignments.ts         # coach + client assignment + workout-log database calls
+    food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
@@ -269,4 +287,5 @@ supabase/
   workout-logs.sql            # paste in after client-access.sql, adds logging + completed status
   coach-log-visibility.sql     # paste in after workout-logs.sql, lets coaches see logged results
   client-name.sql               # paste in after coach-log-visibility.sql, adds full_name
+  food-logs.sql                  # paste in after client-name.sql, adds food_logs
 ```
