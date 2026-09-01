@@ -66,12 +66,20 @@ export default function AssignmentsListScreen() {
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => (
-              <ThemedView type="backgroundElement" style={styles.card}>
-                <ThemedText type="smallBold">{item.workoutName}</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  {item.clientEmail} · {item.assignedDate}
-                </ThemedText>
-              </ThemedView>
+              <Pressable onPress={() => router.push(`/assignments/${item.id}`)}>
+                <ThemedView type="backgroundElement" style={styles.card}>
+                  <ThemedText type="smallBold">{item.workoutName}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {item.clientEmail} · {item.assignedDate}
+                  </ThemedText>
+                  <ThemedText
+                    type="smallBold"
+                    themeColor={item.status === 'completed' ? undefined : 'textSecondary'}
+                    style={item.status === 'completed' ? styles.statusCompleted : undefined}>
+                    {item.status === 'completed' ? 'Completed' : 'Pending'}
+                  </ThemedText>
+                </ThemedView>
+              </Pressable>
             )}
           />
         )}
@@ -122,6 +130,9 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.half,
+  },
+  statusCompleted: {
+    color: Accent,
   },
   backButton: {
     alignItems: 'center',

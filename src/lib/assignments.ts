@@ -10,11 +10,14 @@ export type ClientOption = {
   email: string;
 };
 
+export type AssignmentStatus = 'pending' | 'completed';
+
 export type AssignmentSummary = {
   id: string;
   workoutName: string;
   clientEmail: string;
   assignedDate: string;
+  status: AssignmentStatus;
 };
 
 export type ClientAssignmentSummary = {
@@ -23,11 +26,24 @@ export type ClientAssignmentSummary = {
   assignedDate: string;
 };
 
-export type AssignmentStatus = 'pending' | 'completed';
-
 export type AssignmentDetail = {
   id: string;
   workoutName: string;
+  assignedDate: string;
+  status: AssignmentStatus;
+  exercises: {
+    id: string;
+    name: string;
+    setsReps: string;
+    loggedWeight: number | null;
+    loggedReps: number | null;
+  }[];
+};
+
+export type CoachAssignmentDetail = {
+  id: string;
+  workoutName: string;
+  clientEmail: string;
   assignedDate: string;
   status: AssignmentStatus;
   exercises: {
@@ -80,7 +96,7 @@ export async function listAssignments(coachId: string): Promise<AssignmentSummar
   // hint it wouldn't know which relationship we mean.
   const { data, error } = await supabase
     .from('assignments')
-    .select('id, assigned_date, workouts(name), profiles!client_id(email)')
+    .select('id, assigned_date, status, workouts(name), profiles!client_id(email)')
     .eq('coach_id', coachId)
     .order('assigned_date', { ascending: false });
 
@@ -91,6 +107,7 @@ export async function listAssignments(coachId: string): Promise<AssignmentSummar
     workoutName: (row.workouts as unknown as { name: string } | null)?.name ?? 'Unknown workout',
     clientEmail: (row.profiles as unknown as { email: string } | null)?.email ?? 'Unknown client',
     assignedDate: row.assigned_date as string,
+    status: row.status as AssignmentStatus,
   }));
 }
 
@@ -186,4 +203,59 @@ export async function logWorkout(clientId: string, assignmentId: string, entries
     .eq('id', assignmentId);
 
   if (statusError) throw statusError;
+}
+
+export async function getCoachAssignmentDetail(assignmentId: string): Promise<CoachAssignmentDetail> {
+  const { data, error } = await supabase
+    .from('assignments')
+    .select(
+      'id, assigned_date, status, profiles!client_id(email), workouts(name, workout_exercises(id, name, sets_reps, position))'
+    )
+    .eq('id', assignmentId)
+    .single();
+
+  if (error) throw error;
+
+  const workout = data.workouts as unknown as {
+    name: string;
+    workout_exercises: { id: string; name: string; sets_reps: string; position: number }[];
+  } | null;
+
+  const { data: logs, error: logsError } = await supabase
+    .from('workout_logs')
+    .select('exercise_id, weight, reps')
+    .eq('assignment_id', assignmentId);
+
+  if (logsError) throw logsError;
+
+  const logsByExercise = new Map<string, { weight: number | null; reps: number | null }>();
+  (logs ?? []).forEach((log) => {
+    logsByExercise.set(log.exercise_id as string, {
+      weight: log.weight as number | null,
+      reps: log.reps as number | null,
+    });
+  });
+
+  const exercises = (workout?.workout_exercises ?? [])
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((exercise) => {
+      const logged = logsByExercise.get(exercise.id);
+      return {
+        id: exercise.id,
+        name: exercise.name,
+        setsReps: exercise.sets_reps,
+        loggedWeight: logged?.weight ?? null,
+        loggedReps: logged?.reps ?? null,
+      };
+    });
+
+  return {
+    id: data.id as string,
+    workoutName: workout?.name ?? 'Unknown workout',
+    clientEmail: (data.profiles as unknown as { email: string } | null)?.email ?? 'Unknown client',
+    assignedDate: data.assigned_date as string,
+    status: data.status as AssignmentStatus,
+    exercises,
+  };
 }

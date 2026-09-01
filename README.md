@@ -141,6 +141,18 @@ On the assigned-workout detail screen, each exercise now shows two number inputs
 4. Tap Back, tap the same assignment again from home — confirm it still shows the same logged values (not blank inputs), proving it saved rather than just updating on-screen.
 5. In Supabase's Table Editor: open `assignments`, confirm that row's `status` is now `completed`. Open `workout_logs`, confirm exactly one row (for the exercise you filled in — the blank one shouldn't have created a row), with the right `assignment_id`, `client_id`, `exercise_id`, `weight`, and `reps`.
 
+## Coach: seeing completed workouts
+
+Run `supabase/coach-log-visibility.sql` in the SQL Editor after `workout-logs.sql`. This adds one read-only rule letting a coach see the `workout_logs` rows tied to their own assignments — before this, only the client who logged them could see them.
+
+The coach's Assignments list now shows each row's status ("Pending" or "Completed"), and every row is tappable — it opens a detail screen showing, per exercise, what was **Prescribed** (the sets/reps set when the workout was built) next to what was **Actual** (what the client logged). For a still-pending assignment, it shows a note that the client hasn't logged it yet instead of actual numbers.
+
+**Verify it works:**
+
+1. Log in as your coach account, tap **Assignments**. Confirm the "Push Day" row you completed as the client earlier now shows **Completed**, and any other assignment still shows **Pending**.
+2. Tap the completed one — confirm the detail screen shows the client's email, the date, "Completed", and for each exercise both "Prescribed: 3x10" (or whatever it was set to) and "Actual: 135 weight · 10 reps" (matching what the client logged) — plus "Actual: — weight · — reps" for the one left blank.
+3. Tap **Back**, tap a **Pending** assignment instead — confirm it shows "The client hasn't logged this workout yet." and no actual numbers.
+
 ## Project structure reference
 
 ```
@@ -158,8 +170,9 @@ src/
         new.tsx          # create-workout form
       assignments/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of assignments the coach has made
+        index.tsx        # list of assignments, now with status
         new.tsx          # pick workout + client + date, save
+        [id].tsx          # coach's view of one assignment — prescribed vs. actual
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
   context/
@@ -174,4 +187,5 @@ supabase/
   assignments.sql           # paste in after workouts.sql, adds assignments + client visibility
   client-access.sql          # paste in after assignments.sql, lets clients read their own data
   workout-logs.sql            # paste in after client-access.sql, adds logging + completed status
+  coach-log-visibility.sql     # paste in after workout-logs.sql, lets coaches see logged results
 ```
