@@ -1,3 +1,4 @@
+import { Link } from 'expo-router';
 import { Pressable, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -37,6 +38,12 @@ export default function HomeScreen() {
           <ThemedText themeColor="textSecondary" type="small">
             {session?.user.email}
           </ThemedText>
+
+          {profile?.role === 'coach' && (
+            <Link href="/workouts" style={styles.workoutsLink}>
+              <ThemedText type="linkPrimary">My Workouts</ThemedText>
+            </Link>
+          )}
         </ThemedView>
 
         <Pressable style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]} onPress={signOut}>
@@ -74,6 +81,9 @@ const styles = StyleSheet.create({
   },
   roleHighlight: {
     color: Accent,
+  },
+  workoutsLink: {
+    marginTop: Spacing.two,
   },
   signOutButton: {
     borderRadius: Spacing.two,

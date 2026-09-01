@@ -76,6 +76,23 @@ This prints a QR code and a menu. Press `w` to open it in a web browser (fastest
 
 If any of those don't match, that's the thing to fix before building further — everything downstream (coach dashboards, client views, etc.) depends on this working correctly.
 
+## Coach: creating workouts
+
+Run `supabase/workouts.sql` in the SQL Editor (same way as `schema.sql`) to add the `workouts` and `workout_exercises` tables. This is additive — run it after `schema.sql`, not instead of it.
+
+Log in as a coach account and the home screen now shows a **"My Workouts"** link (client accounts don't see it — the workouts screens are coach-only, enforced both by the app's routing and by the database's row-level security). From there:
+
+- **+ New** opens a form: a workout name field, one or more exercise rows (each just a name and a sets/reps string like `3x10`), a way to add more rows, and **Save workout**.
+- Saving takes you back to the list, which now shows the new workout with its exercise count.
+
+**Verify it works:**
+
+1. Log in as your coach account, tap **My Workouts**, tap **+ New**.
+2. Name it "Push Day", add two exercises (e.g. "Bench Press" / "3x10" and "Overhead Press" / "3x12"), tap **Save workout**.
+3. You should land back on the list and see "Push Day — 2 exercises".
+4. In Supabase's Table Editor, open `workouts` — confirm a row with that name and your coach account's id in `coach_id`. Open `workout_exercises` — confirm two rows pointing at that workout's id.
+5. Log in as a client account and confirm there's no "My Workouts" link on home, and that typing `/workouts` into the URL bar (if testing on web) redirects back to home instead of showing the list.
+
 ## Project structure reference
 
 ```
@@ -87,10 +104,16 @@ src/
       signup.tsx
     (app)/
       home.tsx          # shows the logged-in user's role
+      workouts/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # list of the coach's workouts
+        new.tsx          # create-workout form
   context/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
     supabase.ts          # Supabase client, reads from .env
+    workouts.ts           # createWorkout() / listWorkouts() database calls
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
+  workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
 ```
