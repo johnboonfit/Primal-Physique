@@ -237,6 +237,21 @@ Note: entries are tied to **today's date only** — there's no way yet to view o
 5. Leave the Nutrition tab (tap another tab) and come back — confirm both entries and the running total are still there (proving it's reading from the database, not just local state).
 6. Log in as a different client account and confirm their Nutrition tab starts empty — these entries don't leak between clients.
 
+## Client: basic weight logging
+
+Run `supabase/weight-logs.sql` in the SQL Editor after `food-logs.sql`. This adds a `weight_logs` table with a rule that only allows **one row per client per day** — that's what makes "log again today" update the existing entry instead of creating a duplicate, rather than needing extra app logic to check first.
+
+The **Progress** tab is no longer a placeholder. It shows a weight input and a button (labeled **Save** normally, or **Update** if you've already logged today), then a plain chronological history below — every entry with its date, most recent first.
+
+**Verify it works:**
+
+1. Log in as a client, tap the **Progress** tab. Confirm the input is empty, the button says **Save**, and history says "No weight logged yet."
+2. Enter "180", tap **Save**. Confirm a row appears in History showing today's date and "180", and the button now says **Update**.
+3. Change the input to "179" and tap **Update**. Confirm the history still shows only **one row** for today (now reading "179", not a second row) — proving it updated rather than duplicated.
+4. In Supabase's Table Editor, open `weight_logs` — confirm exactly one row for this client and today's date, with `weight = 179`.
+5. Leave the Progress tab and come back — confirm the input is pre-filled with "179" (not blank), and History still shows it.
+6. Log in as a different client account and confirm their Progress tab starts empty — weight history doesn't leak between clients.
+
 ## Project structure reference
 
 ```
@@ -264,10 +279,10 @@ src/
         index.tsx        # Home tab — greeting + Up Next
         training.tsx      # Training tab — full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, add-entry popup, calorie total
-        progress.tsx       # placeholder
+        progress.tsx       # Progress tab — log/update today's weight, chronological history
         calendar.tsx        # placeholder
   components/
-    coming-soon.tsx     # shared "X — Coming soon." screen for the 2 remaining placeholder tabs
+    coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
     hero-stat.tsx        # the glowing teal oversized-number card used on every list screen
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
   constants/
@@ -279,6 +294,7 @@ src/
     workouts.ts           # createWorkout() / listWorkouts() database calls
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
+    weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
@@ -288,4 +304,5 @@ supabase/
   coach-log-visibility.sql     # paste in after workout-logs.sql, lets coaches see logged results
   client-name.sql               # paste in after coach-log-visibility.sql, adds full_name
   food-logs.sql                  # paste in after client-name.sql, adds food_logs
+  weight-logs.sql                  # paste in after food-logs.sql, adds weight_logs
 ```

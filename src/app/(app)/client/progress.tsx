@@ -1,5 +1,186 @@
-import { ComingSoonScreen } from '@/components/coming-soon';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
+import { useAuth } from '@/context/auth-context';
+import { useTheme } from '@/hooks/use-theme';
+import { listWeightLogs, saveWeightLog, type WeightLogEntry } from '@/lib/weight-logs';
+
+function todayISODate() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 export default function ProgressScreen() {
-  return <ComingSoonScreen title="Progress" />;
+  const theme = useTheme();
+  const { session } = useAuth();
+  const logDate = todayISODate();
+
+  const [logs, setLogs] = useState<WeightLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [weightInput, setWeightInput] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    if (!session) return;
+    setLoading(true);
+    listWeightLogs(session.user.id)
+      .then((data) => {
+        setLogs(data);
+        const todayEntry = data.find((entry) => entry.logDate === logDate);
+        setWeightInput(todayEntry ? String(todayEntry.weight) : '');
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load your weight history.'))
+      .finally(() => setLoading(false));
+  }, [session, logDate]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  const todayEntry = logs.find((entry) => entry.logDate === logDate);
+
+  const handleSave = async () => {
+    setSaveError(null);
+    if (!session) return;
+
+    const parsedWeight = Number(weightInput);
+    if (!weightInput.trim() || Number.isNaN(parsedWeight) || parsedWeight <= 0) {
+      setSaveError('Enter your weight as a number.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await saveWeightLog(session.user.id, logDate, parsedWeight);
+      load();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Something went wrong saving this entry.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ThemedView style={styles.container}>
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <ThemedText type="title" style={styles.title}>
+            Progress
+          </ThemedText>
+
+          <ThemedText type="smallBold" style={styles.sectionLabel}>
+            {todayEntry ? "Today's weight" : "Log today's weight"}
+          </ThemedText>
+
+          <TextInput
+            value={weightInput}
+            onChangeText={setWeightInput}
+            placeholder="Weight"
+            placeholderTextColor={theme.textSecondary}
+            keyboardType="numeric"
+            style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+          />
+
+          {saveError && <ThemedText style={styles.error}>{saveError}</ThemedText>}
+
+          <Pressable
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+            onPress={handleSave}
+            disabled={saving}>
+            {saving ? (
+              <ActivityIndicator color={Colors.text} />
+            ) : (
+              <ThemedText type="smallBold" style={styles.primaryButtonText}>
+                {todayEntry ? 'Update' : 'Save'}
+              </ThemedText>
+            )}
+          </Pressable>
+
+          <ThemedText type="smallBold" style={styles.historyLabel}>
+            History
+          </ThemedText>
+
+          {loading && <ActivityIndicator style={styles.loader} />}
+          {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
+          {!loading && !error && logs.length === 0 && (
+            <ThemedText themeColor="textSecondary">No weight logged yet.</ThemedText>
+          )}
+
+          {!loading &&
+            !error &&
+            logs.map((entry) => (
+              <ThemedView key={entry.id} type="backgroundElement" style={styles.entryRow}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  {entry.logDate}
+                </ThemedText>
+                <ThemedText type="smallBold">{entry.weight}</ThemedText>
+              </ThemedView>
+            ))}
+        </ScrollView>
+      </SafeAreaView>
+    </ThemedView>
+  );
 }
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  safeArea: { flex: 1, paddingHorizontal: Spacing.four, paddingTop: Spacing.four },
+  scrollContent: {
+    gap: Spacing.two,
+    paddingBottom: Spacing.four,
+  },
+  title: {
+    marginBottom: Spacing.two,
+  },
+  sectionLabel: {
+    marginBottom: Spacing.half,
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.three,
+    fontSize: 16,
+  },
+  error: {
+    color: Accent,
+    textAlign: 'center',
+  },
+  primaryButton: {
+    ...Glow.oxblood,
+    backgroundColor: Accent,
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.three,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pressed: {
+    opacity: 0.85,
+  },
+  primaryButtonText: {
+    color: Colors.text,
+  },
+  historyLabel: {
+    marginTop: Spacing.three,
+  },
+  loader: {
+    marginTop: Spacing.two,
+  },
+  entryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.three,
+  },
+});
