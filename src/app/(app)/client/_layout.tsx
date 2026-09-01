@@ -1,5 +1,4 @@
 import { Redirect, Tabs } from 'expo-router';
-import { useColorScheme } from 'react-native';
 
 import { Accent, Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -11,8 +10,6 @@ import { useAuth } from '@/context/auth-context';
  */
 export default function ClientTabsLayout() {
   const { profile, loadingProfile } = useAuth();
-  const scheme = useColorScheme();
-  const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
 
   if (loadingProfile) return null;
   if (profile?.role !== 'client') return <Redirect href="/home" />;
@@ -22,8 +19,13 @@ export default function ClientTabsLayout() {
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: Accent,
-        tabBarInactiveTintColor: colors.textSecondary,
-        tabBarStyle: { backgroundColor: colors.background },
+        tabBarInactiveTintColor: Colors.textSecondary,
+        // A subtle oxblood-tinted pill behind the active tab — the closest
+        // equivalent to an "active state glow" the tab bar component allows.
+        // "22" is a hex alpha suffix (~13% opacity) on the brand oxblood.
+        tabBarActiveBackgroundColor: `${Colors.oxblood}22`,
+        tabBarStyle: { backgroundColor: Colors.background, borderTopColor: Colors.backgroundElement },
+        tabBarItemStyle: { borderRadius: 12, marginHorizontal: 4, marginVertical: 4 },
       }}>
       <Tabs.Screen name="index" options={{ title: 'Home' }} />
       <Tabs.Screen name="training" options={{ title: 'Training' }} />

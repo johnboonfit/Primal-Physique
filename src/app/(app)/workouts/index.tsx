@@ -3,9 +3,10 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listWorkouts, type WorkoutSummary } from '@/lib/workouts';
 
@@ -53,6 +54,8 @@ export default function WorkoutsListScreen() {
           </Pressable>
         </ThemedView>
 
+        {!loading && !error && <HeroStat value={workouts.length} label="Workouts Created" />}
+
         {loading && <ActivityIndicator style={styles.loader} />}
 
         {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
@@ -97,13 +100,14 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.three,
   },
   newButton: {
+    ...Glow.oxblood,
     backgroundColor: Accent,
     borderRadius: Spacing.two,
     paddingVertical: Spacing.two,
     paddingHorizontal: Spacing.three,
   },
   newButtonText: {
-    color: '#ffffff',
+    color: Colors.text,
   },
   loader: {
     marginTop: Spacing.five,

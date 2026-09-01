@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { createWorkout } from '@/lib/workouts';
@@ -130,7 +130,7 @@ export default function NewWorkoutScreen() {
             onPress={handleSave}
             disabled={saving}>
             {saving ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={Colors.text} />
             ) : (
               <ThemedText type="smallBold" style={styles.primaryButtonText}>
                 Save workout
@@ -197,6 +197,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   primaryButton: {
+    ...Glow.oxblood,
     backgroundColor: Accent,
     borderRadius: Spacing.two,
     paddingVertical: Spacing.three,
@@ -207,7 +208,7 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
   primaryButtonText: {
-    color: '#ffffff',
+    color: Colors.text,
   },
   cancelButton: {
     alignItems: 'center',

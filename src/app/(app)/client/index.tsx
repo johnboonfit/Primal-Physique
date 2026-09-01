@@ -3,9 +3,10 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
 
@@ -63,6 +64,8 @@ export default function ClientHomeScreen() {
               <ThemedText type="linkPrimary">Sign out</ThemedText>
             </Pressable>
           </View>
+
+          {!loading && !error && <HeroStat value={upNext.length} label="Workouts Up Next" />}
 
           <ThemedText type="smallBold" style={styles.sectionLabel}>
             Up Next
@@ -139,6 +142,7 @@ const styles = StyleSheet.create({
     gap: Spacing.half,
   },
   startButton: {
+    ...Glow.oxblood,
     backgroundColor: Accent,
     borderRadius: Spacing.two,
     paddingVertical: Spacing.two,
@@ -148,6 +152,6 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
   startButtonText: {
-    color: '#ffffff',
+    color: Colors.text,
   },
 });

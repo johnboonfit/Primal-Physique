@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { supabase } from '@/lib/supabase';
 
@@ -72,7 +72,7 @@ export default function LoginScreen() {
           onPress={handleLogin}
           disabled={loading}>
           {loading ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color={Colors.text} />
           ) : (
             <ThemedText type="smallBold" style={styles.primaryButtonText}>
               Log in
@@ -117,6 +117,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   primaryButton: {
+    ...Glow.oxblood,
     backgroundColor: Accent,
     borderRadius: Spacing.two,
     paddingVertical: Spacing.three,
@@ -127,7 +128,7 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
   primaryButtonText: {
-    color: '#ffffff',
+    color: Colors.text,
   },
   linkButton: {
     alignSelf: 'center',

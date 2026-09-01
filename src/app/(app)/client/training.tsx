@@ -3,9 +3,10 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
 
@@ -44,6 +45,8 @@ export default function ClientTrainingScreen() {
         <ThemedText type="title" style={styles.title}>
           Training
         </ThemedText>
+
+        {!loading && !error && <HeroStat value={assignments.length} label="Workouts Assigned" />}
 
         {loading && <ActivityIndicator style={styles.loader} />}
 
@@ -111,6 +114,6 @@ const styles = StyleSheet.create({
     gap: Spacing.half,
   },
   statusCompleted: {
-    color: Accent,
+    color: Colors.tealBright,
   },
 });

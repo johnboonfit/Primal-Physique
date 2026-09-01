@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Spacing } from '@/constants/theme';
 import { getCoachAssignmentDetail, type CoachAssignmentDetail } from '@/lib/assignments';
 
 export default function CoachAssignmentDetailScreen() {
@@ -104,7 +104,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.two,
   },
   statusCompleted: {
-    color: Accent,
+    color: Colors.tealBright,
   },
   pendingNote: {
     marginBottom: Spacing.two,

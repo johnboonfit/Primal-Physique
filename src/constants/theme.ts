@@ -1,6 +1,14 @@
 /**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
+ * Primal Physique's single brand theme — elite, dark, results-driven.
+ * This app no longer adapts to the device's light/dark setting; it always
+ * renders this one look. Every color used anywhere in the app should come
+ * from this file — nothing hardcoded per-screen.
+ *
+ * Color roles (don't mix these up):
+ *   - oxblood   → buttons and active/selected states ONLY. Never decoration.
+ *   - tealDeep  → surfaces for data/stat elements (hero-number cards).
+ *   - tealBright → small accents only (status labels, thin highlight bars).
+ *                  Never a large fill, never on CTA buttons, never body text.
  */
 
 import '@/global.css';
@@ -8,26 +16,42 @@ import '@/global.css';
 import { Platform } from 'react-native';
 
 export const Colors = {
-  light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
-  },
-  dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
-  },
+  background: '#0A0A0A', // carbon black
+  backgroundElement: '#151515', // quiet card surface for ordinary list rows
+  backgroundSelected: '#262626', // input borders, unselected control backgrounds
+  text: '#F5F3EF', // bone white
+  textSecondary: '#8C8A85', // dimmed bone white for secondary/meta text
+  oxblood: '#6B0F1A', // primary accent — buttons + active/selected states only
+  tealDeep: '#0F3D3E', // secondary accent — stat/data card surfaces
+  tealDeepLight: '#1A4D4E', // upper end of the deep-teal range
+  tealBright: '#2E8B8B', // highlight accent — small accents only, never a fill
 } as const;
 
-export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
+export type ThemeColor = keyof typeof Colors;
 
-/** Primal Physique brand red — used for primary actions and selected states. */
-export const Accent = '#E1131C';
+/** Primary accent — buttons and active/selected states only. */
+export const Accent = Colors.oxblood;
+
+/**
+ * Soft ambient glow, applied via a container's style prop. Deliberately
+ * subtle: readable text always wins over the glow.
+ */
+export const Glow = {
+  teal: {
+    shadowColor: Colors.tealBright,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.35,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+  oxblood: {
+    shadowColor: Colors.oxblood,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    elevation: 8,
+  },
+} as const;
 
 export const Fonts = Platform.select({
   ios: {

@@ -1,14 +1,11 @@
-/**
- * Learn more about light and dark modes:
- * https://docs.expo.dev/guides/color-schemes/
- */
-
 import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 
+/**
+ * Primal Physique has one fixed brand theme — it doesn't follow the
+ * device's light/dark setting. This hook just hands back that palette;
+ * kept as a hook (rather than importing Colors directly) so screens don't
+ * need to change if that ever becomes theme-able again.
+ */
 export function useTheme() {
-  const scheme = useColorScheme();
-  const theme = scheme === 'unspecified' ? 'light' : scheme;
-
-  return Colors[theme];
+  return Colors;
 }

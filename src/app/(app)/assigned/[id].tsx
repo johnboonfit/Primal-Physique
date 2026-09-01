@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { getAssignmentDetail, logWorkout, type AssignmentDetail } from '@/lib/assignments';
@@ -118,7 +118,13 @@ export default function AssignedWorkoutDetailScreen() {
                 {detail.workoutName}
               </ThemedText>
               <ThemedText themeColor="textSecondary" style={styles.date}>
-                {detail.assignedDate} · {detail.status === 'completed' ? 'Completed' : 'Pending'}
+                {detail.assignedDate} ·{' '}
+                <ThemedText
+                  type="smallBold"
+                  themeColor={detail.status === 'completed' ? undefined : 'textSecondary'}
+                  style={detail.status === 'completed' ? styles.statusCompleted : undefined}>
+                  {detail.status === 'completed' ? 'Completed' : 'Pending'}
+                </ThemedText>
               </ThemedText>
 
               {detail.exercises.length === 0 && (
@@ -177,7 +183,7 @@ export default function AssignedWorkoutDetailScreen() {
                   onPress={handleMarkComplete}
                   disabled={saving}>
                   {saving ? (
-                    <ActivityIndicator color="#fff" />
+                    <ActivityIndicator color={Colors.text} />
                   ) : (
                     <ThemedText type="smallBold" style={styles.primaryButtonText}>
                       Mark Complete
@@ -208,6 +214,9 @@ const styles = StyleSheet.create({
   },
   date: {
     marginBottom: Spacing.two,
+  },
+  statusCompleted: {
+    color: Colors.tealBright,
   },
   loader: {
     marginTop: Spacing.five,
@@ -243,6 +252,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   primaryButton: {
+    ...Glow.oxblood,
     backgroundColor: Accent,
     borderRadius: Spacing.two,
     paddingVertical: Spacing.three,
@@ -254,6 +264,6 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
   primaryButtonText: {
-    color: '#ffffff',
+    color: Colors.text,
   },
 });

@@ -3,9 +3,10 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listAssignments, type AssignmentSummary } from '@/lib/assignments';
 
@@ -49,6 +50,8 @@ export default function AssignmentsListScreen() {
             </ThemedText>
           </Pressable>
         </ThemedView>
+
+        {!loading && !error && <HeroStat value={assignments.length} label="Assignments Made" />}
 
         {loading && <ActivityIndicator style={styles.loader} />}
 
@@ -102,13 +105,14 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.three,
   },
   newButton: {
+    ...Glow.oxblood,
     backgroundColor: Accent,
     borderRadius: Spacing.two,
     paddingVertical: Spacing.two,
     paddingHorizontal: Spacing.three,
   },
   newButtonText: {
-    color: '#ffffff',
+    color: Colors.text,
   },
   loader: {
     marginTop: Spacing.five,
@@ -132,7 +136,7 @@ const styles = StyleSheet.create({
     gap: Spacing.half,
   },
   statusCompleted: {
-    color: Accent,
+    color: Colors.tealBright,
   },
   backButton: {
     alignItems: 'center',
