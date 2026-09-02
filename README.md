@@ -761,6 +761,73 @@ Run `supabase/weight-trend.sql` in the SQL Editor after `food-log-quantity.sql` 
 6. Update today's weight a second time through the app (change the number, save again) — confirm `weight_trend` recomputes from yesterday's trend again, not from the first save's already-updated value (i.e. it doesn't drift further each time you re-save the same day).
 7. Open the Progress tab as that client — confirm the chart shows both lines, the teal one visibly noisier than the smooth red one, and that the gap day doesn't break the line or show as a flat plateau — it should just connect straight across.
 
+## Estimated TDEE
+
+Run `supabase/tdee-estimates.sql` in the SQL Editor after `weight-trend.sql`.
+
+**The problem this solves:** "how many calories does this client actually burn a day?" can't be looked up — it has to be inferred from what actually happened to their weight while eating a known amount. This chunk calculates that inference (Adaptive TDEE) and stores it. It does **not** yet check whether there's enough logged data in a given window to trust the number — that check is a deliberate follow-up chunk. For now, it always calculates and stores an estimate.
+
+**Units:** `weight_logs`/`weight_trend` are tracked in **kilograms**. The formula's `7700` constant is the kcal-per-kg-of-bodyweight figure, so no conversion is needed — `weight_change_kg` is read directly from the stored trend values.
+
+**The formula, over a trailing 14-day window ending on the day it's calculated:**
+
+- `avg_daily_intake` — average of `food_logs.calories`, summed per day and divided only by the number of *days that actually have a food log entry* in the window (a day with nothing logged doesn't count as a 0-calorie day and doesn't count toward the denominator).
+- `weight_change_kg` — the smoothed `weight_trend` on the **last** day of the window minus the smoothed `weight_trend` on the **first** day of the window (raw `weight` is never used here — only the trend).
+- `implied_daily_balance` — `(weight_change_kg × 7700) ÷ 14`. Negative means the client was in a deficit (lost weight); positive means a surplus.
+- `estimated_TDEE` — `avg_daily_intake − implied_daily_balance`. Losing weight while eating X kcal means TDEE must be *above* X (a deficit only happens if you burn more than you eat), which is exactly what subtracting a negative balance produces.
+
+**Hand-worked example (confirmed correct before writing any code):** a client's smoothed trend goes from 95.30 kg down to 93.95 kg over 14 days (a real 1.35 kg loss, not a single noisy reading), while logging food on 12 of the 14 days averaging exactly 2000 kcal/day.
+
+- `weight_change_kg` = 93.95 − 95.30 = **−1.35**
+- `implied_daily_balance` = (−1.35 × 7700) ÷ 14 = **−742.5** (a real deficit)
+- `estimated_TDEE` = 2000 − (−742.5) = **2742.5 kcal/day**
+
+That passes the sanity check the formula has to pass: losing weight on ~2000 kcal/day means this client burns well above 2000 kcal/day, not below it — 2742.5 is exactly that.
+
+**Where it's computed:** `calculateAndSaveTdee()` in `src/lib/tdee.ts` runs automatically right after `saveWeightLog()` succeeds on the Progress tab — the same moment `weight_trend` itself gets refreshed, since a fresh trend value is exactly what a fresh TDEE estimate needs. It pulls the trailing 14 calendar days of `food_logs` and `weight_logs` for that client, and upserts one row per `(client_id, calculated_date)` into `tdee_estimates` — saving today's weight a second time recalculates and overwrites today's estimate rather than creating a duplicate. There's no new screen for this yet; the number is stored, not yet displayed anywhere.
+
+**Verify the stored value matches the hand calculation:**
+
+1. Pick a test client and insert a 14-day run of backdated `weight_logs` and `food_logs` rows reproducing the hand-worked example above (adjust dates to whatever's recent):
+   ```sql
+   insert into weight_logs (client_id, log_date, weight) values
+     ('PASTE_CLIENT_ID', current_date - 13, 95.3),
+     ('PASTE_CLIENT_ID', current_date - 12, 95.0),
+     ('PASTE_CLIENT_ID', current_date - 11, 95.3),
+     ('PASTE_CLIENT_ID', current_date - 10, 94.7),
+     ('PASTE_CLIENT_ID', current_date - 9, 94.8),
+     ('PASTE_CLIENT_ID', current_date - 8, 94.3),
+     ('PASTE_CLIENT_ID', current_date - 7, 94.1),
+     ('PASTE_CLIENT_ID', current_date - 6, 94.4),
+     ('PASTE_CLIENT_ID', current_date - 5, 93.9),
+     ('PASTE_CLIENT_ID', current_date - 4, 93.7),
+     ('PASTE_CLIENT_ID', current_date - 3, 94.0),
+     ('PASTE_CLIENT_ID', current_date - 2, 93.4),
+     ('PASTE_CLIENT_ID', current_date - 1, 93.2),
+     ('PASTE_CLIENT_ID', current_date, 93.0)
+   on conflict (client_id, log_date) do nothing;
+
+   insert into food_logs (client_id, log_date, meal, food_name, calories) values
+     ('PASTE_CLIENT_ID', current_date - 13, 'breakfast', 'Test meal', 1980),
+     ('PASTE_CLIENT_ID', current_date - 12, 'breakfast', 'Test meal', 2020),
+     ('PASTE_CLIENT_ID', current_date - 11, 'breakfast', 'Test meal', 1950),
+     ('PASTE_CLIENT_ID', current_date - 10, 'breakfast', 'Test meal', 2050),
+     -- current_date - 9 deliberately skipped (no food logged that day)
+     ('PASTE_CLIENT_ID', current_date - 8, 'breakfast', 'Test meal', 2000),
+     ('PASTE_CLIENT_ID', current_date - 7, 'breakfast', 'Test meal', 1990),
+     ('PASTE_CLIENT_ID', current_date - 6, 'breakfast', 'Test meal', 2010),
+     ('PASTE_CLIENT_ID', current_date - 5, 'breakfast', 'Test meal', 1970),
+     -- current_date - 4 deliberately skipped (no food logged that day)
+     ('PASTE_CLIENT_ID', current_date - 3, 'breakfast', 'Test meal', 2030),
+     ('PASTE_CLIENT_ID', current_date - 2, 'breakfast', 'Test meal', 1960),
+     ('PASTE_CLIENT_ID', current_date - 1, 'breakfast', 'Test meal', 2040),
+     ('PASTE_CLIENT_ID', current_date, 'breakfast', 'Test meal', 2000);
+   ```
+2. Re-run `weight-trend.sql`'s backfill so these new rows get a `weight_trend` computed (it's idempotent, safe to re-run).
+3. Log in as that client, open the Progress tab, and save today's weight as **93.0** again (same value — this just re-triggers the calculation without changing the trend history you just inserted).
+4. In the SQL Editor: `select * from tdee_estimates where client_id = 'PASTE_CLIENT_ID' order by calculated_date desc limit 1;`
+5. Confirm `avg_daily_intake` = **2000**, `weight_change_kg` ≈ **-1.35**, `implied_daily_balance` ≈ **-742.5**, and `estimated_tdee` ≈ **2742.5** — matching the hand-worked numbers above.
+
 ## Project structure reference
 
 ```
@@ -824,6 +891,7 @@ src/
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
     weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend) / listWeightLogs() database calls
+    tdee.ts                   # calculateAndSaveTdee() — 14-day rolling Adaptive TDEE estimate, stored, not yet displayed
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
@@ -850,4 +918,5 @@ supabase/
   food-log-macros.sql                                 # paste in after link-exercise-library.sql, adds protein/carbs/fat to food_logs
   food-log-quantity.sql                                 # adds quantity_grams to food_logs (order vs. other food_logs files doesn't matter)
   weight-trend.sql                                        # adds weight_logs.weight_trend + one-time backfill of existing rows
+  tdee-estimates.sql                                        # paste in after weight-trend.sql, adds tdee_estimates
 ```
