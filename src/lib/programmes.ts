@@ -125,7 +125,11 @@ export async function createProgramme(coachId: string, draft: ProgrammeDraft): P
 }
 
 /** Templates only — a programme with client_id set is a client's own
- * assigned instance, not something to offer for reuse or duplication. */
+ * assigned instance, not something to offer for reuse or duplication.
+ * Archived templates are excluded too — this is the exact "pick a
+ * template to duplicate or assign" list, so an archived one has no
+ * business showing up here even though its row (and any client copies
+ * already made from it) are untouched. */
 export async function listProgrammes(coachId: string): Promise<ProgrammeSummary[]> {
   const { data, error } = await supabase
     .from('programme_blocks')
@@ -134,6 +138,7 @@ export async function listProgrammes(coachId: string): Promise<ProgrammeSummary[
     )
     .eq('coach_id', coachId)
     .is('client_id', null)
+    .eq('archived', false)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -254,6 +259,16 @@ export async function addProgrammeWeek(programmeId: string, weekNumber: number):
  * the coach can tell the copy apart from the original. */
 export async function updateProgrammeName(programmeId: string, name: string) {
   const { error } = await supabase.from('programme_blocks').update({ name }).eq('id', programmeId);
+  if (error) throw error;
+}
+
+/** Archiving, not deleting — programme_weeks, and the workouts/exercises
+ * underneath them, cascade off this row, and any client already assigned
+ * this template has their own fully independent copy that's untouched
+ * either way. See archive-content.sql for why this is a flag, not a
+ * delete. */
+export async function archiveProgramme(programmeId: string) {
+  const { error } = await supabase.from('programme_blocks').update({ archived: true }).eq('id', programmeId);
   if (error) throw error;
 }
 

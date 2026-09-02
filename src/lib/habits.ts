@@ -16,6 +16,7 @@ export async function listCoachHabits(coachId: string): Promise<HabitOption[]> {
     .from('habits')
     .select('id, name, profiles!client_id(email)')
     .eq('coach_id', coachId)
+    .eq('archived', false)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -25,6 +26,13 @@ export async function listCoachHabits(coachId: string): Promise<HabitOption[]> {
     name: row.name as string,
     clientEmail: (row.profiles as unknown as { email: string } | null)?.email ?? 'Unknown client',
   }));
+}
+
+/** Archiving, not deleting — habit_logs reference this row and must
+ * survive untouched. See archive-content.sql for why. */
+export async function archiveHabit(habitId: string) {
+  const { error } = await supabase.from('habits').update({ archived: true }).eq('id', habitId);
+  if (error) throw error;
 }
 
 export async function createHabit(coachId: string, clientId: string, name: string) {
@@ -37,6 +45,7 @@ export async function listMyHabits(clientId: string): Promise<MyHabit[]> {
     .from('habits')
     .select('id, name')
     .eq('client_id', clientId)
+    .eq('archived', false)
     .order('created_at', { ascending: true });
 
   if (error) throw error;

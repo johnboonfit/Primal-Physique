@@ -59,6 +59,7 @@ export async function listWorkouts(coachId: string): Promise<WorkoutSummary[]> {
     .from('workouts')
     .select('id, name, created_at, workout_exercises(count)')
     .eq('coach_id', coachId)
+    .eq('archived', false)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -69,6 +70,14 @@ export async function listWorkouts(coachId: string): Promise<WorkoutSummary[]> {
     createdAt: row.created_at as string,
     exerciseCount: (row.workout_exercises as { count: number }[] | null)?.[0]?.count ?? 0,
   }));
+}
+
+/** Archiving, not deleting — assignments and workout_logs reference this
+ * row (directly, and via workout_exercises) and must survive untouched.
+ * See archive-content.sql for why. */
+export async function archiveWorkout(workoutId: string) {
+  const { error } = await supabase.from('workouts').update({ archived: true }).eq('id', workoutId);
+  if (error) throw error;
 }
 
 /** Sessions that belong to one specific week of a programme, in the

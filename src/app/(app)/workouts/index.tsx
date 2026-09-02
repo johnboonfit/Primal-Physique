@@ -1,14 +1,15 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { listWorkouts, type WorkoutSummary } from '@/lib/workouts';
+import { archiveWorkout, listWorkouts, type WorkoutSummary } from '@/lib/workouts';
 
 export default function WorkoutsListScreen() {
   const { session } = useAuth();
@@ -16,31 +17,42 @@ export default function WorkoutsListScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [archiveTarget, setArchiveTarget] = useState<WorkoutSummary | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    if (!session) return;
+    setLoading(true);
+    listWorkouts(session.user.id)
+      .then((data) => setWorkouts(data))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load workouts.'))
+      .finally(() => setLoading(false));
+  }, [session]);
+
   // Refetch every time this screen comes into focus (not just on first
   // mount), so a workout you just saved shows up immediately when you
   // navigate back to this list.
   useFocusEffect(
     useCallback(() => {
-      if (!session) return;
-      let cancelled = false;
-
-      setLoading(true);
-      listWorkouts(session.user.id)
-        .then((data) => {
-          if (!cancelled) setWorkouts(data);
-        })
-        .catch((err) => {
-          if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load workouts.');
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-
-      return () => {
-        cancelled = true;
-      };
-    }, [session])
+      load();
+    }, [load])
   );
+
+  const handleConfirmArchive = async () => {
+    if (!archiveTarget) return;
+    setArchiveError(null);
+    setArchiving(true);
+    try {
+      await archiveWorkout(archiveTarget.id);
+      setArchiveTarget(null);
+      load();
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : 'Failed to archive that workout.');
+    } finally {
+      setArchiving(false);
+    }
+  };
 
   return (
     <ThemedView style={styles.container}>
@@ -60,6 +72,8 @@ export default function WorkoutsListScreen() {
 
         {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
+        {archiveError && <ThemedText style={styles.error}>{archiveError}</ThemedText>}
+
         {!loading && !error && workouts.length === 0 && (
           <ThemedText themeColor="textSecondary" style={styles.empty}>
             No workouts yet. Tap + New to create your first one.
@@ -77,6 +91,13 @@ export default function WorkoutsListScreen() {
                 <ThemedText type="small" themeColor="textSecondary">
                   {item.exerciseCount} exercise{item.exerciseCount === 1 ? '' : 's'}
                 </ThemedText>
+                <View style={styles.cardActions}>
+                  <Pressable onPress={() => setArchiveTarget(item)}>
+                    <ThemedText type="small" style={styles.archiveText}>
+                      Archive
+                    </ThemedText>
+                  </Pressable>
+                </View>
               </ThemedView>
             )}
           />
@@ -86,6 +107,20 @@ export default function WorkoutsListScreen() {
           <ThemedText type="linkPrimary">Back to home</ThemedText>
         </Pressable>
       </SafeAreaView>
+
+      <ConfirmDialog
+        visible={archiveTarget !== null}
+        title="Archive this workout?"
+        message={
+          archiveTarget
+            ? `"${archiveTarget.name}" will disappear from My Workouts and from the workout picker when assigning something new. Every existing assignment and logged set for it stays exactly as it is.`
+            : ''
+        }
+        confirmLabel="Archive"
+        busy={archiving}
+        onConfirm={handleConfirmArchive}
+        onCancel={() => setArchiveTarget(null)}
+      />
     </ThemedView>
   );
 }
@@ -129,6 +164,13 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.half,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  archiveText: {
+    color: Colors.textSecondary,
   },
   backButton: {
     alignItems: 'center',

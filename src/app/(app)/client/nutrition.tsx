@@ -21,6 +21,7 @@ import {
 } from '@/lib/food-logs';
 import { getProductByBarcode, type FoodSearchResult } from '@/lib/open-food-facts';
 import { GOAL_TYPES } from '@/lib/programmes';
+import { addDays } from '@/lib/time-ranges';
 import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
 import { searchFoods } from '@/lib/usda-fooddata';
 import { awardMealXp } from '@/lib/xp';
@@ -43,8 +44,17 @@ function todayISODate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function todayDisplayDate() {
-  return new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+/** `timeZone: 'UTC'` matches how the calendar formats its own ISO dates
+ * (see session-calendar.tsx) — logDate is always a UTC calendar date, so
+ * formatting it in the device's local zone could shift it a day either
+ * way right around midnight. */
+function formatDisplayDate(isoDate: string) {
+  return new Date(`${isoDate}T00:00:00.000Z`).toLocaleDateString(undefined, {
+    timeZone: 'UTC',
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+  });
 }
 
 function round(value: number) {
@@ -81,7 +91,8 @@ function macroSummary(entry: {
 export default function NutritionScreen() {
   const theme = useTheme();
   const { session } = useAuth();
-  const logDate = todayISODate();
+  const [logDate, setLogDate] = useState(todayISODate());
+  const isToday = logDate === todayISODate();
 
   const [entries, setEntries] = useState<FoodLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -181,6 +192,11 @@ export default function NutritionScreen() {
 
   const parsedQuantity = Number(quantityInput);
   const hasValidQuantity = quantityInput.trim().length > 0 && !Number.isNaN(parsedQuantity) && parsedQuantity > 0;
+
+  const handlePrevDay = () => setLogDate((current) => addDays(current, -1));
+  // No future days — there's nothing to browse ahead of today, and this
+  // is a log of what's already been eaten, not a meal planner.
+  const handleNextDay = () => setLogDate((current) => (current < todayISODate() ? addDays(current, 1) : current));
 
   const openAddEntry = (meal: Meal) => {
     setActiveMeal(meal);
@@ -308,9 +324,26 @@ export default function NutritionScreen() {
           <ThemedText type="title" style={styles.title}>
             Nutrition
           </ThemedText>
-          <ThemedText themeColor="textSecondary" style={styles.date}>
-            {todayDisplayDate()}
-          </ThemedText>
+
+          <View style={styles.dateNavRow}>
+            <Pressable onPress={handlePrevDay} style={styles.dateNavButton} hitSlop={8}>
+              <ThemedText type="smallBold" style={styles.dateNavButtonText}>
+                ‹
+              </ThemedText>
+            </Pressable>
+            <View style={styles.dateNavLabelWrap}>
+              <ThemedText themeColor="textSecondary" style={styles.date}>
+                {isToday ? 'Today' : formatDisplayDate(logDate)}
+              </ThemedText>
+            </View>
+            <Pressable onPress={handleNextDay} style={styles.dateNavButton} disabled={isToday} hitSlop={8}>
+              <ThemedText
+                type="smallBold"
+                style={[styles.dateNavButtonText, isToday && styles.dateNavButtonTextDisabled]}>
+                ›
+              </ThemedText>
+            </Pressable>
+          </View>
 
           {loading && <ActivityIndicator style={styles.loader} />}
           {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
@@ -558,7 +591,27 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.half,
   },
   date: {
+    textAlign: 'center',
+  },
+  dateNavRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: Spacing.two,
+  },
+  dateNavButton: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+  },
+  dateNavButtonText: {
+    fontSize: 24,
+  },
+  dateNavButtonTextDisabled: {
+    opacity: 0.3,
+  },
+  dateNavLabelWrap: {
+    flex: 1,
+    alignItems: 'center',
   },
   loader: {
     marginTop: Spacing.five,

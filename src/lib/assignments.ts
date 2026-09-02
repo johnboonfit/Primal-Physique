@@ -97,6 +97,7 @@ export async function listCoachWorkoutOptions(coachId: string): Promise<WorkoutO
     .from('workouts')
     .select('id, name')
     .eq('coach_id', coachId)
+    .eq('archived', false)
     .order('name');
 
   if (error) throw error;

@@ -1,14 +1,15 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { listCoachHabits, type HabitOption } from '@/lib/habits';
+import { archiveHabit, listCoachHabits, type HabitOption } from '@/lib/habits';
 
 export default function HabitsListScreen() {
   const { session } = useAuth();
@@ -16,28 +17,39 @@ export default function HabitsListScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [archiveTarget, setArchiveTarget] = useState<HabitOption | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    if (!session) return;
+    setLoading(true);
+    listCoachHabits(session.user.id)
+      .then((data) => setHabits(data))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load habits.'))
+      .finally(() => setLoading(false));
+  }, [session]);
+
   useFocusEffect(
     useCallback(() => {
-      if (!session) return;
-      let cancelled = false;
-
-      setLoading(true);
-      listCoachHabits(session.user.id)
-        .then((data) => {
-          if (!cancelled) setHabits(data);
-        })
-        .catch((err) => {
-          if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load habits.');
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-
-      return () => {
-        cancelled = true;
-      };
-    }, [session])
+      load();
+    }, [load])
   );
+
+  const handleConfirmArchive = async () => {
+    if (!archiveTarget) return;
+    setArchiveError(null);
+    setArchiving(true);
+    try {
+      await archiveHabit(archiveTarget.id);
+      setArchiveTarget(null);
+      load();
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : 'Failed to archive that habit.');
+    } finally {
+      setArchiving(false);
+    }
+  };
 
   return (
     <ThemedView style={styles.container}>
@@ -57,6 +69,8 @@ export default function HabitsListScreen() {
 
         {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
+        {archiveError && <ThemedText style={styles.error}>{archiveError}</ThemedText>}
+
         {!loading && !error && habits.length === 0 && (
           <ThemedText themeColor="textSecondary" style={styles.empty}>
             No habits yet. Tap + New to add one for a client.
@@ -74,6 +88,13 @@ export default function HabitsListScreen() {
                 <ThemedText type="small" themeColor="textSecondary">
                   {item.clientEmail}
                 </ThemedText>
+                <View style={styles.cardActions}>
+                  <Pressable onPress={() => setArchiveTarget(item)}>
+                    <ThemedText type="small" style={styles.archiveText}>
+                      Archive
+                    </ThemedText>
+                  </Pressable>
+                </View>
               </ThemedView>
             )}
           />
@@ -83,6 +104,20 @@ export default function HabitsListScreen() {
           <ThemedText type="linkPrimary">Back to home</ThemedText>
         </Pressable>
       </SafeAreaView>
+
+      <ConfirmDialog
+        visible={archiveTarget !== null}
+        title="Archive this habit?"
+        message={
+          archiveTarget
+            ? `"${archiveTarget.name}" will disappear from ${archiveTarget.clientEmail}'s daily checklist and from this list. Everything they've already logged for it stays exactly as it is.`
+            : ''
+        }
+        confirmLabel="Archive"
+        busy={archiving}
+        onConfirm={handleConfirmArchive}
+        onCancel={() => setArchiveTarget(null)}
+      />
     </ThemedView>
   );
 }
@@ -126,6 +161,13 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.half,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  archiveText: {
+    color: Colors.textSecondary,
   },
   backButton: {
     alignItems: 'center',

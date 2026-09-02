@@ -3,12 +3,13 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { duplicateProgramme, GOAL_TYPES, listProgrammes, type ProgrammeSummary } from '@/lib/programmes';
+import { archiveProgramme, duplicateProgramme, GOAL_TYPES, listProgrammes, type ProgrammeSummary } from '@/lib/programmes';
 
 function goalLabel(goalType: ProgrammeSummary['goalType']) {
   return GOAL_TYPES.find((g) => g.key === goalType)?.label ?? goalType;
@@ -21,6 +22,10 @@ export default function ProgrammesListScreen() {
   const [error, setError] = useState<string | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
+
+  const [archiveTarget, setArchiveTarget] = useState<ProgrammeSummary | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     if (!session) return;
@@ -54,6 +59,21 @@ export default function ProgrammesListScreen() {
     }
   };
 
+  const handleConfirmArchive = async () => {
+    if (!archiveTarget) return;
+    setArchiveError(null);
+    setArchiving(true);
+    try {
+      await archiveProgramme(archiveTarget.id);
+      setArchiveTarget(null);
+      load();
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : 'Failed to archive that template.');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -76,6 +96,8 @@ export default function ProgrammesListScreen() {
         {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
         {duplicateError && <ThemedText style={styles.error}>{duplicateError}</ThemedText>}
+
+        {archiveError && <ThemedText style={styles.error}>{archiveError}</ThemedText>}
 
         {!loading && !error && programmes.length === 0 && (
           <ThemedText themeColor="textSecondary" style={styles.empty}>
@@ -108,6 +130,11 @@ export default function ProgrammesListScreen() {
                       <ThemedText type="linkPrimary">Duplicate</ThemedText>
                     )}
                   </Pressable>
+                  <Pressable onPress={() => setArchiveTarget(item)}>
+                    <ThemedText type="small" style={styles.archiveText}>
+                      Archive
+                    </ThemedText>
+                  </Pressable>
                 </View>
               </ThemedView>
             )}
@@ -118,6 +145,20 @@ export default function ProgrammesListScreen() {
           <ThemedText type="linkPrimary">Back to home</ThemedText>
         </Pressable>
       </SafeAreaView>
+
+      <ConfirmDialog
+        visible={archiveTarget !== null}
+        title="Archive this template?"
+        message={
+          archiveTarget
+            ? `"${archiveTarget.name}" will disappear from the Template Library and from the assign-a-programme picker. Any client already assigned this programme has their own independent copy, and it's untouched either way.`
+            : ''
+        }
+        confirmLabel="Archive"
+        busy={archiving}
+        onConfirm={handleConfirmArchive}
+        onCancel={() => setArchiveTarget(null)}
+      />
     </ThemedView>
   );
 }
@@ -169,6 +210,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: Spacing.three,
+  },
+  archiveText: {
+    color: Colors.textSecondary,
   },
   backButton: {
     alignItems: 'center',

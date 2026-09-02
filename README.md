@@ -1122,6 +1122,35 @@ Every one of those `if (loadingProfile) return null` guards took that as its cue
 2. Log in as a coach, drill into something nested (e.g. Clients → a specific client, or Programme Builder for one client's assigned programme), background and return the same way — confirm you're still on that exact screen, not bounced back to the Clients or Programme Builder list.
 3. To see the actual mechanism rather than just the symptom: temporarily add a `console.log('profile fetch', userId)` inside `AuthProvider`'s effect, background/resume a few times, and confirm it does **not** log again on resume (only once, at login) — proving the fetch that used to repeat on every resume no longer does.
 
+## Archiving habits, workouts, and programmes — and why it's not a delete
+
+**Why archiving, not deleting:** every one of these three tables is something other tables build on top of. A habit has `habit_logs` pointing at it (every day a client checked it off). A workout has `workout_exercises` underneath it and `assignments` pointing at it, and `workout_logs` cascades again off both of those. A programme template has `programme_weeks` underneath it, with a fresh set of `workouts`/`workout_exercises` under each week. In Postgres terms, every one of those child tables is declared `on delete cascade` — which means an actual `delete` on a habit, workout, or programme wouldn't just remove that one row, it would silently wipe out every log, every completed assignment, every set a client ever recorded against it. A coach tidying up their list by deleting an old workout would, without any warning, erase that client's entire logged history for it. Archiving avoids that outright: it's a plain `archived boolean` column (new file, `supabase/archive-content.sql`), defaulting to `false`. Archiving something just flips it to `true` — the row, and everything built on top of it, stays exactly where it was.
+
+**What "disappears from active lists" actually means:** `archived` is checked only in the handful of queries that are genuinely a "pick something to use" list — the coach's Habits list, My Workouts, the Template Library, the workout picker in New Assignment, and the client's own daily habit checklist. Nowhere else reads it: a client's Training tab, Calendar, and workout-log history all keep showing exactly what they already showed, because those screens read `assignments`/`workout_logs`/`habit_logs` directly, never the `archived` flag. Assigning a programme template to a client makes a fully independent copy of it (this was already true before this chunk, from the Duplicate/Assign work) — so archiving the original template afterwards has zero effect on any client who's already been assigned it; their copy is a completely separate row.
+
+**The confirmation prompt is a real modal, not `Alert.alert`.** This app ships to web as well as native, and react-native-web's `Alert.alert` is a no-op stub — calling it on the web build would do nothing at all, no dialog, no way to confirm or cancel. So the "Archive?" prompt (`src/components/confirm-dialog.tsx`) is a real `Modal`, the same approach the food-log-entry modal on the client's Nutrition tab already uses — it renders identically on every platform this app runs on. One shared component, used from all three admin lists (Habits, My Workouts, Template Library), each just supplying its own title/message.
+
+**Verify archiving genuinely preserves history:**
+1. Pick a client with some logged history — e.g. a completed assignment with logged weight/reps, or a habit with a few days checked off.
+2. As the coach, archive the workout (or habit) behind that history from its admin list — confirm it disappears from that list, and from the New Assignment / assign-a-programme picker.
+3. As the client, open Training (or Calendar, or Home's habit checklist history) — confirm the already-completed assignment or habit-log day still shows its real logged numbers, unchanged. Nothing reads as blank, missing, or "unknown."
+4. Open the coach's own assignment detail screen for that same completed assignment — confirm the workout name and exercises still display correctly, even though the workout itself is now archived.
+5. For programmes specifically: archive a template that's already been assigned to a client — confirm that client's own Programme Builder/Calendar/Training view is completely unaffected (their copy is a separate row from the template you just archived).
+6. Tap Archive, then tap Cancel in the confirmation dialog — confirm nothing changes and the item is still in its list; only confirming actually archives it.
+
+## Date navigator on the client's Nutrition tab, and confirming the coach's already supports it
+
+**Client side:** the Nutrition tab's date line (previously a fixed "today," recomputed every render) is now a small state value (`logDate`), with `‹`/`›` arrows on either side — the same nav-row pattern the Calendar already established (`session-calendar.tsx`'s `navRow`/`navButton`), and the same `addDays(isoDate, days)` helper already shared by the Progress tab's time-range filters (`src/lib/time-ranges.ts`), rather than a third reimplementation of "add N days to an ISO date string." `‹` always works; `›` is disabled the moment you're back on today — there's nothing to browse ahead of today, since this is a log of what's already been eaten, not a meal planner. The label reads "Today" when you're there, or the full weekday/month/day for any earlier date.
+
+Nothing about *adding* an entry changes: the meal-entry modal still saves against whichever date is currently on screen (`logDate`), so it doubles as a natural way to log a forgotten meal for yesterday — consistent with how a missed workout can already be logged late elsewhere in this app.
+
+**Coach side:** checked the Nutrition panel on the coach's Clients → [client] detail page — it already pulls a full 14-day history (`listFoodLogHistory(id, 14)`) and renders every one of those days as its own card with its own totals and entries, not just today. It was never a "today only" view, so nothing needed extending here.
+
+**Verify:**
+1. As a client, log something today, then use `‹` to go back a day or two and log something for a past day too — confirm both stay associated with the correct date after navigating back to today.
+2. Confirm `›` is greyed out and does nothing while viewing today, and re-enables the moment you step back to any earlier day.
+3. As the coach, open that same client's Clients detail page — confirm both the "today" entry and the backdated one you just added both show up in the 14-day history list, on their correct dates.
+
 ## Project structure reference
 
 ```
@@ -1135,11 +1164,11 @@ src/
       home.tsx          # coach's home screen only; redirects clients to /client
       workouts/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of the coach's workouts
+        index.tsx        # list of the coach's workouts, with Archive (soft-delete — see archive-content.sql)
         new.tsx          # create-workout form (search-select exercises from the library); also reused for programme-week sessions
       programmes/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # Template Library — list of the coach's programmes, with Duplicate
+        index.tsx        # Template Library — list of the coach's programmes, with Duplicate and Archive
         new.tsx          # create-programme form — name, goal type, duration, cover image, training days
         [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week; Calorie target editor + embedded SessionCalendar for assigned (client) instances
         assign/[id].tsx     # pick a client + start date, assign a template to them — redirects straight to the new assigned programme, not the unrelated Assignments list
@@ -1154,7 +1183,7 @@ src/
         [id].tsx          # coach's view of one assignment — prescribed vs. actual
       habits/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of habits the coach has created
+        index.tsx        # list of habits the coach has created, with Archive
         new.tsx          # pick client + habit name, save
       clients/
         _layout.tsx      # coach-only guard for everything below
@@ -1166,7 +1195,7 @@ src/
         _layout.tsx      # client-only guard + the 5-tab bar
         index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
-        nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
+        nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
         calendar.tsx        # Calendar tab — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />
   components/
@@ -1181,14 +1210,15 @@ src/
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)
     measure-panel.tsx           # Progress → Measure sub-tab content (waist/chest/arms/thighs/hips/neck logging, per-type graph + history)
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
+    confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt used by all three archive actions
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
   context/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
     supabase.ts          # Supabase client, reads from .env
-    workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() database calls
-    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
+    workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() / archiveWorkout() database calls
+    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / archiveProgramme() / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
     clients.ts               # listClients() / getClient() — coach-facing client roster, single-coach app so any coach sees any client
@@ -1200,7 +1230,7 @@ src/
     time-ranges.ts              # TIME_RANGES / filterByRange() — shared 1W/1M/6M/1Y/All Time filtering logic
     progress-photos.ts            # uploadProgressPhoto() / listProgressPhotos() — private Storage bucket + signed URLs
     tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
-    habits.ts                 # coach + client habit + habit-log database calls
+    habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
