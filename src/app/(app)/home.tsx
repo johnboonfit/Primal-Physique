@@ -52,6 +52,10 @@ export default function HomeScreen() {
             <ThemedText type="linkPrimary">Template Library</ThemedText>
           </Link>
 
+          <Link href="/exercise-library" style={styles.linkSpacing}>
+            <ThemedText type="linkPrimary">Exercise Library</ThemedText>
+          </Link>
+
           <Link href="/assignments" style={styles.linkSpacing}>
             <ThemedText type="linkPrimary">Assignments</ThemedText>
           </Link>

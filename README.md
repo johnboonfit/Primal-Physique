@@ -553,6 +553,30 @@ Run `supabase/client-programme-view.sql` in the SQL Editor after `assign-program
 4. Streak: confirm today shows as an active day (🔥 shows at least 1), since a completed assignment is a completed assignment regardless of source.
 5. As a final cross-check, add one unrelated **standalone** assignment (via the coach's old Assignments → New flow, not a programme) for the same client, dated today, and mark it complete too — confirm Momentum Score and the streak both still read correctly with a mix of standalone and programme-sourced completions in the same day. That's the real proof there's no separate, parallel accounting happening anywhere.
 
+## Exercise Library (one-time data import)
+
+Run `supabase/exercise-library.sql` in the SQL Editor after `client-programme-view.sql`. **Read this whole section before running it** — it behaves differently from every other file in this folder, and there's a real gap in the source data worth knowing about before you look for something that isn't there.
+
+**What "one-time import" actually means here.** Every other `.sql` file in this project only ever contains schema and security rules — `create table`, `create policy`. This one *also* contains the actual exercise data, baked in as one big `insert` statement: 872 rows, generated once from a real dataset and pasted directly into the file. There's no code in the app that talks to GitHub, and no live connection to anything external — once you run this file, the data lives in your database exactly like anything else, and the app just reads it with a normal query. If the upstream dataset gets better data later, refreshing it would mean regenerating this file and running it again (safe to re-run — see below) — it would never involve the app fetching anything live.
+
+**Where the data came from.** The [exercemus/exercises](https://github.com/exercemus/exercises) project on GitHub aggregates two open exercise datasets: wger.de's (Creative Commons Attribution-ShareAlike — reuse requires crediting the source and sharing under the same license) and wrkout/exercises.json (public domain, no restrictions). I pulled the current snapshot (872 exercises), transformed it into SQL with a one-off script, and it's baked into this file. Every row carries an `attribution` value — the specific submitter/license when the dataset actually recorded one (rare — only 1 of 872 rows has that level of detail), and a general "aggregated by exercemus/exercises, combining wger.de (CC BY-SA) and wrkout (public domain)" credit otherwise. Given how CC-BY-SA works, crediting every row this way rather than guessing which license applies per-exercise is the safe default.
+
+**The real gap: no images.** The dataset's schema has an `images` field, and the exercemus project's own website does show exercise images — but the actual data file in the repository has that field empty for all 872 exercises; the images are generated separately for their site, not included in this data. So `image_url` is `NULL` on every row. The column exists and is ready for a URL the moment you have one (per exercise, added by hand, or a future proper image source) — but there was nothing genuine to import here, and I'd rather leave it honestly empty than put in a placeholder that looks like real data. `video_url` fared a little better — 24 of 872 exercises have a YouTube link — those did import.
+
+**What actually got imported, per exercise:** name, category (strength/stretching/plyometrics/etc.), a `muscle_group` (arms/back/calves/chest/core/legs/shoulders — derived at import time from the exercise's primary muscle, since the raw data only lists specific muscles like "lats" or "quads", not a coarse group), the full primary/secondary muscle lists, equipment needed, step-by-step instructions, and a description where the source had one (only 42 of 872 do — most don't, and that's fine, it's shown only when present).
+
+**The browse screen — Home → Exercise Library (coach only for now).** Search by name, filter by muscle group with the chip row, tap any result to expand it in place and see the full instructions and attribution without leaving the list. All 872 lightweight rows (name/group/category/equipment) are fetched once when the screen opens rather than re-queried per keystroke — instructions and the rest are only fetched the moment you actually expand a card, so the initial load stays small. This is a browsing tool only: nothing here assigns an exercise to a workout yet, and no app code ever writes to this table — that's next chunk.
+
+**Verify the import is correct and complete:**
+
+1. In Supabase's Table Editor, open `exercise_library` and check the row count reads **872**.
+2. Run `select muscle_group, count(*) from exercise_library group by muscle_group order by 2 desc;` — confirm it returns exactly these seven groups with these counts: legs 270, arms 147, shoulders 127, back 122, core 93, chest 85, calves 28. No `NULL` or "other" group should appear — every exercise in this dataset maps cleanly onto one of the seven.
+3. Run `select count(*) from exercise_library where image_url is not null;` — confirm this returns **0**, matching the "no images in this dataset" note above. If it ever returns non-zero after you add real images by hand later, that's expected and correct.
+4. Run `select count(*) from exercise_library where video_url is not null;` — confirm this returns **24**.
+5. Pick a specific exercise you recognize (e.g. "Farmer's Walk" or "3/4 Sit-Up") and confirm in the Table Editor that its `instructions` array actually contains real step text, not placeholders, and that `attribution` is populated (never blank or null).
+6. In the app, open Exercise Library as a coach: search "curl" and confirm only curl variations show; clear the search and tap "Legs" and confirm every result's badge reads "Legs"; tap one result to expand it and confirm the instructions shown match what you saw in Supabase for that same exercise in step 5.
+7. Re-run `exercise-library.sql` a second time (paste and run again) — confirm the row count in `exercise_library` is still exactly 872 afterward, not 1744. The `on conflict (name) do nothing` at the end of the insert is what makes this safe to re-run without creating duplicates.
+
 ## Project structure reference
 
 ```
@@ -575,6 +599,9 @@ src/
         [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week
         assign/[id].tsx     # pick a client + start date, assign a template to them
         week/[weekId].tsx  # one week of a programme — its sessions, + New session
+      exercise-library/
+        _layout.tsx      # coach-only guard for now
+        index.tsx        # search + muscle-group filter over the imported exercise_library table
       assignments/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of assignments, with status
@@ -605,6 +632,7 @@ src/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() database calls
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName()
+    exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
@@ -629,4 +657,5 @@ supabase/
   programmes.sql                            # paste in after reschedule.sql, adds programme_blocks + programme_weeks
   assign-programme.sql                        # paste in after programmes.sql, adds programme_blocks.client_id
   client-programme-view.sql                     # paste in after assign-programme.sql, adds start_date + client read access
+  exercise-library.sql                            # paste in after client-programme-view.sql — schema AND the imported data itself
 ```
