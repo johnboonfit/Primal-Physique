@@ -29,6 +29,25 @@ function toNumberOrNull(value: unknown): number | null {
   return Number.isFinite(num) ? num : null;
 }
 
+/**
+ * Open Food Facts doesn't always populate its normalized
+ * `energy-kcal_100g` field — some entries only carry the raw `energy_100g`
+ * figure plus an `energy_unit` saying whether that's already kcal or is
+ * kJ (the more common case, since kJ is the field's default unit).
+ * Falling back to that conversion rescues otherwise-usable entries that
+ * would silently disappear if only the normalized field were checked.
+ */
+function caloriesFromNutriments(nutriments: Record<string, unknown>): number | null {
+  const kcal = toNumberOrNull(nutriments['energy-kcal_100g']);
+  if (kcal !== null) return kcal;
+
+  const raw = toNumberOrNull(nutriments['energy_100g']);
+  if (raw === null) return null;
+
+  const unit = String(nutriments['energy_unit'] ?? 'kj').toLowerCase();
+  return unit === 'kcal' ? raw : raw / 4.184;
+}
+
 export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
@@ -38,7 +57,16 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
     search_simple: '1',
     action: 'process',
     json: '1',
-    page_size: '20',
+    // Open Food Facts' default ordering for search.pl isn't relevance-
+    // sorted, and a lot of its entries (especially generic, unbranded
+    // ones) are missing complete nutrition data. Sorting by scan
+    // popularity surfaces well-known, well-filled-out products first,
+    // and fetching a larger pool gives the completeness filter below
+    // enough candidates to actually find real matches in — a plain
+    // page_size of 20 with no sort was leaving common searches like
+    // "chicken" with nothing usable in the top results.
+    sort_by: 'unique_scans_n',
+    page_size: '50',
     fields: 'code,product_name,brands,nutriments',
   });
 
@@ -65,15 +93,16 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
         id: (product.code as string | undefined) || (product.product_name as string | undefined) || '',
         name: (product.product_name as string | undefined)?.trim() ?? '',
         brand: (product.brands as string | undefined)?.split(',')[0]?.trim() || null,
-        caloriesPer100g: toNumberOrNull(nutriments['energy-kcal_100g']),
+        caloriesPer100g: caloriesFromNutriments(nutriments),
         proteinPer100g: toNumberOrNull(nutriments['proteins_100g']),
         carbsPer100g: toNumberOrNull(nutriments['carbohydrates_100g']),
         fatPer100g: toNumberOrNull(nutriments['fat_100g']),
       };
     })
     // A result with no name or no calorie figure isn't useful to log
-    // against — Open Food Facts has plenty of incomplete entries.
-    .filter(
-      (result): result is FoodSearchResult => result.name.length > 0 && result.caloriesPer100g !== null
-    );
+    // against — Open Food Facts has plenty of incomplete entries. This
+    // runs against the larger 50-item pool fetched above, then trims
+    // back down to a sane number to actually show.
+    .filter((result): result is FoodSearchResult => result.name.length > 0 && result.caloriesPer100g !== null)
+    .slice(0, 20);
 }
