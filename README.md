@@ -615,7 +615,7 @@ This replaced the old "type a food name, type a calorie number" flow with a live
 
 **Live query, snapshot storage — the important distinction.** Every search is a real, live network call, made fresh each time — nothing from Open Food Facts is ever cached or stored ahead of time (unlike the Exercise Library, which really was a one-time import). But the moment a client taps a result to log it, its calories/protein/carbs/fat get copied as plain numbers into that `food_logs` row and saved. From that point on, the app never looks the food up again — if Open Food Facts later corrects that product's data, or the product listing disappears entirely, the log entry a client already saved stays exactly as it was the day they logged it. That's what "snapshot, not a live reference" means in practice: one network call at the moment of logging, and zero afterward.
 
-**Why everything is "per 100g."** Open Food Facts records nutrition per 100g for virtually every product; per-serving data exists but is inconsistent (serving sizes are free text like "30g (1 slice)" and not reliably parseable across brands). Rather than build a serving-size/quantity picker — real scope beyond what was asked, and its own source of bugs given how messy that data is — results and saved entries are simply labeled "per 100g" throughout. A client logging "1 chicken breast" is really logging "100g of chicken breast" under the hood; good enough for tracking trends, not a substitute for a kitchen scale. Worth a follow-up chunk if serving-size math becomes something you actually want.
+**Why everything is "per 100g."** Open Food Facts records nutrition per 100g for virtually every product; per-serving data exists but is inconsistent (serving sizes are free text like "30g (1 slice)" and not reliably parseable across brands). Rather than build a serving-size/quantity picker — real scope beyond what was asked, and its own source of bugs given how messy that data is — search results are simply labeled "per 100g" throughout, and a client logging "1 chicken breast" was really logging "100g of chicken breast" under the hood. **Update, a few chunks later:** a plain grams-quantity field was added — see "Logging a real quantity, not just '100g'" further below — so saved entries now scale from this per-100g reference to whatever amount was actually eaten, rather than always assuming 100g.
 
 **What happens to entries logged before this chunk:** their `protein`/`carbs`/`fat` columns are `NULL`, not `0` — they genuinely have no macro data on record, and showing "0g protein" would incorrectly claim the food had none. The daily macro totals only add up entries that actually have a number for that macro; an old calorie-only entry still counts toward the calorie total (unchanged), just contributes nothing to the protein/carbs/fat totals, which is the honest answer.
 
@@ -683,6 +683,28 @@ No new SQL, no new environment variable — this reuses `food_logs.source`/`sour
 6. Try scanning something with no barcode data in Open Food Facts — an unusual or very new product is most likely to actually miss; a generic pantry staple usually won't, since OFF's whole strength is barcoded packaged goods. Confirm you get the "wasn't found... try searching instead" message, not a crash or a dead end, and that the search box is immediately usable right there.
 7. Deny camera permission (or check in your phone's Settings after denying once) and confirm the app shows a clear message about needing camera access rather than a blank camera view or a crash.
 
+## Logging a real quantity, not just "100g"
+
+Run `supabase/food-log-quantity.sql` (order relative to the barcode-scanning migration doesn't matter — it only touches `food_logs`).
+
+Up to now, every logged food was silently treated as exactly 100g, because that's the unit both USDA and Open Food Facts report nutrition in. This chunk adds an actual quantity — a plain grams field, not an attempt to parse serving-size label text — and scales the macros to match.
+
+**What changed semantically:** before this chunk, `food_logs.calories/protein/carbs/fat` were really per-100g reference figures that happened to double as the logged amount. From now on, those columns hold the *actual* amount for whatever quantity was entered — a real food log, not a nutrition-label lookup. The per-100g numbers a search result or barcode scan shows are still just the source data; the math (`per_100g × quantity ÷ 100`) happens once, at the moment of saving, and the result is what's stored. Nothing about "snapshot, not a live reference" changes — this is still one calculation at save time, never redone later.
+
+**Why grams typed by hand, not a serving-size picker.** Serving sizes on real packaging are inconsistent free text ("30g (1 slice)," "1 cup (240mL)," "2 cookies") that doesn't parse reliably across products or sources — building a picker around that data would be a source of bugs, not a solution to one. A plain "how many grams" field is simple, always available regardless of source, and accurate as long as the client actually knows (or estimates) the weight — which is realistically how any careful macro-tracking already works anyway.
+
+**Old entries:** `quantity_grams` was backfilled to `100` for every row that existed before this chunk — not a guess, since every one of those entries genuinely was logged assuming exactly 100g at the time. Their calorie/macro numbers don't change; they're now correctly labeled as "100g" instead of being unlabeled.
+
+**Verify the math is correct:**
+
+1. Search or scan any food, note its exact "Per 100g" figures shown (e.g. "165 cal · 31g protein · 0g carbs · 3.6g fat" for cooked chicken breast).
+2. Change the quantity field to something other than 100 — say `150` — and confirm the "For 150g: ..." line updates live, before you save anything, to `165 × 1.5 = 247.5` → rounds to 248 cal, `31 × 1.5 = 46.5g` protein, and so on for carbs/fat, each scaled by the same 1.5×.
+3. Try a non-round quantity like `73` grams — confirm the math still scales correctly (`165 × 0.73 ≈ 120` cal), not just for tidy multiples.
+4. Enter `0`, a negative number, or leave it blank — confirm "Log this" is disabled and/or a clear "Enter the quantity as a number of grams greater than 0" message appears, rather than silently saving garbage.
+5. Save the 150g entry, then check that row in `food_logs` — confirm `quantity_grams = 150` and the calorie/macro columns match the scaled figures from step 2 exactly (to rounding), not the raw per-100g source values.
+6. In the app, confirm that entry's line under its meal now reads like "150g · 248 cal · 46.5g protein · ...", and that the day's calorie/macro totals reflect the scaled amount, not 100g's worth.
+7. Check an entry logged before this chunk — confirm it now shows "100g" in front of its existing numbers, and that nothing about those numbers changed.
+
 ## Project structure reference
 
 ```
@@ -740,7 +762,7 @@ src/
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
-    food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a macro snapshot, not a live link
+    food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
@@ -768,4 +790,5 @@ supabase/
   exercise-library.sql                            # paste in after client-programme-view.sql — schema AND the imported data itself
   link-exercise-library.sql                         # paste in after exercise-library.sql, adds workout_exercises.exercise_library_id
   food-log-macros.sql                                 # paste in after link-exercise-library.sql, adds protein/carbs/fat to food_logs
+  food-log-quantity.sql                                 # adds quantity_grams to food_logs (order vs. other food_logs files doesn't matter)
 ```

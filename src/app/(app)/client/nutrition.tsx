@@ -41,8 +41,22 @@ function round(value: number) {
   return Math.round(value * 10) / 10;
 }
 
-function macroSummary(entry: { calories: number; protein: number | null; carbs: number | null; fat: number | null }) {
-  const parts = [`${Math.round(entry.calories)} cal`];
+/** Scales a per-100g figure to a given quantity in grams — e.g. 165
+ * cal/100g at 150g is 165 * (150 / 100) = 247.5. Returns null through
+ * untouched, since "unknown" scaled by anything is still unknown. */
+function scaleMacro(per100g: number | null, grams: number): number | null {
+  if (per100g === null) return null;
+  return per100g * (grams / 100);
+}
+
+function macroSummary(entry: {
+  quantityGrams: number;
+  calories: number;
+  protein: number | null;
+  carbs: number | null;
+  fat: number | null;
+}) {
+  const parts = [`${round(entry.quantityGrams)}g`, `${Math.round(entry.calories)} cal`];
   if (entry.protein !== null) parts.push(`${round(entry.protein)}g protein`);
   if (entry.carbs !== null) parts.push(`${round(entry.carbs)}g carbs`);
   if (entry.fat !== null) parts.push(`${round(entry.fat)}g fat`);
@@ -65,6 +79,7 @@ export default function NutritionScreen() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selected, setSelected] = useState<FoodSearchResult | null>(null);
   const [selectedSource, setSelectedSource] = useState<FoodSource | null>(null);
+  const [quantityInput, setQuantityInput] = useState('100');
 
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -133,6 +148,9 @@ export default function NutritionScreen() {
   const totalCarbs = entries.reduce((sum, entry) => sum + (entry.carbs ?? 0), 0);
   const totalFat = entries.reduce((sum, entry) => sum + (entry.fat ?? 0), 0);
 
+  const parsedQuantity = Number(quantityInput);
+  const hasValidQuantity = quantityInput.trim().length > 0 && !Number.isNaN(parsedQuantity) && parsedQuantity > 0;
+
   const openAddEntry = (meal: Meal) => {
     setActiveMeal(meal);
     setSearch('');
@@ -140,6 +158,7 @@ export default function NutritionScreen() {
     setSearchError(null);
     setSelected(null);
     setSelectedSource(null);
+    setQuantityInput('100');
     setFormError(null);
     setScanning(false);
     setBarcodeLoading(false);
@@ -149,6 +168,15 @@ export default function NutritionScreen() {
   const closeModal = () => {
     setActiveMeal(null);
     setScanning(false);
+  };
+
+  // Picking a result always starts back at a 100g quantity — the same
+  // default whether it came from typed search or a barcode scan.
+  const selectFood = (result: FoodSearchResult, source: FoodSource) => {
+    setSelected(result);
+    setSelectedSource(source);
+    setQuantityInput('100');
+    setFormError(null);
   };
 
   const handleOpenScanner = async () => {
@@ -181,8 +209,7 @@ export default function NutritionScreen() {
     getProductByBarcode(data)
       .then((product) => {
         if (product) {
-          setSelected(product);
-          setSelectedSource('open_food_facts');
+          selectFood(product, 'open_food_facts');
         } else {
           setBarcodeError(`Barcode ${data} wasn't found in Open Food Facts — try searching instead.`);
         }
@@ -197,14 +224,21 @@ export default function NutritionScreen() {
     setFormError(null);
     if (!session || !activeMeal || !selected || !selectedSource) return;
 
+    const quantityGrams = Number(quantityInput);
+    if (!quantityInput.trim() || Number.isNaN(quantityGrams) || quantityGrams <= 0) {
+      setFormError('Enter the quantity as a number of grams greater than 0.');
+      return;
+    }
+
     setSaving(true);
     try {
       await addFoodLog(session.user.id, logDate, activeMeal, {
         name: selected.brand ? `${selected.name} (${selected.brand})` : selected.name,
-        calories: Math.round(selected.caloriesPer100g),
-        protein: selected.proteinPer100g,
-        carbs: selected.carbsPer100g,
-        fat: selected.fatPer100g,
+        quantityGrams,
+        calories: Math.round(scaleMacro(selected.caloriesPer100g, quantityGrams) ?? 0),
+        protein: scaleMacro(selected.proteinPer100g, quantityGrams),
+        carbs: scaleMacro(selected.carbsPer100g, quantityGrams),
+        fat: scaleMacro(selected.fatPer100g, quantityGrams),
         source: selectedSource,
         sourceId: selected.id || null,
       });
@@ -356,12 +390,7 @@ export default function NutritionScreen() {
 
                 <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
                   {results.map((result) => (
-                    <Pressable
-                      key={result.id || result.name}
-                      onPress={() => {
-                        setSelected(result);
-                        setSelectedSource('usda_fdc');
-                      }}>
+                    <Pressable key={result.id || result.name} onPress={() => selectFood(result, 'usda_fdc')}>
                       <View style={styles.resultRow}>
                         <ThemedText type="small" style={styles.resultName}>
                           {result.name}
@@ -387,6 +416,36 @@ export default function NutritionScreen() {
                   {selected.carbsPer100g !== null ? ` · ${round(selected.carbsPer100g)}g carbs` : ''}
                   {selected.fatPer100g !== null ? ` · ${round(selected.fatPer100g)}g fat` : ''}
                 </ThemedText>
+
+                <ThemedText type="smallBold" style={styles.sectionLabel}>
+                  Quantity (grams)
+                </ThemedText>
+                <TextInput
+                  value={quantityInput}
+                  onChangeText={setQuantityInput}
+                  placeholder="100"
+                  placeholderTextColor={theme.textSecondary}
+                  keyboardType="decimal-pad"
+                  style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                />
+
+                {hasValidQuantity ? (
+                  <ThemedText type="smallBold">
+                    For {parsedQuantity}g: {Math.round(scaleMacro(selected.caloriesPer100g, parsedQuantity) ?? 0)} cal
+                    {selected.proteinPer100g !== null
+                      ? ` · ${round(scaleMacro(selected.proteinPer100g, parsedQuantity) as number)}g protein`
+                      : ''}
+                    {selected.carbsPer100g !== null
+                      ? ` · ${round(scaleMacro(selected.carbsPer100g, parsedQuantity) as number)}g carbs`
+                      : ''}
+                    {selected.fatPer100g !== null
+                      ? ` · ${round(scaleMacro(selected.fatPer100g, parsedQuantity) as number)}g fat`
+                      : ''}
+                  </ThemedText>
+                ) : (
+                  <ThemedText style={styles.error}>Enter a valid quantity in grams.</ThemedText>
+                )}
+
                 <Pressable
                   onPress={() => {
                     setSelected(null);
@@ -403,7 +462,7 @@ export default function NutritionScreen() {
               <Pressable
                 style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
                 onPress={handleSave}
-                disabled={saving}>
+                disabled={saving || !hasValidQuantity}>
                 {saving ? (
                   <ActivityIndicator color={Colors.text} />
                 ) : (
@@ -493,6 +552,9 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     marginBottom: Spacing.two,
+  },
+  sectionLabel: {
+    marginTop: Spacing.two,
   },
   input: {
     borderWidth: 1,
