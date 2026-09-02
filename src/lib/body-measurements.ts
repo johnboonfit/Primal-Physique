@@ -15,7 +15,7 @@ export type MeasurementEntry = {
   id: string;
   logDate: string;
   measurementType: MeasurementType;
-  valueCm: number;
+  valueIn: number;
 };
 
 /** Every measurement of every type for this client, most recent first —
@@ -24,7 +24,7 @@ export type MeasurementEntry = {
 export async function listBodyMeasurements(clientId: string): Promise<MeasurementEntry[]> {
   const { data, error } = await supabase
     .from('body_measurements')
-    .select('id, log_date, measurement_type, value_cm')
+    .select('id, log_date, measurement_type, value_in')
     .eq('client_id', clientId)
     .order('log_date', { ascending: false });
 
@@ -34,7 +34,7 @@ export async function listBodyMeasurements(clientId: string): Promise<Measuremen
     id: row.id as string,
     logDate: row.log_date as string,
     measurementType: row.measurement_type as MeasurementType,
-    valueCm: row.value_cm as number,
+    valueIn: row.value_in as number,
   }));
 }
 
@@ -62,10 +62,10 @@ export async function saveBodyMeasurement(
   clientId: string,
   logDate: string,
   measurementType: MeasurementType,
-  valueCm: number
+  valueIn: number
 ) {
   const { error } = await supabase.from('body_measurements').upsert(
-    { client_id: clientId, log_date: logDate, measurement_type: measurementType, value_cm: valueCm },
+    { client_id: clientId, log_date: logDate, measurement_type: measurementType, value_in: valueIn },
     { onConflict: 'client_id,log_date,measurement_type' }
   );
 

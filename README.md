@@ -953,7 +953,9 @@ Run `supabase/body-measurements.sql` in the SQL Editor after `body-metrics.sql`.
 
 **Design call worth flagging:** your spec said "for each measurement type, show a graph... plus a history list." I built that as **one type selected at a time** (Waist/Chest/Arms/Thighs/Hips/Neck chips, defaulting to Waist) rather than six separate graphs stacked on the screen — picking a chip swaps in that type's own log form, graph, and history together. This matches the Metrics tab's actual visual treatment (one chart + one list, not several at once) and keeps the screen a reasonable length. Say the word if you actually wanted all six visible at once instead.
 
-**What's new at the database level:** a `body_measurements` table — one row per client, per date, per measurement type (so logging waist and chest the same day are two independent rows, but logging waist twice the same day updates in place, same upsert rule weight uses). No `weight_trend`-style smoothing column here — there's no EWMA for these, the graph plots the raw `value_cm` exactly as logged. Stored in centimetres, matching weight's kg convention.
+**What's new at the database level:** a `body_measurements` table — one row per client, per date, per measurement type (so logging waist and chest the same day are two independent rows, but logging waist twice the same day updates in place, same upsert rule weight uses). No `weight_trend`-style smoothing column here — there's no EWMA for these, the graph plots the raw logged value exactly as entered.
+
+**Units, updated:** originally shipped in centimetres (`value_cm`); run `supabase/body-measurements-inches.sql` right after this file to switch to inches. That migration renames the column to `value_in` and converts any rows already logged in cm (÷ 2.54) so existing history doesn't silently jump to the wrong scale — a waist logged as 85 (cm) becomes 33.46 (in), not a mislabeled 85. Verified against a real Postgres instance: the conversion, the column rename, and the swapped check constraint (rejecting a negative or zero value) all behave correctly.
 
 **New pieces:**
 - `src/lib/body-measurements.ts` — `listBodyMeasurements()`, `saveBodyMeasurement()` (upsert), and `groupMeasurementsByType()`, which splits one flat list into six independent buckets so switching the selected chip never has to re-query, just reads a different bucket of what's already loaded.
@@ -1072,5 +1074,6 @@ supabase/
   calorie-target.sql                                          # paste in after tdee-estimates.sql, adds programme_blocks.calorie_target_percent
   coach-nutrition-and-delete.sql                                # paste in after calorie-target.sql — coach read access to food_logs/tdee_estimates, delete on food_logs
   body-metrics.sql                                                # paste in after coach-nutrition-and-delete.sql, adds weight_logs.body_fat_percent + muscle_percent
-  body-measurements.sql                                             # paste in after body-metrics.sql, adds body_measurements
+  body-measurements.sql                                             # paste in after body-metrics.sql, adds body_measurements (originally cm)
+  body-measurements-inches.sql                                        # paste in right after body-measurements.sql — renames value_cm to value_in, converts existing rows
 ```

@@ -74,7 +74,7 @@ export function MeasurePanel() {
     setSelectedType(type);
     setSaveError(null);
     const existingToday = grouped[type].find((entry) => entry.logDate === logDate);
-    setValueInput(existingToday ? String(existingToday.valueCm) : '');
+    setValueInput(existingToday ? String(existingToday.valueIn) : '');
   };
 
   const filteredEntries = useMemo(
@@ -130,7 +130,7 @@ export function MeasurePanel() {
       <TextInput
         value={valueInput}
         onChangeText={setValueInput}
-        placeholder={`${typeLabel(selectedType)} (cm)`}
+        placeholder={`${typeLabel(selectedType)} (in)`}
         placeholderTextColor={theme.textSecondary}
         keyboardType="numeric"
         style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
@@ -159,7 +159,7 @@ export function MeasurePanel() {
 
       {!loading && !error && filteredEntries.length >= 2 && (
         <ThemedView type="backgroundElement" style={styles.chartCard}>
-          <MeasurementChart entries={filteredEntries.map((entry) => ({ logDate: entry.logDate, value: entry.valueCm }))} />
+          <MeasurementChart entries={filteredEntries.map((entry) => ({ logDate: entry.logDate, value: entry.valueIn }))} />
         </ThemedView>
       )}
 
@@ -186,7 +186,7 @@ export function MeasurePanel() {
             <ThemedText type="small" themeColor="textSecondary">
               {entry.logDate}
             </ThemedText>
-            <ThemedText type="smallBold">{round(entry.valueCm)} cm</ThemedText>
+            <ThemedText type="smallBold">{round(entry.valueIn)} in</ThemedText>
           </ThemedView>
         ))}
     </>
