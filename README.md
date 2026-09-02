@@ -945,6 +945,28 @@ Run `supabase/body-metrics.sql` in the SQL Editor after `coach-nutrition-and-del
 4. If the app were recalculating the trend itself from raw weights, your manual `999` would be silently overwritten back to a real number the next time anything recomputed it — but nothing here does that. The history list should show `trend 999` in plain text, and the chart's oxblood line should visibly spike to that point, proving both are reading whatever is actually stored in `weight_trend`, not redoing the math.
 5. Put the value back afterward: `update weight_logs set weight_trend = <the number you noted> where id = 'PASTE_ROW_ID';` (or just re-run `weight-trend.sql`'s backfill, which recomputes it correctly from scratch).
 
+## Measure sub-tab on Progress
+
+Run `supabase/body-measurements.sql` in the SQL Editor after `body-metrics.sql`.
+
+**Progress now has two real sub-tabs: Metrics and Measure.** The single "Metrics" label from last chunk is now an actual switcher (it only made sense as a fixed label while it was the only option) — everything that used to live directly on Progress moved into `MetricsPanel`, unchanged, and the new measurement logging lives in `MeasurePanel` alongside it.
+
+**Design call worth flagging:** your spec said "for each measurement type, show a graph... plus a history list." I built that as **one type selected at a time** (Waist/Chest/Arms/Thighs/Hips/Neck chips, defaulting to Waist) rather than six separate graphs stacked on the screen — picking a chip swaps in that type's own log form, graph, and history together. This matches the Metrics tab's actual visual treatment (one chart + one list, not several at once) and keeps the screen a reasonable length. Say the word if you actually wanted all six visible at once instead.
+
+**What's new at the database level:** a `body_measurements` table — one row per client, per date, per measurement type (so logging waist and chest the same day are two independent rows, but logging waist twice the same day updates in place, same upsert rule weight uses). No `weight_trend`-style smoothing column here — there's no EWMA for these, the graph plots the raw `value_cm` exactly as logged. Stored in centimetres, matching weight's kg convention.
+
+**New pieces:**
+- `src/lib/body-measurements.ts` — `listBodyMeasurements()`, `saveBodyMeasurement()` (upsert), and `groupMeasurementsByType()`, which splits one flat list into six independent buckets so switching the selected chip never has to re-query, just reads a different bucket of what's already loaded.
+- `src/components/measurement-chart.tsx` — a new, simpler chart: same time-proportional-X approach as `WeightTrendChart`, but one line only (teal, "actual" per the brand's color convention — no oxblood trend line, since there's nothing calculated to plot alongside the raw number).
+- `src/lib/time-ranges.ts` + `src/components/time-range-toggle.tsx` — the 1W/1M/6M/1Y/All Time toggle from the Metrics chunk, pulled out into shared code so Measure could reuse the exact same behavior rather than a second copy that could drift.
+
+**Verify each measurement type tracks and graphs independently:**
+
+1. Select **Waist**, log a value, then select **Chest** and log a different value for today — confirm switching back to Waist still shows the waist number, not the chest one (proves the log form doesn't share state across types).
+2. Log several days of history for Waist only (leave Chest with just the one entry) — confirm Waist shows a full trend graph with history, while Chest still correctly shows "not enough measurements" (or a single-entry history list with no graph) — proving one type's data volume has no effect on another's.
+3. In the SQL Editor: `select measurement_type, count(*) from body_measurements where client_id = 'PASTE_CLIENT_ID' group by measurement_type;` — confirm the counts match exactly what you logged per type, with no cross-contamination (already confirmed independently against a real Postgres instance: inserting waist and chest history for the same client produced exactly 3 waist rows and 2 chest rows, with zero overlap).
+4. Delete or edit nothing — this chunk doesn't add delete for measurements (matching the literal ask: log, graph, and list). Say if you want that added, same as food logs got earlier.
+
 ## Project structure reference
 
 ```
@@ -990,13 +1012,17 @@ src/
         index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
-        progress.tsx       # Progress tab — Metrics sub-tab: weight/body fat %/muscle % check-in, Estimated TDEE + confidence, time-ranged trend chart + history
+        progress.tsx       # Progress tab shell — Metrics/Measure sub-tab switcher, renders MetricsPanel or MeasurePanel
         calendar.tsx        # placeholder
   components/
     coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
-    weight-trend-chart.tsx  # SVG line chart — actual weight (teal) + smoothed trend (red) on the Progress tab
+    weight-trend-chart.tsx  # SVG line chart — actual weight (teal) + smoothed trend (red), used by MetricsPanel
+    measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
+    time-range-toggle.tsx     # shared 1W/1M/6M/1Y/All Time chip row, used by both MetricsPanel and MeasurePanel
+    metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)
+    measure-panel.tsx           # Progress → Measure sub-tab content (waist/chest/arms/thighs/hips/neck logging, per-type graph + history)
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
@@ -1013,6 +1039,8 @@ src/
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
     weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend, optional body fat %/muscle %) / listWeightLogs() / hasWeightLogForDate() database calls
+    body-measurements.ts      # listBodyMeasurements() / saveBodyMeasurement() (upsert) / groupMeasurementsByType() — waist/chest/arms/thighs/hips/neck, no smoothing
+    time-ranges.ts              # TIME_RANGES / filterByRange() — shared 1W/1M/6M/1Y/All Time filtering logic
     tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
@@ -1044,4 +1072,5 @@ supabase/
   calorie-target.sql                                          # paste in after tdee-estimates.sql, adds programme_blocks.calorie_target_percent
   coach-nutrition-and-delete.sql                                # paste in after calorie-target.sql — coach read access to food_logs/tdee_estimates, delete on food_logs
   body-metrics.sql                                                # paste in after coach-nutrition-and-delete.sql, adds weight_logs.body_fat_percent + muscle_percent
+  body-measurements.sql                                             # paste in after body-metrics.sql, adds body_measurements
 ```
