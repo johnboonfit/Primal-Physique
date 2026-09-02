@@ -605,6 +605,36 @@ Up to now, adding an exercise to a workout meant typing its name freehand — no
 3. Assign that workout to a test client (Assignments → New, or it may already be assigned from earlier testing), then view it as the coach (Assignments → tap it) or as that client (`assigned/[id]`) — confirm every exercise name shows exactly as it always did, with no error, blank field, or "unknown exercise" placeholder.
 4. As a final cross-check, assign a newly-built (library-linked) workout too, and compare the two assignment detail views side by side — both should render exercise names identically, even though only the new one has a real `exercise_library_id` behind it.
 
+## Real nutrition data: Open Food Facts
+
+Run `supabase/food-log-macros.sql` in the SQL Editor after `link-exercise-library.sql`.
+
+This replaces the old "type a food name, type a calorie number" flow with a live search against [Open Food Facts](https://world.openfoodfacts.org) — a public, open food database. No API key, no account, no setup: `src/lib/open-food-facts.ts` just calls their search endpoint directly from the app.
+
+**Live query, snapshot storage — the important distinction.** Every search is a real, live network call, made fresh each time — nothing from Open Food Facts is ever cached or stored ahead of time (unlike the Exercise Library, which really was a one-time import). But the moment a client taps a result to log it, its calories/protein/carbs/fat get copied as plain numbers into that `food_logs` row and saved. From that point on, the app never looks the food up again — if Open Food Facts later corrects that product's data, or the product listing disappears entirely, the log entry a client already saved stays exactly as it was the day they logged it. That's what "snapshot, not a live reference" means in practice: one network call at the moment of logging, and zero afterward.
+
+**Why everything is "per 100g."** Open Food Facts records nutrition per 100g for virtually every product; per-serving data exists but is inconsistent (serving sizes are free text like "30g (1 slice)" and not reliably parseable across brands). Rather than build a serving-size/quantity picker — real scope beyond what was asked, and its own source of bugs given how messy that data is — results and saved entries are simply labeled "per 100g" throughout. A client logging "1 chicken breast" is really logging "100g of chicken breast" under the hood; good enough for tracking trends, not a substitute for a kitchen scale. Worth a follow-up chunk if serving-size math becomes something you actually want.
+
+**What happens to entries logged before this chunk:** their `protein`/`carbs`/`fat` columns are `NULL`, not `0` — they genuinely have no macro data on record, and showing "0g protein" would incorrectly claim the food had none. The daily macro totals only add up entries that actually have a number for that macro; an old calorie-only entry still counts toward the calorie total (unchanged), just contributes nothing to the protein/carbs/fat totals, which is the honest answer.
+
+**How the search actually works:** typing in the "Add to [meal]" search box debounces for 400ms before firing (so it's one request per pause in typing, not one per keystroke), calls Open Food Facts' `cgi/search.pl` endpoint, and shows up to 20 matches with their calories per 100g. Tapping one shows its full macro breakdown and locks it in with a "Log this" button; "← Search again" backs out without losing your place.
+
+**Verify the search actually works:**
+
+1. Open Nutrition → tap "+ Add" on any meal. Search "banana" — confirm real results appear within about a second (after the debounce), each showing a plausible calories-per-100g figure (bananas should land somewhere around 90 cal/100g, not 0 or an absurd number).
+2. Search something with no realistic matches, e.g. "zzzxqq123" — confirm "No matches found." appears rather than an error or a frozen spinner.
+3. Turn off your device/Codespace's network mid-search (or search something while offline) — confirm a clear error message appears rather than a silent failure.
+4. Tap a result — confirm its full per-100g breakdown (calories, protein, carbs, fat) displays before you save anything, so you can sanity-check it against what you'd expect for that food.
+
+**Verify the macros are captured correctly, as a permanent snapshot:**
+
+1. Pick a search result, note its exact displayed macros (e.g. "165 cal · 31g protein · 3.6g carbs · 3.6g fat" for raw chicken breast), and tap "Log this."
+2. In Supabase's Table Editor, find that new row in `food_logs` — confirm `calories`, `protein`, `carbs`, and `fat` match what you saw on screen (protein/carbs/fat may be rounded to one decimal in the app; the stored values should match to that precision), and `source` reads `open_food_facts` with a `source_id` populated.
+3. Back in the app, confirm the entry now shows under its meal with the same macro breakdown in the summary line (e.g. "165 cal · 31g protein · 3.6g carbs · 3.6g fat").
+4. Confirm the day's macro totals (Protein/Carbs/Fat, under the calorie hero number) increased by exactly that entry's numbers.
+5. The permanence check: note the `source_id` you just saved, then in the app search for and log a *different* food entirely — confirm the first entry's numbers in Supabase are completely unchanged. There's no live link back to Open Food Facts to accidentally refresh or overwrite it.
+6. Check an entry logged before this chunk (if you have one) — confirm `protein`/`carbs`/`fat` show as `NULL` in Supabase, and that the day's macro totals still correctly exclude it from protein/carbs/fat while still including its calories.
+
 ## Project structure reference
 
 ```
@@ -645,7 +675,7 @@ src/
         _layout.tsx      # client-only guard + the 5-tab bar
         index.tsx        # Home tab — greeting, streak, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
-        nutrition.tsx      # Nutrition tab — 4 meal sections, add-entry popup, calorie total
+        nutrition.tsx      # Nutrition tab — 4 meal sections, live Open Food Facts search, calorie + macro totals
         progress.tsx       # Progress tab — log/update today's weight, chronological history
         calendar.tsx        # placeholder
   components/
@@ -662,7 +692,8 @@ src/
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
-    food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
+    food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a macro snapshot, not a live link
+    open-food-facts.ts       # searchFoods() — live query against Open Food Facts' public API, nothing stored here
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
@@ -687,4 +718,5 @@ supabase/
   client-programme-view.sql                     # paste in after assign-programme.sql, adds start_date + client read access
   exercise-library.sql                            # paste in after client-programme-view.sql — schema AND the imported data itself
   link-exercise-library.sql                         # paste in after exercise-library.sql, adds workout_exercises.exercise_library_id
+  food-log-macros.sql                                 # paste in after link-exercise-library.sql, adds protein/carbs/fat to food_logs
 ```

@@ -1,5 +1,5 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -10,6 +10,7 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { addFoodLog, listFoodLogsForDate, type FoodLogEntry, type Meal } from '@/lib/food-logs';
+import { searchFoods, type FoodSearchResult } from '@/lib/open-food-facts';
 import { awardMealXp } from '@/lib/xp';
 
 const MEALS: { key: Meal; label: string }[] = [
@@ -19,12 +20,26 @@ const MEALS: { key: Meal; label: string }[] = [
   { key: 'snacks', label: 'Snacks' },
 ];
 
+const SEARCH_DEBOUNCE_MS = 400;
+
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
 }
 
 function todayDisplayDate() {
   return new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
+function round(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function macroSummary(entry: { calories: number; protein: number | null; carbs: number | null; fat: number | null }) {
+  const parts = [`${Math.round(entry.calories)} cal`];
+  if (entry.protein !== null) parts.push(`${round(entry.protein)}g protein`);
+  if (entry.carbs !== null) parts.push(`${round(entry.carbs)}g carbs`);
+  if (entry.fat !== null) parts.push(`${round(entry.fat)}g fat`);
+  return parts.join(' · ');
 }
 
 export default function NutritionScreen() {
@@ -37,10 +52,16 @@ export default function NutritionScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const [activeMeal, setActiveMeal] = useState<Meal | null>(null);
-  const [foodName, setFoodName] = useState('');
-  const [calories, setCalories] = useState('');
+  const [search, setSearch] = useState('');
+  const [results, setResults] = useState<FoodSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<FoodSearchResult | null>(null);
+
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const searchRequestId = useRef(0);
 
   const load = useCallback(() => {
     if (!session) return;
@@ -57,12 +78,53 @@ export default function NutritionScreen() {
     }, [load])
   );
 
+  // Live search against Open Food Facts — debounced so it doesn't fire
+  // on every keystroke, and guarded against a slow older request
+  // clobbering a faster, more recent one.
+  useEffect(() => {
+    if (activeMeal === null || selected) return;
+
+    const query = search.trim();
+    if (!query) {
+      setResults([]);
+      setSearchError(null);
+      setSearching(false);
+      return;
+    }
+
+    setSearching(true);
+    setSearchError(null);
+    const requestId = ++searchRequestId.current;
+
+    const timeout = setTimeout(() => {
+      searchFoods(query)
+        .then((data) => {
+          if (searchRequestId.current === requestId) setResults(data);
+        })
+        .catch((err) => {
+          if (searchRequestId.current === requestId) {
+            setSearchError(err instanceof Error ? err.message : 'Search failed.');
+          }
+        })
+        .finally(() => {
+          if (searchRequestId.current === requestId) setSearching(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => clearTimeout(timeout);
+  }, [search, selected, activeMeal]);
+
   const totalCalories = entries.reduce((sum, entry) => sum + entry.calories, 0);
+  const totalProtein = entries.reduce((sum, entry) => sum + (entry.protein ?? 0), 0);
+  const totalCarbs = entries.reduce((sum, entry) => sum + (entry.carbs ?? 0), 0);
+  const totalFat = entries.reduce((sum, entry) => sum + (entry.fat ?? 0), 0);
 
   const openAddEntry = (meal: Meal) => {
     setActiveMeal(meal);
-    setFoodName('');
-    setCalories('');
+    setSearch('');
+    setResults([]);
+    setSearchError(null);
+    setSelected(null);
     setFormError(null);
   };
 
@@ -70,22 +132,18 @@ export default function NutritionScreen() {
 
   const handleSave = async () => {
     setFormError(null);
-    if (!session || !activeMeal) return;
-
-    const trimmedName = foodName.trim();
-    if (!trimmedName) {
-      setFormError('Enter a food name.');
-      return;
-    }
-    const parsedCalories = Number(calories);
-    if (!calories.trim() || Number.isNaN(parsedCalories) || parsedCalories < 0) {
-      setFormError('Enter calories as a number.');
-      return;
-    }
+    if (!session || !activeMeal || !selected) return;
 
     setSaving(true);
     try {
-      await addFoodLog(session.user.id, logDate, activeMeal, trimmedName, Math.round(parsedCalories));
+      await addFoodLog(session.user.id, logDate, activeMeal, {
+        name: selected.brand ? `${selected.name} (${selected.brand})` : selected.name,
+        calories: Math.round(selected.caloriesPer100g),
+        protein: selected.proteinPer100g,
+        carbs: selected.carbsPer100g,
+        fat: selected.fatPer100g,
+        sourceId: selected.id || null,
+      });
       // Only the day's first meal actually awards XP — the database
       // silently rejects the rest, so it's always safe to call this.
       try {
@@ -118,6 +176,29 @@ export default function NutritionScreen() {
 
           {!loading && !error && <HeroStat value={totalCalories} label="Calories Today" />}
 
+          {!loading && !error && entries.length > 0 && (
+            <View style={styles.macroRow}>
+              <View style={styles.macroCell}>
+                <ThemedText type="smallBold">{round(totalProtein)}g</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Protein
+                </ThemedText>
+              </View>
+              <View style={styles.macroCell}>
+                <ThemedText type="smallBold">{round(totalCarbs)}g</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Carbs
+                </ThemedText>
+              </View>
+              <View style={styles.macroCell}>
+                <ThemedText type="smallBold">{round(totalFat)}g</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Fat
+                </ThemedText>
+              </View>
+            </View>
+          )}
+
           {!loading &&
             !error &&
             MEALS.map(({ key, label }) => {
@@ -148,7 +229,7 @@ export default function NutritionScreen() {
                       <ThemedView key={entry.id} type="backgroundElement" style={styles.entryRow}>
                         <ThemedText type="small">{entry.foodName}</ThemedText>
                         <ThemedText type="small" themeColor="textSecondary">
-                          {entry.calories} cal
+                          {macroSummary(entry)}
                         </ThemedText>
                       </ThemedView>
                     ))
@@ -166,36 +247,75 @@ export default function NutritionScreen() {
               Add to {MEALS.find((m) => m.key === activeMeal)?.label}
             </ThemedText>
 
-            <TextInput
-              value={foodName}
-              onChangeText={setFoodName}
-              placeholder="Food name"
-              placeholderTextColor={theme.textSecondary}
-              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-            />
-            <TextInput
-              value={calories}
-              onChangeText={setCalories}
-              placeholder="Calories"
-              placeholderTextColor={theme.textSecondary}
-              keyboardType="numeric"
-              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-            />
+            {!selected ? (
+              <>
+                <TextInput
+                  value={search}
+                  onChangeText={setSearch}
+                  placeholder="Search Open Food Facts"
+                  placeholderTextColor={theme.textSecondary}
+                  autoFocus
+                  style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                />
+
+                {searching && <ActivityIndicator style={styles.searchLoader} />}
+                {!searching && searchError && <ThemedText style={styles.error}>{searchError}</ThemedText>}
+                {!searching && !searchError && search.trim().length > 0 && results.length === 0 && (
+                  <ThemedText type="small" themeColor="textSecondary" style={styles.noResults}>
+                    No matches found.
+                  </ThemedText>
+                )}
+
+                <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
+                  {results.map((result) => (
+                    <Pressable key={result.id || result.name} onPress={() => setSelected(result)}>
+                      <View style={styles.resultRow}>
+                        <ThemedText type="small" style={styles.resultName}>
+                          {result.name}
+                          {result.brand ? ` (${result.brand})` : ''}
+                        </ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {Math.round(result.caloriesPer100g)} cal / 100g
+                        </ThemedText>
+                      </View>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </>
+            ) : (
+              <>
+                <ThemedText type="smallBold">
+                  {selected.name}
+                  {selected.brand ? ` (${selected.brand})` : ''}
+                </ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Per 100g: {Math.round(selected.caloriesPer100g)} cal
+                  {selected.proteinPer100g !== null ? ` · ${round(selected.proteinPer100g)}g protein` : ''}
+                  {selected.carbsPer100g !== null ? ` · ${round(selected.carbsPer100g)}g carbs` : ''}
+                  {selected.fatPer100g !== null ? ` · ${round(selected.fatPer100g)}g fat` : ''}
+                </ThemedText>
+                <Pressable onPress={() => setSelected(null)}>
+                  <ThemedText type="linkPrimary">← Search again</ThemedText>
+                </Pressable>
+              </>
+            )}
 
             {formError && <ThemedText style={styles.error}>{formError}</ThemedText>}
 
-            <Pressable
-              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
-              onPress={handleSave}
-              disabled={saving}>
-              {saving ? (
-                <ActivityIndicator color={Colors.text} />
-              ) : (
-                <ThemedText type="smallBold" style={styles.primaryButtonText}>
-                  Save
-                </ThemedText>
-              )}
-            </Pressable>
+            {selected && (
+              <Pressable
+                style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+                onPress={handleSave}
+                disabled={saving}>
+                {saving ? (
+                  <ActivityIndicator color={Colors.text} />
+                ) : (
+                  <ThemedText type="smallBold" style={styles.primaryButtonText}>
+                    Log this
+                  </ThemedText>
+                )}
+              </Pressable>
+            )}
 
             <Pressable style={styles.cancelButton} onPress={closeModal}>
               <ThemedText themeColor="textSecondary">Cancel</ThemedText>
@@ -227,6 +347,15 @@ const styles = StyleSheet.create({
     color: Accent,
     textAlign: 'center',
   },
+  macroRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: Spacing.two,
+  },
+  macroCell: {
+    alignItems: 'center',
+    gap: Spacing.half,
+  },
   mealSection: {
     gap: Spacing.two,
     marginTop: Spacing.two,
@@ -248,6 +377,7 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     paddingVertical: Spacing.two,
     paddingHorizontal: Spacing.three,
+    gap: Spacing.two,
   },
   modalOverlay: {
     flex: 1,
@@ -258,7 +388,8 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     width: '100%',
-    maxWidth: 360,
+    maxWidth: 400,
+    maxHeight: '80%',
     borderRadius: Spacing.four,
     padding: Spacing.four,
     gap: Spacing.two,
@@ -272,6 +403,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.three,
     fontSize: 16,
+  },
+  searchLoader: {
+    marginVertical: Spacing.two,
+  },
+  noResults: {
+    textAlign: 'center',
+    marginVertical: Spacing.two,
+  },
+  resultsList: {
+    maxHeight: 280,
+  },
+  resultRow: {
+    paddingVertical: Spacing.two,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.backgroundSelected,
+    gap: Spacing.half,
+  },
+  resultName: {
+    fontWeight: '700',
   },
   primaryButton: {
     ...Glow.oxblood,
