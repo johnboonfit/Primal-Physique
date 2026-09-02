@@ -995,6 +995,28 @@ Run `supabase/progress-photos.sql` in the SQL Editor after `body-measurements-in
 4. **Pinch-to-resize (device or simulator only — pinch needs two real touch points, so this won't work with a mouse in a web browser):** with the compare slider open, pinch on the left ("before") photo — confirm only that photo resizes, the right one stays put. Pinch the right photo — confirm the same in reverse. Confirm you can't shrink either photo smaller than its starting size (pinching inward past that point just stops scaling down further, rather than shrinking to reveal empty space).
 5. **Privacy, already confirmed against a real Postgres instance:** the storage path convention (`<client_id>/<angle>/<filename>`) and the `progress_photos` table's RLS were both tested directly — a second account attempting to insert a photo row while falsely claiming another client's `client_id` is rejected outright by the database, not just hidden by the app's UI.
 
+## Calendar tab: Week and Month views
+
+No new SQL this chunk — the Calendar tab reads the exact same `assignments` data every other screen already reads from (`listMyAssignments()`, the same function the Home tab's "Up Next" and the Training tab's full history already use). Nothing new to store; this is purely a new way to look at data that already exists.
+
+**Week view:** 7 day-rows, Monday through Sunday (the same Monday-start week Momentum Score and the missed-workout auto-reschedule already use, so "this week" means the same thing everywhere in the app), each showing that date's assigned session(s) — workout name and Pending/Completed status — or "Nothing scheduled." if there's nothing that day.
+
+**Month view:** a real calendar grid — full weeks only, so it always starts on the Monday on/before the 1st and ends on the Sunday on/after the last day (a 4, 5, or 6-row grid depending on the month, never a partial week). Days outside the current month are dimmed but still functional. Each day with a session shows a small dot (plus a count if more than one); tapping a day opens a detail card below the grid listing that day's sessions by name and status — this is the easiest way to actually verify a date is right, since a tiny grid cell can't show a full workout name.
+
+**Navigation:** ‹ / › move by a week or a month depending on which view is active; tapping the date range label jumps straight back to today. Switching between Week and Month keeps whichever session data is already loaded — there's no separate query per view, just a different way of laying out the same `Map<date, sessions[]>` built once from the same fetch.
+
+**Explicitly not in this chunk, as scoped:** no drag-and-drop to reschedule, and no richer visual states beyond the plain Pending/Completed text every other screen already uses — this chunk is proving the grid places real sessions on the correct dates, full stop.
+
+**Verify sessions land on the actual correct dates, in both views:**
+
+1. As the coach, assign a client 3-4 workouts on specific, spread-out dates — at least one earlier this week, one next week, and one in a different month than today (use Assignments → + New, or assign a programme).
+2. As that client, open the Calendar tab (defaults to Week view, showing the current Monday–Sunday). Confirm the session assigned for "this week" appears on the exact right day-row, with the correct workout name and status.
+3. Tap **Month**, then use **›** to navigate to the month containing your "different month" test assignment. Confirm a dot appears on the exact correct date, then tap that date and confirm the detail card names the right workout.
+4. Tap the date-range label from any week/month you've navigated away from — confirm it snaps straight back to the current week/month (today's date visibly outlined in Month view, labeled "Today" in Week view).
+5. As a final cross-check, compare against ground truth directly: `select assigned_date, workouts(name) from assignments where client_id = 'PASTE_CLIENT_ID' order by assigned_date;` in the SQL Editor, and confirm every row shows up on its exact date in both views — no session shifted by a day, no session dropped, no session appearing twice.
+
+Also removed `src/components/coming-soon.tsx` this chunk — Calendar was its last remaining user, so it's now dead code rather than a component kept around "just in case."
+
 ## Project structure reference
 
 ```
@@ -1041,9 +1063,8 @@ src/
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
-        calendar.tsx        # placeholder
+        calendar.tsx        # Calendar tab — Week/Month toggle, real assigned sessions plotted by date (no drag-and-drop yet)
   components/
-    coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
     weight-trend-chart.tsx  # SVG line chart — actual weight (teal) + smoothed trend (red), used by MetricsPanel
