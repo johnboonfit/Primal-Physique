@@ -510,13 +510,18 @@ export type ClientProgrammeView = {
  *
  * If the client has more than one assigned programme (e.g. a past one
  * plus a current one), the one with the most recent start date wins.
- * Returns null if nothing has been assigned yet.
+ * Rows with no start date at all are excluded outright rather than left
+ * to the sort — Postgres treats NULL as "greater than everything" in a
+ * descending sort by default, so without this a stale, never-really-
+ * started instance would silently outrank a real one instead of losing
+ * to it. Returns null if nothing valid has been assigned yet.
  */
 export async function getClientProgramme(clientId: string): Promise<ClientProgrammeView | null> {
   const { data: programme, error: programmeError } = await supabase
     .from('programme_blocks')
     .select('id, name, description, cover_image_url, goal_type, duration_weeks, start_date')
     .eq('client_id', clientId)
+    .not('start_date', 'is', null)
     .order('start_date', { ascending: false })
     .limit(1)
     .maybeSingle();
