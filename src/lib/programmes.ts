@@ -169,6 +169,120 @@ export async function addProgrammeWeek(programmeId: string, weekNumber: number):
   return data.id as string;
 }
 
+/** Renames a programme in place — used right after duplicating one, so
+ * the coach can tell the copy apart from the original. */
+export async function updateProgrammeName(programmeId: string, name: string) {
+  const { error } = await supabase.from('programme_blocks').update({ name }).eq('id', programmeId);
+  if (error) throw error;
+}
+
+/**
+ * Makes a genuinely independent copy of a programme: a new
+ * programme_blocks row, its own new programme_weeks rows, and its own
+ * new workouts + workout_exercises underneath each week — nothing in the
+ * copy references a row from the original, so editing one can never
+ * touch the other. This is the same copying logic client-assignment will
+ * reuse next chunk (assigning a template means giving the client their
+ * own copy of it, not pointing them at the coach's shared one).
+ *
+ * Done as a straightforward sequence of reads and inserts rather than
+ * one database transaction — there's no Postgres function for this yet,
+ * so if a step partway through fails, the half-copied programme is
+ * deleted; deleting the top-level row cascades down and cleans up
+ * whatever weeks/workouts/exercises had already been copied under it.
+ */
+export async function duplicateProgramme(coachId: string, programmeId: string): Promise<string> {
+  const { data: source, error: sourceError } = await supabase
+    .from('programme_blocks')
+    .select('name, description, cover_image_url, goal_type, duration_weeks, scheduled_days')
+    .eq('id', programmeId)
+    .single();
+
+  if (sourceError) throw sourceError;
+
+  const { data: newProgramme, error: newProgrammeError } = await supabase
+    .from('programme_blocks')
+    .insert({
+      coach_id: coachId,
+      name: `${source.name} (Copy)`,
+      description: source.description,
+      cover_image_url: source.cover_image_url,
+      goal_type: source.goal_type,
+      duration_weeks: source.duration_weeks,
+      scheduled_days: source.scheduled_days,
+    })
+    .select('id')
+    .single();
+
+  if (newProgrammeError) throw newProgrammeError;
+
+  const newProgrammeId = newProgramme.id as string;
+
+  try {
+    const { data: sourceWeeks, error: weeksError } = await supabase
+      .from('programme_weeks')
+      .select('id, week_number')
+      .eq('programme_id', programmeId)
+      .order('week_number');
+
+    if (weeksError) throw weeksError;
+
+    for (const week of sourceWeeks ?? []) {
+      const { data: newWeek, error: newWeekError } = await supabase
+        .from('programme_weeks')
+        .insert({ programme_id: newProgrammeId, week_number: week.week_number })
+        .select('id')
+        .single();
+
+      if (newWeekError) throw newWeekError;
+      const newWeekId = newWeek.id as string;
+
+      const { data: sourceWorkouts, error: workoutsError } = await supabase
+        .from('workouts')
+        .select('id, name')
+        .eq('programme_week_id', week.id);
+
+      if (workoutsError) throw workoutsError;
+
+      for (const workout of sourceWorkouts ?? []) {
+        const { data: newWorkout, error: newWorkoutError } = await supabase
+          .from('workouts')
+          .insert({ coach_id: coachId, name: workout.name, programme_week_id: newWeekId })
+          .select('id')
+          .single();
+
+        if (newWorkoutError) throw newWorkoutError;
+
+        const { data: sourceExercises, error: exercisesError } = await supabase
+          .from('workout_exercises')
+          .select('name, sets_reps, position')
+          .eq('workout_id', workout.id)
+          .order('position');
+
+        if (exercisesError) throw exercisesError;
+
+        if (sourceExercises && sourceExercises.length > 0) {
+          const { error: newExercisesError } = await supabase.from('workout_exercises').insert(
+            sourceExercises.map((exercise) => ({
+              workout_id: newWorkout.id as string,
+              name: exercise.name,
+              sets_reps: exercise.sets_reps,
+              position: exercise.position,
+            }))
+          );
+
+          if (newExercisesError) throw newExercisesError;
+        }
+      }
+    }
+  } catch (err) {
+    await supabase.from('programme_blocks').delete().eq('id', newProgrammeId);
+    throw err;
+  }
+
+  return newProgrammeId;
+}
+
 /** Lets the workout builder show "Week 2 of Push/Pull/Legs" instead of
  * just a bare id when it's creating a session inside a programme week. */
 export async function getProgrammeWeekContext(weekId: string): Promise<ProgrammeWeekContext> {

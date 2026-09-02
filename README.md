@@ -431,7 +431,7 @@ Up to now a coach could only assign one standalone workout at a time. This chunk
 
 **Cover image is a URL, not an upload.** Adding real photo uploads means Supabase Storage — a new bucket, its own access policies, and an in-app image picker — which is real infrastructure this app doesn't have yet for anything else either (the brand logo is a bundled file, not something uploaded through the app). For now, paste a link to an already-hosted image (e.g. from Canva's share/export, or any image URL) into the "Cover image URL" field and it displays the same way. Worth revisiting once there's an actual need to upload images from a phone.
 
-**How to build one, as the coach:** Home → My Programmes → + New. Fill in name, goal type, duration, and (optionally) description, cover image URL, and training days, then Create. You land on the programme screen showing Week 1 through N as cards. Tap a week to open it, then "+ New session" to build a workout inside that week — this opens the exact same workout builder used for standalone workouts, just labeled with which week it's for and saving into that week instead of your general workout list.
+**How to build one, as the coach:** Home → Template Library → + New. Fill in name, goal type, duration, and (optionally) description, cover image URL, and training days, then Create. You land on the programme screen showing Week 1 through N as cards. Tap a week to open it, then "+ New session" to build a workout inside that week — this opens the exact same workout builder used for standalone workouts, just labeled with which week it's for and saving into that week instead of your general workout list.
 
 **One security tightening bundled in, following the same standard as every other table:** the "Coaches can create workouts" and "Coaches can update their own workouts" rules now also confirm that, if a workout does point at a programme week, that week's programme actually belongs to the same coach — otherwise a coach could, via a direct API call, link a workout they own into another coach's programme structure.
 
@@ -446,6 +446,30 @@ Up to now a coach could only assign one standalone workout at a time. This chunk
 5. Open Week 2 and add a session (e.g. "Upper Body", one exercise). In `workouts`, find that row and confirm its `programme_week_id` matches Week 2's id from `programme_weeks` — not null, and pointing at the right week.
 6. Go to My Workouts (the original standalone list) and create an unrelated workout there as before — in `workouts`, confirm that row's `programme_week_id` is `null`, proving the two flows coexist without interfering.
 7. Back on the programme screen, confirm Week 2's card now reads "1 session" and the others still read "0 sessions."
+
+## Template library and duplicate
+
+No new database tables — this reuses the programme structure from last chunk and just adds one new operation on top of it.
+
+**The template library is the same programme list from before, reframed.** Since programmes aren't tied to any client yet, every one you've built already IS a template — so rather than build a second, separate "templates" screen showing the same data, the coach's "My Programmes" screen is now called Template Library, and each card shows name, goal type, duration, and how many weeks have actually been built into it (which can be more than the original duration, if you've tapped "+ Add week" since).
+
+**Duplicate makes a real, independent copy — not a shortcut to the same rows.** Tapping "Duplicate" on a template walks the whole structure underneath it — the programme itself, every week, every session (workout) inside each week, and every exercise inside each session — and inserts a brand new row for each one. The copy doesn't reference a single row from the original; it just happens to start out with the same values. That's the whole point: this is the exact copying logic that assigning a programme to a client will reuse next chunk — giving a client "their own" programme has always meant giving them a genuine copy, not a shared pointer back to your master template, so proving this mechanism is clean now means assignment can just call the same function.
+
+The new copy is named "`<original name>` (Copy)" and you're taken straight to it — tap the title there to rename it (this is also the first place you can rename a programme at all, added specifically so you can carry out the verification below).
+
+If copying fails partway through (a network hiccup mid-copy, say), the half-made copy is deleted rather than left behind as a broken, incomplete duplicate — the original is never touched either way, since duplicating only ever reads from it, never writes to it.
+
+**Verify the duplicate is a genuine independent copy:**
+
+1. Open a template in the Template Library that already has at least one week with a session in it (if you don't have one, build one first — a 2-week programme with one session in Week 1 is enough).
+2. Note the original's exact name, and its Week 1 session's name and exercise(s).
+3. Back in Template Library, tap "Duplicate" on it. You're taken to the copy — its name should read "`<original>` (Copy)".
+4. Tap the copy's title, rename it to something clearly different (e.g. "TEST COPY"), and Save.
+5. In Supabase's Table Editor, open `programme_blocks` — confirm there are now **two** separate rows: the original still showing its original, unrenamed name, and a second row with the id from the copy's URL showing "TEST COPY". Two different ids, two different names — not one row that got edited.
+6. Open `programme_weeks`, filtered to the copy's programme id — confirm it has its own week rows with their own ids, distinct from the original's week ids (check the original's weeks are still there too, under the original's id).
+7. Open `workouts`, filtered to the copy's Week 1 id — confirm a session row exists there with its own id (not the original session's id) and the same name you saw in step 2.
+8. Go back into the app and open the **original** template again — confirm its name is still exactly what it was in step 2, and its Week 1 session is still there, unchanged, with its exercises intact.
+9. For the strongest proof: in Supabase's Table Editor, edit the copy's session name (or one of its exercises) directly — there's no in-app rename for sessions yet — then reload the original template in the app. It should show no trace of that change, since the copy's session row and the original's session row have always been two separate rows.
 
 ## Project structure reference
 
@@ -464,9 +488,9 @@ src/
         new.tsx          # create-workout form; also reused for sessions inside a programme week (?weekId=)
       programmes/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of the coach's programmes
+        index.tsx        # Template Library — list of the coach's programmes, with Duplicate
         new.tsx          # create-programme form — name, goal type, duration, cover image, training days
-        [id].tsx          # one programme — cover image, weeks list, + Add week
+        [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week
         week/[weekId].tsx  # one week of a programme — its sessions, + New session
       assignments/
         _layout.tsx      # coach-only guard for everything below
@@ -497,7 +521,7 @@ src/
   lib/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() database calls
-    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek()
+    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / updateProgrammeName()
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls

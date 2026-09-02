@@ -49,7 +49,7 @@ export default function HomeScreen() {
           </Link>
 
           <Link href="/programmes" style={styles.linkSpacing}>
-            <ThemedText type="linkPrimary">My Programmes</ThemedText>
+            <ThemedText type="linkPrimary">Template Library</ThemedText>
           </Link>
 
           <Link href="/assignments" style={styles.linkSpacing}>
