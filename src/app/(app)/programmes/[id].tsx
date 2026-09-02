@@ -1,9 +1,10 @@
 import { Image } from 'expo-image';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { SessionCalendar } from '@/components/session-calendar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
@@ -132,6 +133,7 @@ export default function ProgrammeDetailScreen() {
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
         <Pressable onPress={() => router.back()} style={styles.backButton}>
           <ThemedText type="linkPrimary">Back</ThemedText>
         </Pressable>
@@ -289,8 +291,22 @@ export default function ProgrammeDetailScreen() {
                 </Pressable>
               )}
             />
+
+            {programme.clientId && (
+              <>
+                <ThemedText type="smallBold" style={styles.calendarSectionLabel}>
+                  Client Calendar
+                </ThemedText>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.calendarSectionHint}>
+                  The exact same calendar this client sees on their own Calendar tab — reschedule a session here and
+                  it updates for them immediately, and vice versa.
+                </ThemedText>
+                <SessionCalendar clientId={programme.clientId} role="coach" />
+              </>
+            )}
           </>
         )}
+        </ScrollView>
       </SafeAreaView>
     </ThemedView>
   );
@@ -299,6 +315,9 @@ export default function ProgrammeDetailScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1, paddingHorizontal: Spacing.four, paddingTop: Spacing.four },
+  scrollContent: {
+    paddingBottom: Spacing.four,
+  },
   backButton: {
     marginBottom: Spacing.two,
   },
@@ -385,6 +404,12 @@ const styles = StyleSheet.create({
   listContent: {
     gap: Spacing.two,
     paddingBottom: Spacing.four,
+  },
+  calendarSectionLabel: {
+    marginTop: Spacing.four,
+  },
+  calendarSectionHint: {
+    marginBottom: Spacing.two,
   },
   weekCard: {
     flexDirection: 'row',

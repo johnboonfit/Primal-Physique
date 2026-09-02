@@ -1075,6 +1075,32 @@ No new SQL, and no new detail screen either — `/assigned/[id]` (the existing "
 6. In Week view, quickly tap-and-release a session — confirm it opens detail. Then press and hold the same card past roughly a third of a second before moving your finger — confirm it drags instead of opening anything.
 7. In Month view, tap a day with 2+ sessions of different statuses (e.g., one missed, one upcoming) — confirm the day's single glyph shows the missed flag (the higher-priority state), then confirm both individual sessions still show their own correct status once you open the day's detail card.
 
+## Reusing the calendar in Programme Builder, and a phase overlay
+
+No new SQL. Both pieces of this chunk lean entirely on data and permissions that already existed — RLS already let a coach both read (`"Coaches can view their own assignments"`) and update (`reschedule.sql`'s column grant, combined with `"Coaches can update their own assignments"`) any assignment they created, for any of their clients. Nothing needed opening up.
+
+**1. You asked me to confirm before building whether this would genuinely be the same component or a second version — the honest answer at the time was that it would have been a second version**, because the calendar's code lived directly inside the client route file, not as a separate reusable piece. So this chunk's real first step was extracting it: everything that used to be in `client/calendar.tsx` (the view toggle, drag-and-drop, the four visual states, tap-to-move) now lives in `src/components/session-calendar.tsx` as `<SessionCalendar clientId={...} role={...} />`, and `client/calendar.tsx` is now just a thin wrapper supplying the screen's title and chrome around it. The coach's Programme Builder (`programmes/[id].tsx`) imports and renders the exact same `SessionCalendar` — same file, same queries, same `rescheduleAssignment()` call, not a lookalike copy.
+
+**The only thing that differs by caller is `role`, and it only decides one thing:** which detail screen a tapped session opens — `/assigned/[id]` (the client's own logging flow) for `role="client"`, `/assignments/[id]` (the coach's existing read-only prescribed-vs-actual view) for `role="coach"`. Everything else — the data fetched, the drag math, the visual states, the phase overlay below — is identical code, not parallel implementations that happen to look alike.
+
+**Where it shows up for the coach:** open a client's *assigned* programme (not a template — templates have no client or real dates to show a calendar for) in Programme Builder, and a new "Client Calendar" section appears below the Weeks list, with a one-line note that it's the same calendar the client sees. Because `programmes/[id].tsx` had no scrolling before (its Weeks list was a `scrollEnabled={false}` FlatList relying on nothing else on the page needing to scroll), the whole screen is now wrapped in a `ScrollView` too — needed simply because the page is longer now, not a behavior change for anything already there.
+
+**2. The phase overlay** ("Phase 4 — Week 2/6") is derived, not stored: `listClientPhases()` (new, in `programmes.ts`) fetches every assigned programme this client has ever had, oldest first — "Phase 4" literally just means "the 4th one," in the order they started. `getPhaseForDate()` then works out, for any given date, which of those phases (if any) covers it, and which week of that phase it falls in — the exact same week-number math `getClientProgramme()` already uses for "Week 2/6" on the Training tab, reapplied here to whatever date is currently in view rather than always "today." It reads `referenceDate` (the same anchor both Week and Month navigation already use — it's always somewhere inside whichever period is on screen) so the label updates correctly the moment you page forward or back, in either view mode. If the visible period falls in a gap between phases, or before/after every phase the client's ever had, the label just doesn't show — there's nothing true to say.
+
+**Verify the coach and client are genuinely looking at the same data, not two systems that happen to look similar:**
+
+1. As the coach, open a client's assigned programme in Programme Builder, and drag one of their sessions to a different day in the embedded calendar.
+2. As that client (a different login), open their own Calendar tab — confirm the session shows on the new date, not the old one, without you having touched anything else.
+3. Reverse it: as the client, drag a session to yet another date. As the coach, reopen Programme Builder for that programme — confirm it reflects the client's move immediately.
+4. For a harder proof than "looks the same": in the SQL Editor, note an assignment's `id`, move it from either side, and confirm `select assigned_date from assignments where id = '...'` shows the same single row changing — there is only one row, one table, being read and written by both.
+
+**Verify the phase overlay updates correctly across navigation:**
+
+1. As a client with at least two sequential assigned programmes (e.g., a finished 6-week block followed by a current one), open Calendar and confirm the header shows the right "Phase N — Week X/Y" for the current week.
+2. Page backward with **‹** into the previous phase's date range — confirm the phase number, week number, and total both update to match that earlier programme, not the current one.
+3. Switch to Month view and page into a month that falls entirely within one phase — confirm the same label appears and matches. Page into a month before the client's very first assigned programme (or after their last one ends) — confirm the label disappears rather than showing something misleading.
+4. Repeat step 1 from the coach's side, in Programme Builder's embedded calendar for that same client — confirm it shows the identical phase/week label, since it's reading the same `listClientPhases()`/`getPhaseForDate()` logic against the same data.
+
 ## Project structure reference
 
 ```
@@ -1094,7 +1120,7 @@ src/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # Template Library — list of the coach's programmes, with Duplicate
         new.tsx          # create-programme form — name, goal type, duration, cover image, training days
-        [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week; Calorie target editor for assigned (client) instances
+        [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week; Calorie target editor + embedded SessionCalendar for assigned (client) instances
         assign/[id].tsx     # pick a client + start date, assign a template to them
         week/[weekId].tsx  # one week of a programme — its sessions, + New session
       exercise-library/
@@ -1121,7 +1147,7 @@ src/
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
-        calendar.tsx        # Calendar tab — Week/Month toggle; 4 visual states (Completed/Missed/Upcoming/Rest); drag (week) + tap-to-move (month); tap a session to open /assigned/[id]
+        calendar.tsx        # Calendar tab — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />
   components/
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
@@ -1129,6 +1155,7 @@ src/
     measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
     photo-compare-slider.tsx  # generic, reusable before/after image slider — drag to reveal, pinch either photo to resize it
     photos-panel.tsx            # Progress → Photos sub-tab content (front/side/back upload, gallery, compare tool)
+    session-calendar.tsx          # <SessionCalendar clientId role> — the real Week/Month calendar, shared by client/calendar.tsx and Programme Builder
     time-range-toggle.tsx     # shared 1W/1M/6M/1Y/All Time chip row, used by both MetricsPanel and MeasurePanel
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)
     measure-panel.tsx           # Progress → Measure sub-tab content (waist/chest/arms/thighs/hips/neck logging, per-type graph + history)
@@ -1140,7 +1167,7 @@ src/
   lib/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() database calls
-    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / getActiveGoalModifier() / setGoalModifierPercent()
+    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
     clients.ts               # listClients() / getClient() — coach-facing client roster, single-coach app so any coach sees any client

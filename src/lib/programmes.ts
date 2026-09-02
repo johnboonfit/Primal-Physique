@@ -693,3 +693,79 @@ export async function getClientProgramme(clientId: string): Promise<ClientProgra
       : null,
   };
 }
+
+export type ClientPhaseSummary = {
+  id: string;
+  name: string;
+  startDate: string;
+  durationWeeks: number;
+};
+
+/** Every one of this client's assigned (non-template) programme
+ * instances that actually has a start date, oldest first — this
+ * ordering is what "Phase 1," "Phase 2," etc. means: simply the Nth
+ * programme this client has ever been assigned, in the order they
+ * started. Used by the Calendar's phase overlay to work out which phase
+ * (and which week of it) a given visible date falls under. */
+export async function listClientPhases(clientId: string): Promise<ClientPhaseSummary[]> {
+  const { data, error } = await supabase
+    .from('programme_blocks')
+    .select('id, name, start_date, duration_weeks')
+    .eq('client_id', clientId)
+    .not('start_date', 'is', null)
+    .order('start_date', { ascending: true });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    startDate: row.start_date as string,
+    durationWeeks: row.duration_weeks as number,
+  }));
+}
+
+export type PhaseAtDate = {
+  phaseNumber: number;
+  weekNumber: number;
+  durationWeeks: number;
+  name: string;
+};
+
+/**
+ * Which phase (and which week within it) a given date falls under —
+ * `phases` must already be sorted oldest-first (as listClientPhases
+ * returns them). If two phases somehow overlap for this date, the one
+ * that started more recently wins, same tie-break getClientProgramme
+ * already uses for "the current programme." Returns null if the date
+ * falls before, after, or in a gap between every assigned phase.
+ */
+export function getPhaseForDate(phases: ClientPhaseSummary[], dateISO: string): PhaseAtDate | null {
+  const target = new Date(`${dateISO}T00:00:00.000Z`).getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  let bestIndex = -1;
+  let bestStart = -Infinity;
+
+  phases.forEach((phase, index) => {
+    const start = new Date(`${phase.startDate}T00:00:00.000Z`).getTime();
+    const end = start + phase.durationWeeks * 7 * dayMs; // exclusive
+    if (target >= start && target < end && start > bestStart) {
+      bestIndex = index;
+      bestStart = start;
+    }
+  });
+
+  if (bestIndex === -1) return null;
+
+  const phase = phases[bestIndex];
+  const daysElapsed = Math.floor((target - bestStart) / dayMs);
+  const weekNumber = Math.min(Math.max(Math.floor(daysElapsed / 7) + 1, 1), phase.durationWeeks);
+
+  return {
+    phaseNumber: bestIndex + 1,
+    weekNumber,
+    durationWeeks: phase.durationWeeks,
+    name: phase.name,
+  };
+}
