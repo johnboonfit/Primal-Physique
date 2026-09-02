@@ -969,6 +969,27 @@ Run `supabase/body-measurements.sql` in the SQL Editor after `body-metrics.sql`.
 3. In the SQL Editor: `select measurement_type, count(*) from body_measurements where client_id = 'PASTE_CLIENT_ID' group by measurement_type;` — confirm the counts match exactly what you logged per type, with no cross-contamination (already confirmed independently against a real Postgres instance: inserting waist and chest history for the same client produced exactly 3 waist rows and 2 chest rows, with zero overlap).
 4. Delete or edit nothing — this chunk doesn't add delete for measurements (matching the literal ask: log, graph, and list). Say if you want that added, same as food logs got earlier.
 
+## Photos sub-tab on Progress
+
+Run `supabase/progress-photos.sql` in the SQL Editor after `body-measurements-inches.sql`. Then run `npm install` (this chunk adds `expo-image-picker` and `base64-arraybuffer`), and if you're testing on a device rather than just the web export, restart with `npx expo start -c` so the new native module actually gets picked up.
+
+**Progress now has three sub-tabs: Metrics, Measure, Photos.**
+
+**1. Upload.** Pick an angle (Front/Side/Back — this one selector also decides which angle's gallery and compare tool you're looking at below), then **Take Photo** or **Choose from Library**. Photos are stored in a new **private** Supabase Storage bucket (`progress-photos`) — not public, so nobody can view a client's photos just by guessing or finding a URL. Each upload is its own row in a new `progress_photos` table; unlike weight or measurements, there's deliberately no "one per day" limit — a retake or a same-day second angle-check is just another row, never silently overwriting the last one.
+
+**2. Gallery.** Chronological (most recent first), filtered to whichever angle is selected above. Every image shown is loaded via a **signed URL** generated fresh each time the panel loads (the bucket being private means there's no permanent public link to store or cache) — signed for one hour, plenty for a browsing session.
+
+**3. Compare tool — built as a genuinely standalone, reusable component.** `src/components/photo-compare-slider.tsx` takes nothing but two image URIs and two optional labels — it has no idea what a "client," an "angle," or a "progress photo" even is. Drag the handle left/right (built on React Native's built-in `PanResponder`, not a new gesture-handling dependency) to reveal more of the "before" or "after" image underneath. Because it only needs URIs and labels, dropping it into the coach's Clients view later is just importing it and handing it two photo URLs — no changes to the component itself.
+
+**Why no delete, no editing beyond crop, no multi-select:** matching the same scope discipline as body measurements — this chunk is upload, view, and compare, full stop. Say the word if you want delete added, same as food logs got.
+
+**Verify upload, gallery, and compare each work correctly:**
+
+1. **Upload:** select Front, tap **Take Photo** (or **Choose from Library** if testing somewhere without a camera, e.g. web), confirm it appears in the Front gallery immediately after. In Supabase's Table Editor, confirm a new `progress_photos` row exists with today's date and `angle = 'front'`, and in Storage → `progress-photos`, confirm a file exists under `<your user id>/front/`.
+2. **Gallery filtering:** upload one photo each as Front, Side, and Back — confirm switching the angle chips shows only that angle's photos, never mixing angles together.
+3. **Compare tool:** with at least two Front photos from different dates, scroll to **Compare front photos**, tap one thumbnail under "Before" and a different one under "After" — confirm the slider appears and dragging its handle left and right smoothly reveals more of each image. Try picking the same photo for both slots — confirm it doesn't error, it just shows no visible difference (expected).
+4. **Privacy, already confirmed against a real Postgres instance:** the storage path convention (`<client_id>/<angle>/<filename>`) and the `progress_photos` table's RLS were both tested directly — a second account attempting to insert a photo row while falsely claiming another client's `client_id` is rejected outright by the database, not just hidden by the app's UI.
+
 ## Project structure reference
 
 ```
@@ -1014,7 +1035,7 @@ src/
         index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
-        progress.tsx       # Progress tab shell — Metrics/Measure sub-tab switcher, renders MetricsPanel or MeasurePanel
+        progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
         calendar.tsx        # placeholder
   components/
     coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
@@ -1022,6 +1043,8 @@ src/
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
     weight-trend-chart.tsx  # SVG line chart — actual weight (teal) + smoothed trend (red), used by MetricsPanel
     measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
+    photo-compare-slider.tsx  # generic, reusable before/after image slider — takes two URIs + labels, nothing else
+    photos-panel.tsx            # Progress → Photos sub-tab content (front/side/back upload, gallery, compare tool)
     time-range-toggle.tsx     # shared 1W/1M/6M/1Y/All Time chip row, used by both MetricsPanel and MeasurePanel
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)
     measure-panel.tsx           # Progress → Measure sub-tab content (waist/chest/arms/thighs/hips/neck logging, per-type graph + history)
@@ -1043,6 +1066,7 @@ src/
     weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend, optional body fat %/muscle %) / listWeightLogs() / hasWeightLogForDate() database calls
     body-measurements.ts      # listBodyMeasurements() / saveBodyMeasurement() (upsert) / groupMeasurementsByType() — waist/chest/arms/thighs/hips/neck, no smoothing
     time-ranges.ts              # TIME_RANGES / filterByRange() — shared 1W/1M/6M/1Y/All Time filtering logic
+    progress-photos.ts            # uploadProgressPhoto() / listProgressPhotos() — private Storage bucket + signed URLs
     tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
@@ -1076,4 +1100,5 @@ supabase/
   body-metrics.sql                                                # paste in after coach-nutrition-and-delete.sql, adds weight_logs.body_fat_percent + muscle_percent
   body-measurements.sql                                             # paste in after body-metrics.sql, adds body_measurements (originally cm)
   body-measurements-inches.sql                                        # paste in right after body-measurements.sql — renames value_cm to value_in, converts existing rows
+  progress-photos.sql                                                   # paste in after body-measurements-inches.sql — private Storage bucket + progress_photos table
 ```

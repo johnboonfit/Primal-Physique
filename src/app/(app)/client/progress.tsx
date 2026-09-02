@@ -4,15 +4,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { MeasurePanel } from '@/components/measure-panel';
 import { MetricsPanel } from '@/components/metrics-panel';
+import { PhotosPanel } from '@/components/photos-panel';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 
-type SubTab = 'metrics' | 'measure';
+type SubTab = 'metrics' | 'measure' | 'photos';
 
 const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'metrics', label: 'Metrics' },
   { key: 'measure', label: 'Measure' },
+  { key: 'photos', label: 'Photos' },
 ];
 
 export default function ProgressScreen() {
@@ -40,7 +42,9 @@ export default function ProgressScreen() {
             ))}
           </View>
 
-          {activeTab === 'metrics' ? <MetricsPanel /> : <MeasurePanel />}
+          {activeTab === 'metrics' && <MetricsPanel />}
+          {activeTab === 'measure' && <MeasurePanel />}
+          {activeTab === 'photos' && <PhotosPanel />}
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
