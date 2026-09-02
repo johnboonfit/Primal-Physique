@@ -1173,6 +1173,30 @@ No SQL, and — worth being upfront about — this one surfaced two things that 
 3. Drag a session to a new day, then navigate away and back via Training → View Calendar again — confirm the move persisted (this is the same calendar component and the same `assignments` table as always, so nothing about how it stores or reschedules sessions changed).
 4. As the coach, confirm Programme Builder's embedded calendar for a client is completely unaffected — that one was never in the client's tab bar to begin with, and this chunk didn't touch `session-calendar.tsx`.
 
+## Check-in Form Builder (creation only — scheduling and client assignment are next)
+
+New tables (`supabase/form-templates.sql`): `form_templates` (one row per form — just a coach and a name) and `form_questions` (one row per question — its position, type, label, and a `config` jsonb column). Same parent/child shape as `programme_blocks`/`programme_weeks`, same "check the parent belongs to me" RLS pattern as `workout_exercises`.
+
+**The part actually worth explaining is the extensible type system, not the CRUD.** The request was specific: this should be a list of type definitions, not per-type UI branches, so adding a question type later is a data change. Here's how that's actually built, end to end:
+
+- **`src/lib/question-types.ts`** is the whole system. `QUESTION_TYPES` is an array of six entries (short text, number, single select, multi select, scale/slider, weight/measurement) — each one just data: a label, a description, a list of `configFields` it needs, a `defaultConfig()`, a `validateConfig()`, and a `toStoredConfig()`. Nothing about "what a single-select question needs" lives anywhere else.
+- **`configFields` doesn't enumerate one shape per question type — it enumerates one shape per *kind of input control*.** There are only three kinds right now: `text` (a single field, used by measurement's unit), `list` (an open-ended list of strings, used by both select types' options), and `range` (a min/max pair, used by scale). Single-select and multi-select both just declare a `list` field — neither one has its own bespoke "options editor."
+- **`src/components/question-config-editor.tsx`** has exactly one render branch per `kind` — three branches, not six. This is the piece that makes the extensibility real: a brand new question type that reuses an existing kind (say, a future "coach note" type that's just another `text` field) needs zero new UI code, only a new entry in `QUESTION_TYPES`. Only a genuinely new *kind* of input would ever need a fourth branch here — and even then, it's one new case in one file, not a change anywhere the builder screen itself lives.
+- **The builder screen (`forms/new.tsx`) never branches on question type at all.** It renders a type-chip row from `QUESTION_TYPES`, and below it, loops over `getQuestionTypeDefinition(type).configFields` handing each one to `ConfigFieldEditor`. Switching a question's type just replaces its config with that type's `defaultConfig()` and lets the next render pick up whatever fields the new type declares.
+- **The read-only detail screen (`forms/[id].tsx`) uses the same trick in reverse** — it reads a saved question's config back into human-readable text generically off `configFields`, so reviewing a saved form doesn't need per-type code either.
+
+**Why `toStoredConfig` exists as its own step, separate from validation:** a scale's min/max are edited as raw text (so a field the coach clears mid-edit reads as `""`, not a `0` that silently passes validation) — `validateConfig` catches a blank or backwards range before save, and only once a question is confirmed valid does `toStoredConfig` convert that raw text into real numbers for the database. Select options get the same treatment: `toStoredConfig` trims whitespace and drops empty rows there too, so what's saved is exactly what a client will eventually see, not everything the coach typed into scratch fields along the way.
+
+**Verified more than typecheck this time**, since dynamic per-type UI is exactly the kind of thing that's easy to convince yourself is right on paper and wrong in practice. Ran a live dev server and drove the actual builder through a throwaway debug page: switching a question's type correctly swapped in that type's config fields every time (a single-select showed 2 empty option boxes, a scale showed a 1–10 default range); adding an option grew the list from 2 to 3 to 4 inputs; validation correctly blocked save with the right per-question message for an empty label, fewer than 2 options, and a scale minimum ≥ maximum; and the final saved payload for a 4-question form (short text, single select, scale, measurement) had exactly the right shape — real numbers for the scale range, trimmed non-empty strings for select options, all matching what the database columns expect.
+
+**Verify a form with a few different question types actually saves correctly:**
+1. As the coach, open Check-in Forms (new link on Home) → + New.
+2. Name it, then build at least: one Short text question, one Single select with 2–3 options, one Scale/slider (try the default 1–10, or change it), and one Weight/measurement question with a unit like "lb".
+3. Tap Save — confirm it lands you on that form's detail page, showing the name, question count, and every question with its correct type label and a readable summary of its config (the select's options listed, the scale's range shown as "1–10", the measurement's unit shown).
+4. Go back to Check-in Forms — confirm the new form appears in the list with the right question count.
+5. For a harder check than "looks right in the app": open the SQL Editor and run `select * from form_questions where form_id = '<id>' order by position;` — confirm one row per question, in the order you built them, with `question_type` matching what you picked and `config` holding exactly what you'd expect (e.g. `{"options": ["Yes", "No"]}`, `{"min": 1, "max": 10}`).
+6. Try saving with a question left blank, or a select with only 1 option, or a scale with min ≥ max — confirm each is rejected with a clear "Question N: ..." message and nothing gets saved (check the SQL Editor shows no new `form_templates` row from the failed attempt).
+
 ## Project structure reference
 
 ```
@@ -1211,6 +1235,11 @@ src/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of every client account
         [id].tsx          # one client's detail page — Programme section (assigned programme card, links to Programme Builder) + Nutrition section (target + 14-day food log history, delete)
+      forms/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # list of the coach's check-in form templates
+        new.tsx          # form builder — name + ordered question list, each with a type (short text/number/single select/multi select/scale/measurement) and type-driven config
+        [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
@@ -1234,6 +1263,7 @@ src/
     measure-panel.tsx           # Progress → Measure sub-tab content (waist/chest/arms/thighs/hips/neck logging, per-type graph + history)
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
     confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt used by all three archive actions
+    question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
   context/
@@ -1256,6 +1286,8 @@ src/
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
+    question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig per type); adding a type is an entry here, not a UI rebuild
+    form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
