@@ -17,6 +17,7 @@ import {
   type ClientAssignmentSummary,
   type OverdueAssignment,
 } from '@/lib/assignments';
+import { getCommunityEnabled, getCommunityHidden, setCommunityHidden } from '@/lib/community';
 import { listFoodLogsForDate } from '@/lib/food-logs';
 import { ensureCheckInsUpToDate, listUpNextCheckIns, type UpNextCheckIn } from '@/lib/form-check-ins';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
@@ -76,6 +77,13 @@ export default function ClientHomeScreen() {
 
   const [weightLoggedToday, setWeightLoggedToday] = useState<boolean | null>(null);
   const [foodLoggedToday, setFoodLoggedToday] = useState<boolean | null>(null);
+
+  // communityEnabled is the coach's app-wide switch (separate from
+  // communityHidden, this client's own personal preference) — null
+  // means "not loaded yet," so the card stays absent rather than
+  // flashing on then off while both are still in flight.
+  const [communityEnabled, setCommunityEnabledLocal] = useState<boolean | null>(null);
+  const [communityHidden, setCommunityHiddenLocal] = useState<boolean | null>(null);
 
   // One-time banner for workouts the app moved on its own this session.
   const [movedNotice, setMovedNotice] = useState<AutoRescheduleResult['moved']>([]);
@@ -276,6 +284,41 @@ export default function ClientHomeScreen() {
       };
     }, [session, logDate])
   );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+
+      Promise.all([getCommunityEnabled(), getCommunityHidden(session.user.id)])
+        .then(([enabled, hidden]) => {
+          if (cancelled) return;
+          setCommunityEnabledLocal(enabled);
+          setCommunityHiddenLocal(hidden);
+        })
+        .catch((err) => console.error('Failed to load Community visibility:', err));
+
+      return () => {
+        cancelled = true;
+      };
+    }, [session])
+  );
+
+  // Optimistic — flips immediately, then reverts if the save fails. This
+  // is a personal preference only (auth.uid() = id on profiles), never
+  // the coach's app-wide switch, which lives on the Community screen
+  // itself.
+  const handleToggleCommunityHidden = async () => {
+    if (!session || communityHidden === null) return;
+    const next = !communityHidden;
+    setCommunityHiddenLocal(next);
+    try {
+      await setCommunityHidden(session.user.id, next);
+    } catch (err) {
+      console.error('Failed to update Community visibility:', err);
+      setCommunityHiddenLocal(!next);
+    }
+  };
 
   const handleManualReschedule = async (assignmentId: string) => {
     setManualError(null);
@@ -553,6 +596,27 @@ export default function ClientHomeScreen() {
                 </Pressable>
               );
             })}
+
+          {communityEnabled &&
+            (communityHidden ? (
+              <Pressable onPress={handleToggleCommunityHidden} style={styles.communityHiddenRow}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  👁 Community (hidden) — tap to show
+                </ThemedText>
+              </Pressable>
+            ) : (
+              <ThemedView type="backgroundElement" style={styles.communityCard}>
+                <Pressable style={styles.communityLink} onPress={() => router.push('/community')}>
+                  <ThemedText type="smallBold">Community</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    See what everyone&apos;s up to
+                  </ThemedText>
+                </Pressable>
+                <Pressable onPress={handleToggleCommunityHidden} hitSlop={8}>
+                  <ThemedText type="smallBold">👁</ThemedText>
+                </Pressable>
+              </ThemedView>
+            ))}
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -706,5 +770,23 @@ const styles = StyleSheet.create({
   },
   manualSaveText: {
     color: Colors.text,
+  },
+  communityCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.two,
+    marginTop: Spacing.two,
+  },
+  communityLink: {
+    flex: 1,
+    gap: Spacing.half,
+  },
+  communityHiddenRow: {
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
+    marginTop: Spacing.two,
   },
 });

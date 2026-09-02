@@ -1282,6 +1282,60 @@ That's a client who's roughly on track with food most days but slipping on check
 4. Average the two percentages from steps 2 and 3, round to the nearest whole number.
 5. Open the app as that client (Progress → Compliance), or as the coach on the Clients list, and confirm the displayed score matches your hand-calculated number exactly.
 
+## Community Posts feed
+
+Run `supabase/community.sql` in the SQL Editor after `progress-photos.sql`. A shared feed both the coach and every client can read and post into — four fixed tags (Announcement, Win, PR, Question), with Announcement restricted to the coach.
+
+**Where it lives.** Not a 6th tab — the client tab bar already carries 5. Same shape as Calendar: a real, routable screen (`/community`, `/community/new`) reached via a link, not a permanent tab bar slot. There's a "Community" card on the client's Home tab and a "Community" link on the coach's Home screen.
+
+**The table** (`community_posts`): author, tag, body, an optional image, plus `reaction_count` and `comment_count` — two plain integer columns, both default to 0. There's no reacting or commenting built yet this chunk, and no separate tables for them — those columns exist now purely so the feed card's layout won't need to change shape again the day that feature actually lands. Don't read a nonzero count anywhere yet; there isn't one.
+
+**The Announcement restriction is enforced by Postgres, not by the compose screen being polite.** The client-side tag picker never *offers* Announcement to a client account — that's just good UX, not the actual security boundary. The real boundary is `community_posts`' insert policy:
+
+```sql
+with check (
+  auth.uid() = author_id
+  and (tag <> 'announcement' or public.is_coach())
+)
+```
+
+This runs against whoever is really signed in, checked at the database, every time — a client-role account can't get past it by editing the request, calling the API directly, or anything else short of actually being a coach. The verification steps below prove this by trying it directly in SQL as an impersonated client, not just by clicking around the UI.
+
+**Two separate on/off switches, not one:**
+
+1. **The coach's app-wide switch** (`app_settings.community_enabled`, a singleton table — it can only ever hold exactly one row). Turned off, Community disappears from *every* client's Home tab, full stop, regardless of anyone's personal preference. The control for it lives at the top of the Community screen itself, visible only to the coach — a client account never sees it, and the update policy backs that up the same way the Announcement restriction does (`using (public.is_coach())`).
+2. **A client's own "hide Community for me" toggle** (`profiles.community_hidden`, the eye icon on their Home card) — personal, independent of switch #1, and only ever readable/settable for that client's own account. Tapping the eye icon doesn't remove the card outright; it collapses to a small "👁 Community (hidden) — tap to show" row, so there's always a way back rather than a setting that's easy to lose track of.
+
+If the coach's switch is off, a client's personal preference doesn't matter — there's nothing to show either way. If it's on, each client's own eye-icon choice is theirs alone; it has no effect on any other client or on the coach.
+
+**Images** use the same private-bucket-plus-signed-URL shape as progress photos (`community-images`, signed at read time via `createSignedUrls`), except the read policy is deliberately open to *any* signed-in user rather than folder-owner-only — it's a shared feed, so everyone needs to be able to see everyone else's post images, not just their own.
+
+**Verify both roles can post correctly:**
+1. As the coach, open Community → + New. Confirm all four tags are offered, post one of each (Announcement, Win, PR, Question) — confirm all four appear in the feed with the right emoji/label, and the Announcement post gets a distinct left-accent border.
+2. As a client, open Community → + New. Confirm the tag picker shows only Win, PR, and Question — Announcement is never in the list, not even greyed out.
+3. Post a Win as that client — confirm it appears in the shared feed alongside the coach's posts, visible to both of you.
+
+**Verify the Announcement restriction is a real database rule, not just a UI suggestion:**
+1. In Supabase's SQL Editor, use **Impersonate user** (top of the editor) to run as one of your client accounts.
+2. While impersonating that client, run:
+   ```sql
+   insert into community_posts (author_id, tag, body) values ('<that client's own id>', 'announcement', 'This should fail');
+   ```
+3. Confirm this is **rejected** with a row-level security policy violation — even though `author_id` correctly matches the impersonated client. The app's UI never even gave this client the option, but this proves the database wouldn't have allowed it either way.
+4. Switch impersonation to your coach account and run the same insert (with the coach's own id as `author_id`) — confirm it **succeeds** this time. Delete that test row afterward.
+
+**Verify the coach's app-wide switch:**
+1. As the coach, open Community — confirm the "Community is on for clients / Turn off" row appears (a client account never sees this control at all).
+2. Tap Turn off. In Supabase, confirm `app_settings.community_enabled` is now `false`.
+3. As a client, confirm the Community card is now gone from their Home tab entirely. If they already had the Community screen open, confirm it now shows "Your coach has turned Community off for now" instead of the feed.
+4. Turn it back on as the coach — confirm the client's Home card reappears.
+
+**Verify the client's personal eye-icon toggle is separate from the coach's switch:**
+1. With Community turned on, as a client, tap the eye icon on the Community card — confirm it collapses to "👁 Community (hidden) — tap to show."
+2. Log in as a *different* client — confirm Community still shows normally for them; one client hiding it never affects another.
+3. In Supabase, confirm `profiles.community_hidden` is `true` only for the client who tapped it.
+4. Tap the hidden row again — confirm Community reappears for that client.
+
 ## Project structure reference
 
 ```
@@ -1292,7 +1346,10 @@ src/
       login.tsx
       signup.tsx        # name/email/password only — no role choice; every signup is a client
     (app)/
-      home.tsx          # coach's home screen only; redirects clients to /client
+      home.tsx          # coach's home screen only; redirects clients to /client — includes a Community link
+      community/
+        index.tsx        # shared feed, both roles read it; coach-only app-wide on/off switch at the top
+        new.tsx           # compose a post — tag picker excludes Announcement entirely for a client account
       workouts/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's workouts, with Archive (soft-delete — see archive-content.sql)
@@ -1332,7 +1389,7 @@ src/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
-        index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next (merges pending workouts + due check-ins), Today's Habits checklist
+        index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
@@ -1376,6 +1433,7 @@ src/
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
+    community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() — the Announcement-is-coach-only rule lives in community.sql's RLS, not in this file
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
@@ -1411,4 +1469,5 @@ supabase/
   body-measurements.sql                                             # paste in after body-metrics.sql, adds body_measurements (originally cm)
   body-measurements-inches.sql                                        # paste in right after body-measurements.sql — renames value_cm to value_in, converts existing rows
   progress-photos.sql                                                   # paste in after body-measurements-inches.sql — private Storage bucket + progress_photos table
+  community.sql                                                           # paste in after progress-photos.sql — app_settings singleton, profiles.community_hidden, community_posts, community-images bucket
 ```
