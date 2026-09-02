@@ -36,7 +36,16 @@ export default function ClientTabsLayout() {
       <Tabs.Screen name="training" options={{ title: 'Training' }} />
       <Tabs.Screen name="nutrition" options={{ title: 'Nutrition' }} />
       <Tabs.Screen name="progress" options={{ title: 'Progress' }} />
-      <Tabs.Screen name="calendar" options={{ title: 'Calendar' }} />
+      <Tabs.Screen name="chat" options={{ title: 'Chat' }} />
+      {/* Calendar is fully built (Phase 7's Week/Month view) — it just isn't
+       * a tab anymore. `href: null` is the documented Expo Router way to
+       * keep a screen registered and routable (Training's "View Calendar"
+       * link still opens it) while hiding its tab bar button entirely.
+       * Removing this <Tabs.Screen> outright would NOT do the same thing:
+       * calendar.tsx would still auto-join the tab bar as an unstyled 6th
+       * tab, since Tabs includes every file in this directory regardless
+       * of whether it's declared here. */}
+      <Tabs.Screen name="calendar" options={{ href: null }} />
     </Tabs>
   );
 }

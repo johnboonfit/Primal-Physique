@@ -164,9 +164,14 @@ export default function ClientTrainingScreen() {
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        <ThemedText type="title" style={styles.title}>
-          Training
-        </ThemedText>
+        <View style={styles.header}>
+          <ThemedText type="title" style={styles.title}>
+            Training
+          </ThemedText>
+          <Pressable onPress={() => router.push('/client/calendar')}>
+            <ThemedText type="linkPrimary">View Calendar →</ThemedText>
+          </Pressable>
+        </View>
 
         {!loading && !error && <HeroStat value={assignments.length} label="Workouts Assigned" />}
 
@@ -230,9 +235,13 @@ export default function ClientTrainingScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1, paddingHorizontal: Spacing.four, paddingTop: Spacing.four },
-  title: {
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: Spacing.three,
   },
+  title: {},
   sectionLabel: {
     marginTop: Spacing.three,
     marginBottom: Spacing.two,

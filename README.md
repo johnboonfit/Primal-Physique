@@ -1151,6 +1151,28 @@ Nothing about *adding* an entry changes: the meal-entry modal still saves agains
 2. Confirm `›` is greyed out and does nothing while viewing today, and re-enables the moment you step back to any earlier day.
 3. As the coach, open that same client's Clients detail page — confirm both the "today" entry and the backdated one you just added both show up in the 14-day history list, on their correct dates.
 
+## Swapping the Calendar tab for Chat
+
+No SQL, and — worth being upfront about — this one surfaced two things that didn't actually exist yet, caught by checking the codebase before touching anything rather than assuming the request's premise:
+
+**There's no Chat feature in this app at all.** No messaging tables, no coach-side inbox, no client-side thread — and no "Chats" quick-link on the Home dashboard either (checked every file in `src/` and every SQL migration for "chat," "message," "conversation" — nothing). Building a real client–coach messaging system is a genuinely separate, much larger piece of work than "swap a tab," so rather than build one, this chunk adds Chat as a real tab pointing at a clearly-labeled placeholder screen ("Direct messaging with your coach is coming soon") — so it already has its permanent spot in the tab bar, and turning it into the real thing later won't mean reshuffling the tab bar again.
+
+**There was also no "View Calendar" button on Training** — the request described one as already existing; it didn't. Removing Calendar's tab button without adding a replacement path would have made the Calendar screen completely unreachable, so Training now has one: a small "View Calendar →" link next to the tab's title, opening `/client/calendar` directly.
+
+**How Calendar stays reachable but hidden from the tab bar — the actual mechanism, not just the effect:** the naive approach — deleting the `<Tabs.Screen name="calendar">` line from `client/_layout.tsx` entirely — does **not** hide it. Checked this directly in the installed `expo-router` package's own source rather than assuming: a `Tabs` layout auto-includes every file in its directory as a real screen in the navigator regardless of whether it's declared as a child `<Tabs.Screen>` — undeclared files just get appended to the tab bar with default (unstyled) options. So removing the line would have left Calendar as an ugly, unlabeled 6th tab button, not removed it. The actual fix is `<Tabs.Screen name="calendar" options={{ href: null }} />` — Expo Router's documented way to keep a screen fully registered and routable (so `router.push('/client/calendar')` from Training still works exactly as before) while telling the tab bar specifically not to render a button for it. Verified this exact mechanism live in a throwaway debug route before touching the real tab bar: with `href: null`, the tab bar showed only the declared visible tabs, the hidden route still opened correctly and rendered its content when linked to directly, and the tab bar stayed unchanged while sitting on that hidden screen.
+
+**Nothing about the Calendar screen itself changed** — `client/calendar.tsx` and `session-calendar.tsx` are untouched, byte-for-byte, from the last chunk. This was purely a navigation change.
+
+**Verify the tab bar:**
+1. Open the client's 5-tab bar — confirm it now reads Home / Training / Nutrition / Progress / Chat, with no Calendar button anywhere.
+2. Tap Chat — confirm it opens the placeholder screen rather than erroring or showing a blank tab.
+
+**Verify Calendar still works exactly as before, just reached differently:**
+1. Open Training — confirm a "View Calendar →" link now sits next to the title.
+2. Tap it — confirm it opens the exact same Week/Month calendar as always: view toggle, phase overlay, drag-and-drop in Week view, tap-to-move in Month view, all four visual states.
+3. Drag a session to a new day, then navigate away and back via Training → View Calendar again — confirm the move persisted (this is the same calendar component and the same `assignments` table as always, so nothing about how it stores or reschedules sessions changed).
+4. As the coach, confirm Programme Builder's embedded calendar for a client is completely unaffected — that one was never in the client's tab bar to begin with, and this chunk didn't touch `session-calendar.tsx`.
+
 ## Project structure reference
 
 ```
@@ -1192,12 +1214,13 @@ src/
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
-        _layout.tsx      # client-only guard + the 5-tab bar
+        _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
         index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next, Today's Habits checklist
-        training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
+        training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
-        calendar.tsx        # Calendar tab — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />
+        chat.tsx             # Chat tab — placeholder ("coming soon"); no messaging system built yet
+        calendar.tsx        # Not a tab anymore, still a real route — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />, reached via Training's "View Calendar" link
   components/
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
