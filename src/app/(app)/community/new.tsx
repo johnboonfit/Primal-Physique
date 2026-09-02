@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -10,7 +10,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import { COMMUNITY_TAGS, createCommunityPost, type CommunityTag } from '@/lib/community';
+import { COMMUNITY_TAGS, createCommunityPost, isBlocked, type CommunityTag } from '@/lib/community';
 
 const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
   mediaTypes: 'images',
@@ -38,6 +38,30 @@ export default function NewCommunityPostScreen() {
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A coach can never be blocked (community-moderation.sql's insert
+  // policy requires the target to be a client), so there's nothing to
+  // check for that case. This is a courtesy — the real wall is
+  // community_posts' insert policy either way, which checks this fresh
+  // every time regardless of what this screen decided a moment ago.
+  const [blockStatus, setBlockStatus] = useState<'checking' | 'blocked' | 'clear'>(isCoach ? 'clear' : 'checking');
+
+  useEffect(() => {
+    if (isCoach || !session) return;
+    let cancelled = false;
+    isBlocked(session.user.id)
+      .then((blocked) => {
+        if (!cancelled) setBlockStatus(blocked ? 'blocked' : 'clear');
+      })
+      .catch(() => {
+        // Fail open — an error here just means the courtesy message
+        // doesn't show; it never widens what the database will accept.
+        if (!cancelled) setBlockStatus('clear');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCoach, session]);
 
   const handlePickImage = async (source: 'camera' | 'library') => {
     setError(null);
@@ -87,6 +111,36 @@ export default function NewCommunityPostScreen() {
       setSaving(false);
     }
   };
+
+  if (blockStatus === 'checking') {
+    return (
+      <ThemedView style={styles.container}>
+        <SafeAreaView style={[styles.safeArea, styles.centered]}>
+          <ActivityIndicator />
+        </SafeAreaView>
+      </ThemedView>
+    );
+  }
+
+  if (blockStatus === 'blocked') {
+    return (
+      <ThemedView style={styles.container}>
+        <SafeAreaView style={styles.safeArea}>
+          <View style={styles.scrollContent}>
+            <ThemedText type="title" style={styles.title}>
+              New post
+            </ThemedText>
+            <ThemedText themeColor="textSecondary">
+              You've been restricted from posting to Community. If you think this is a mistake, talk to your coach.
+            </ThemedText>
+            <Pressable style={styles.cancelButton} onPress={() => router.back()}>
+              <ThemedText type="linkPrimary">Back to Community</ThemedText>
+            </Pressable>
+          </View>
+        </SafeAreaView>
+      </ThemedView>
+    );
+  }
 
   return (
     <ThemedView style={styles.container}>
@@ -181,6 +235,7 @@ export default function NewCommunityPostScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1 },
+  centered: { alignItems: 'center', justifyContent: 'center' },
   scrollContent: {
     padding: Spacing.four,
     gap: Spacing.two,

@@ -1343,6 +1343,39 @@ If the coach's switch is off, a client's personal preference doesn't matter — 
 grant update (community_hidden) on public.profiles to authenticated;
 ```
 
+## Community moderation: Report, Delete, Block
+
+Run `supabase/community-moderation.sql` in the SQL Editor after `community.sql`. Required before real peer posting opens to actual clients — three pieces, all enforced at the database, not just the UI.
+
+**1. Report.** Any signed-in user can report a post from the feed (a plain-text "Report" link on any post that isn't their own) — a modal asks for an optional reason, then submits. The same person reporting the same post twice fails cleanly with "You've already reported this post" (a real unique constraint, `community_reports`' `unique(post_id, reporter_id)`), not a duplicate row the coach has to review twice.
+
+**2. Delete.** A "Delete" link appears on a post when you're its author, or on every post if you're the coach — one `deletePost()` function in `community.ts`, no role branching in the code at all. `community_posts` now carries two delete policies (author-of-their-own, coach-of-any), and Postgres ORs them together, so whichever one actually applies to whoever's signed in is the one that fires. Deleting a post also cleans up its image from storage, best-effort — a delete that already succeeded in the database is never rolled back over a failed file cleanup.
+
+**3. Block.** The coach-facing Moderation screen (`/community/moderation`, a "🚩 Moderation" link on the Community screen, only visible to the coach, with an open-report count badge) lets the coach block the author of a reported post. A blocked client keeps every post they've already made — nothing about existing posts or the feed's select policy changes — they simply can't create a *new* one; their next attempt to post gets rejected the same way the Announcement restriction rejects a client, at the database, not the UI. The compose screen checks this ahead of time too, so a blocked client sees a plain "You've been restricted from posting" message instead of a confusing raw error — that's a courtesy on top of the real wall, not the wall itself.
+
+**Why Block is a separate table, not a column on `profiles`, and why that matters:** the obvious design — `profiles.community_blocked` — runs into the exact trap `community_hidden` almost fell into with `xp.sql`'s column lockdown, except worse: granting `authenticated` a column-level UPDATE on `community_blocked` (needed so the *coach* can write it) would ALSO let a *client* flip it back off on **themselves**, via the same existing "Users can update their own profile" row policy — there's no way in Postgres to grant a column to "coaches acting on someone else's row" only. A dedicated `community_blocks` table sidesteps this cleanly: insert (block) and delete (unblock) are gated by `is_coach()` alone, full stop, with the same defense-in-depth check `assignments.sql` already established (not just "you're a coach," but "the id you're blocking actually belongs to a client").
+
+**Blocking doesn't auto-resolve the report that led to it** — deliberately. The coach might still want to delete the specific offending post, or leave it up while the author's blocked from posting more; dismiss or delete it separately if you're done with it. Deleting the post *does* clean up every open report pointing at it, automatically (cascade delete on `community_reports.post_id`) — there's nothing left to review once the post itself is gone.
+
+**A "Blocked clients" list with Unblock** sits below the reports on the Moderation screen — shipping a block with no way to reverse it felt like an obvious gap worth closing while building this, not a separate ask.
+
+**Verify Report works and the duplicate-report guard is real:**
+1. As a client, open Community, find a post that isn't your own, tap Report, type a reason, submit.
+2. As the coach, open Community → 🚩 Moderation — confirm the report appears with the right post, the reporting client's name, and the reason you typed.
+3. As that same client, try to report the exact same post again — confirm you get "You've already reported this post," not a second entry in the moderation list.
+
+**Verify Delete works for both the author and the coach, and only for them:**
+1. As a client, post something, then delete it yourself from the feed — confirm it's gone for everyone.
+2. As a different client, post something. As the coach, confirm you can delete that post too, from either the feed or the Moderation screen's "Delete post."
+3. As a client, confirm you do **not** see a Delete link on any post that isn't your own.
+
+**Verify Block actually stops new posts, not just the compose screen's UI:**
+1. As the coach, open Moderation and block a client (via "Block author" on one of their reported posts, or by testing directly).
+2. As that client, open Community → + New — confirm you see "You've been restricted from posting" instead of the compose form.
+3. Confirm their **existing** posts are still visible in the feed, unchanged.
+4. The real proof it's a database rule: in Supabase's SQL Editor, use **Impersonate user** to run as that blocked client, then try `insert into community_posts (author_id, tag, body) values ('<that client's id>', 'win', 'test');` directly — confirm it's rejected, exactly the same way the impersonation test for the Announcement restriction works.
+5. As the coach, unblock that client from the Moderation screen's "Blocked clients" list — confirm they can post again, both through the app and via the same impersonated insert now succeeding.
+
 ## Project structure reference
 
 ```
@@ -1355,8 +1388,9 @@ src/
     (app)/
       home.tsx          # coach's home screen only; redirects clients to /client — includes a Community link
       community/
-        index.tsx        # shared feed, both roles read it; coach-only app-wide on/off switch at the top
-        new.tsx           # compose a post — tag picker excludes Announcement entirely for a client account
+        index.tsx        # shared feed, both roles read it; coach-only app-wide on/off switch + Moderation link at the top; Report/Delete actions per post
+        new.tsx           # compose a post — tag picker excludes Announcement entirely for a client account; shows a plain message instead of the form if this client is blocked
+        moderation.tsx      # coach-only (inline role check, no folder _layout.tsx): open reports with Dismiss/Delete post/Block author, plus a Blocked clients list with Unblock
       workouts/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's workouts, with Archive (soft-delete — see archive-content.sql)
@@ -1415,7 +1449,8 @@ src/
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)
     measure-panel.tsx           # Progress → Measure sub-tab content (waist/chest/arms/thighs/hips/neck logging, per-type graph + history)
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
-    confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt used by all three archive actions
+    confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt — archive actions, Community's Delete/Block
+    report-post-modal.tsx    # <ReportPostModal> — same Modal shape as ConfirmDialog plus a free-text optional reason field, kept separate since ConfirmDialog's callers all expect its fixed message-only shape
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
     question-answer-input.tsx    # <AnswerInput> — one render branch per answer kind (short_text/numeric/single_choice/multi_choice/scale), same reasoning; used by the check-in fill-out screen
   constants/
@@ -1440,7 +1475,7 @@ src/
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
-    community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() — the Announcement-is-coach-only rule lives in community.sql's RLS, not in this file
+    community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
@@ -1477,4 +1512,5 @@ supabase/
   body-measurements-inches.sql                                        # paste in right after body-measurements.sql — renames value_cm to value_in, converts existing rows
   progress-photos.sql                                                   # paste in after body-measurements-inches.sql — private Storage bucket + progress_photos table
   community.sql                                                           # paste in after progress-photos.sql — app_settings singleton, profiles.community_hidden, community_posts, community-images bucket
+  community-moderation.sql                                                 # paste in after community.sql — community_reports, community_posts delete policies, community_blocks + the blocked-can't-post insert check
 ```

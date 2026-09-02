@@ -140,3 +140,162 @@ export async function setCommunityHidden(userId: string, hidden: boolean): Promi
   const { error } = await supabase.from('profiles').update({ community_hidden: hidden }).eq('id', userId);
   if (error) throw error;
 }
+
+/** Postgres' unique-violation code — used to turn a duplicate report
+ * into a plain message instead of a raw database error. */
+const UNIQUE_VIOLATION = '23505';
+
+/**
+ * Reports a post. `reason` is optional — a report with nothing typed in
+ * is still a real, actionable signal to the coach. Reporting the same
+ * post twice as the same person throws a friendly error instead of a
+ * raw Postgres one; see community_reports' unique(post_id, reporter_id).
+ */
+export async function reportPost(postId: string, reporterId: string, reason?: string): Promise<void> {
+  const { error } = await supabase.from('community_reports').insert({
+    post_id: postId,
+    reporter_id: reporterId,
+    reason: reason?.trim() || null,
+  });
+
+  if (error) {
+    if (error.code === UNIQUE_VIOLATION) throw new Error("You've already reported this post.");
+    throw error;
+  }
+}
+
+/**
+ * Deletes a post. Works identically whether the caller is the post's
+ * own author or the coach — community_posts.sql's two delete policies
+ * (author-of-their-own, or coach-of-any) decide which of those is
+ * actually allowed for whoever's really signed in; this function
+ * doesn't need to know or check which case it is.
+ *
+ * Cleans up the post's image from storage too, best-effort — a delete
+ * that already succeeded in the database isn't rolled back over a
+ * failed file cleanup; it would just leave an orphaned, harmless file.
+ */
+export async function deletePost(postId: string): Promise<void> {
+  const { data, error } = await supabase
+    .from('community_posts')
+    .delete()
+    .eq('id', postId)
+    .select('image_storage_path')
+    .single();
+
+  if (error) throw error;
+
+  const imagePath = data?.image_storage_path as string | null;
+  if (imagePath) {
+    const { error: removeError } = await supabase.storage.from(BUCKET).remove([imagePath]);
+    if (removeError) console.error('Failed to remove community post image after delete:', removeError);
+  }
+}
+
+export type ModerationReport = {
+  id: string;
+  postId: string;
+  postBody: string;
+  postTag: CommunityTag;
+  postAuthorId: string;
+  postAuthorName: string;
+  reporterName: string;
+  reason: string | null;
+  createdAt: string;
+};
+
+/** Every still-open report, coach-only (see community_reports' select
+ * policy) — this is what feeds the moderation screen. If the same post
+ * has two open reports, it appears twice, once per report, since
+ * dismissing one shouldn't silently dismiss the other. */
+export async function getOpenReports(): Promise<ModerationReport[]> {
+  const { data, error } = await supabase
+    .from('community_reports')
+    .select(
+      'id, post_id, reason, created_at, community_posts(id, body, tag, author_id, profiles!author_id(full_name, email)), profiles!reporter_id(full_name, email)'
+    )
+    .eq('status', 'open')
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => {
+    const post = row.community_posts as unknown as {
+      id: string;
+      body: string;
+      tag: CommunityTag;
+      author_id: string;
+      profiles: { full_name: string | null; email: string } | null;
+    } | null;
+    const reporter = row.profiles as unknown as { full_name: string | null; email: string } | null;
+
+    return {
+      id: row.id as string,
+      postId: post?.id ?? (row.post_id as string),
+      postBody: post?.body ?? '(post no longer exists)',
+      postTag: (post?.tag ?? 'question') as CommunityTag,
+      postAuthorId: post?.author_id ?? '',
+      postAuthorName: post?.profiles?.full_name || post?.profiles?.email?.split('@')[0] || 'Unknown',
+      reporterName: reporter?.full_name || reporter?.email?.split('@')[0] || 'Unknown',
+      reason: row.reason as string | null,
+      createdAt: row.created_at as string,
+    };
+  });
+}
+
+/** Marks a report reviewed with no further action — coach-only, see
+ * community_reports' update policy. Doesn't touch the post or the
+ * author; use deletePost/blockClient for those. */
+export async function dismissReport(reportId: string): Promise<void> {
+  const { error } = await supabase.from('community_reports').update({ status: 'dismissed' }).eq('id', reportId);
+  if (error) throw error;
+}
+
+export type BlockedClient = {
+  clientId: string;
+  name: string;
+  blockedAt: string;
+};
+
+/** Coach-only. Blocking is upsert-like on purpose — clicking Block from
+ * two different open reports naming the same author, before the list
+ * refreshes, should never throw a duplicate-key error. */
+export async function blockClient(clientId: string): Promise<void> {
+  const { error } = await supabase.from('community_blocks').upsert({ client_id: clientId }, { onConflict: 'client_id' });
+  if (error) throw error;
+}
+
+export async function unblockClient(clientId: string): Promise<void> {
+  const { error } = await supabase.from('community_blocks').delete().eq('client_id', clientId);
+  if (error) throw error;
+}
+
+/** Coach-only read of every currently blocked client, for the
+ * moderation screen's "Blocked clients" list. */
+export async function listBlockedClients(): Promise<BlockedClient[]> {
+  const { data, error } = await supabase
+    .from('community_blocks')
+    .select('client_id, blocked_at, profiles!client_id(full_name, email)')
+    .order('blocked_at', { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => {
+    const client = row.profiles as unknown as { full_name: string | null; email: string } | null;
+    return {
+      clientId: row.client_id as string,
+      name: client?.full_name || client?.email?.split('@')[0] || 'Unknown',
+      blockedAt: row.blocked_at as string,
+    };
+  });
+}
+
+/** Whether the given account is currently blocked from posting — a
+ * client can only ever check their own (see community_blocks' select
+ * policy), used by the compose screen to show a plain explanation
+ * instead of letting a blocked client hit a raw database error. */
+export async function isBlocked(clientId: string): Promise<boolean> {
+  const { data, error } = await supabase.from('community_blocks').select('client_id').eq('client_id', clientId).maybeSingle();
+  if (error) throw error;
+  return data !== null;
+}

@@ -4,14 +4,19 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { ReportPostModal } from '@/components/report-post-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import {
   COMMUNITY_TAGS,
+  deletePost,
   getCommunityEnabled,
+  getOpenReports,
   listCommunityPosts,
+  reportPost,
   setCommunityEnabled,
   type CommunityPost,
 } from '@/lib/community';
@@ -32,7 +37,7 @@ function formatPostTime(iso: string) {
 }
 
 export default function CommunityFeedScreen() {
-  const { profile } = useAuth();
+  const { session, profile } = useAuth();
   const isCoach = profile?.role === 'coach';
 
   const [posts, setPosts] = useState<CommunityPost[]>([]);
@@ -43,17 +48,32 @@ export default function CommunityFeedScreen() {
   const [togglingEnabled, setTogglingEnabled] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
 
+  const [openReportCount, setOpenReportCount] = useState(0);
+
+  const [deleteTarget, setDeleteTarget] = useState<CommunityPost | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const [reportTarget, setReportTarget] = useState<CommunityPost | null>(null);
+  const [reporting, setReporting] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([listCommunityPosts(), getCommunityEnabled()])
-      .then(([postData, enabled]) => {
+    Promise.all([
+      listCommunityPosts(),
+      getCommunityEnabled(),
+      profile?.role === 'coach' ? getOpenReports() : Promise.resolve([]),
+    ])
+      .then(([postData, enabled, reports]) => {
         setPosts(postData);
         setCommunityEnabledState(enabled);
+        setOpenReportCount(reports.length);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load Community.'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [profile]);
 
   useFocusEffect(
     useCallback(() => {
@@ -73,6 +93,35 @@ export default function CommunityFeedScreen() {
       setToggleError(err instanceof Error ? err.message : 'Failed to update that setting.');
     } finally {
       setTogglingEnabled(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteError(null);
+    setDeleting(true);
+    try {
+      await deletePost(deleteTarget.id);
+      setPosts((current) => current.filter((p) => p.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete that post.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleSubmitReport = async (reason: string) => {
+    if (!reportTarget || !session) return;
+    setReportError(null);
+    setReporting(true);
+    try {
+      await reportPost(reportTarget.id, session.user.id, reason);
+      setReportTarget(null);
+    } catch (err) {
+      setReportError(err instanceof Error ? err.message : 'Failed to submit that report.');
+    } finally {
+      setReporting(false);
     }
   };
 
@@ -114,7 +163,17 @@ export default function CommunityFeedScreen() {
           </View>
         )}
 
+        {isCoach && (
+          <Pressable onPress={() => router.push('/community/moderation')} style={styles.moderationLink}>
+            <ThemedText type="smallBold" style={styles.toggleLink}>
+              🚩 Moderation{openReportCount > 0 ? ` (${openReportCount})` : ''}
+            </ThemedText>
+          </Pressable>
+        )}
+
         {toggleError && <ThemedText style={styles.error}>{toggleError}</ThemedText>}
+
+        {deleteError && <ThemedText style={styles.error}>{deleteError}</ThemedText>}
 
         {loading && <ActivityIndicator style={styles.loader} />}
 
@@ -139,6 +198,8 @@ export default function CommunityFeedScreen() {
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => {
               const tag = tagInfo(item.tag);
+              const isOwnPost = item.authorId === session?.user.id;
+              const canDelete = isOwnPost || isCoach;
               return (
                 <ThemedView type="backgroundElement" style={[styles.card, tag.key === 'announcement' && styles.announcementCard]}>
                   <View style={styles.cardHeader}>
@@ -156,6 +217,22 @@ export default function CommunityFeedScreen() {
                     <ThemedText type="small" themeColor="textSecondary">
                       {item.reactionCount} reactions · {item.commentCount} comments
                     </ThemedText>
+                    <View style={styles.cardActions}>
+                      {!isOwnPost && (
+                        <Pressable onPress={() => setReportTarget(item)}>
+                          <ThemedText type="small" themeColor="textSecondary">
+                            Report
+                          </ThemedText>
+                        </Pressable>
+                      )}
+                      {canDelete && (
+                        <Pressable onPress={() => setDeleteTarget(item)}>
+                          <ThemedText type="small" style={styles.deleteText}>
+                            Delete
+                          </ThemedText>
+                        </Pressable>
+                      )}
+                    </View>
                   </View>
                 </ThemedView>
               );
@@ -167,6 +244,36 @@ export default function CommunityFeedScreen() {
           <ThemedText type="linkPrimary">Back to home</ThemedText>
         </Pressable>
       </SafeAreaView>
+
+      <ConfirmDialog
+        visible={deleteTarget !== null}
+        title="Delete this post?"
+        message={
+          deleteTarget
+            ? isCoach && deleteTarget.authorId !== session?.user.id
+              ? `${deleteTarget.authorName}'s post will be permanently removed from Community.`
+              : 'This will be permanently removed from Community.'
+            : ''
+        }
+        confirmLabel="Delete"
+        busy={deleting}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
+      />
+
+      <ReportPostModal
+        visible={reportTarget !== null}
+        busy={reporting}
+        error={reportError}
+        onSubmit={handleSubmitReport}
+        onCancel={() => {
+          setReportTarget(null);
+          setReportError(null);
+        }}
+      />
     </ThemedView>
   );
 }
@@ -194,10 +301,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.three,
+    marginBottom: Spacing.two,
   },
   toggleLink: {
     color: Accent,
+  },
+  moderationLink: {
+    marginBottom: Spacing.three,
   },
   loader: {
     marginTop: Spacing.five,
@@ -239,7 +349,17 @@ const styles = StyleSheet.create({
     marginTop: Spacing.half,
   },
   cardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginTop: Spacing.half,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    gap: Spacing.three,
+  },
+  deleteText: {
+    color: Accent,
   },
   backButton: {
     alignItems: 'center',
