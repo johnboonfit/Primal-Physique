@@ -1,4 +1,4 @@
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -63,20 +63,69 @@ function dayNumberLabel(date: Date) {
   return date.toLocaleDateString(undefined, { timeZone: 'UTC', day: 'numeric' });
 }
 
-const STATUS_LABEL: Record<ClientAssignmentSummary['status'], string> = {
-  pending: 'Pending',
-  completed: 'Completed',
+// Four visual states, derived from the same two pieces of data every
+// screen already has (status + assigned_date) rather than a new column:
+// "missed" isn't stored anywhere — it's just a still-pending session
+// whose date has already passed, the identical definition the
+// missed-workout auto-reschedule already uses for "overdue."
+type VisualStatus = 'completed' | 'missed' | 'upcoming';
+
+function getSessionVisualStatus(session: ClientAssignmentSummary, todayISO: string): VisualStatus {
+  if (session.status === 'completed') return 'completed';
+  return session.assignedDate < todayISO ? 'missed' : 'upcoming';
+}
+
+/** A day can hold more than one session — this picks the single state
+ * worth flagging at a glance: a missed session anywhere that day wins
+ * (most actionable), then an upcoming one, and only if every session
+ * that day is done does the day read as fully completed. */
+function getDayVisualStatus(daySessions: ClientAssignmentSummary[], todayISO: string): VisualStatus | 'rest' {
+  if (daySessions.length === 0) return 'rest';
+  const statuses = daySessions.map((s) => getSessionVisualStatus(s, todayISO));
+  if (statuses.includes('missed')) return 'missed';
+  if (statuses.includes('upcoming')) return 'upcoming';
+  return 'completed';
+}
+
+// Upcoming gets no glyph at all — a plain, neutral session is the
+// common case and shouldn't compete visually with the two states that
+// actually need attention (or a quiet nod that something's done).
+const STATUS_GLYPH: Record<VisualStatus, string | null> = {
+  completed: '✓',
+  missed: '⚑',
+  upcoming: null,
 };
 
-function SessionLabel({ session }: { session: ClientAssignmentSummary }) {
+const STATUS_GLYPH_COLOR: Record<VisualStatus, string> = {
+  completed: Colors.tealBright,
+  missed: Accent,
+  upcoming: Colors.text,
+};
+
+const STATUS_TEXT_LABEL: Record<VisualStatus, string> = {
+  completed: 'Completed',
+  missed: 'Missed',
+  upcoming: 'Upcoming',
+};
+
+function SessionLabel({ session, todayISO }: { session: ClientAssignmentSummary; todayISO: string }) {
+  const status = getSessionVisualStatus(session, todayISO);
+  const glyph = STATUS_GLYPH[status];
   return (
     <>
-      <ThemedText type="small">{session.workoutName}</ThemedText>
+      <ThemedText type="small">
+        {glyph && (
+          <ThemedText type="small" style={{ color: STATUS_GLYPH_COLOR[status] }}>
+            {glyph}{' '}
+          </ThemedText>
+        )}
+        {session.workoutName}
+      </ThemedText>
       <ThemedText
         type="small"
-        themeColor={session.status === 'completed' ? undefined : 'textSecondary'}
-        style={session.status === 'completed' ? styles.statusCompleted : undefined}>
-        {STATUS_LABEL[session.status]}
+        themeColor={status === 'upcoming' ? 'textSecondary' : undefined}
+        style={status === 'completed' ? styles.statusCompleted : status === 'missed' ? styles.statusMissed : undefined}>
+        {STATUS_TEXT_LABEL[status]}
       </ThemedText>
     </>
   );
@@ -87,18 +136,23 @@ type DraggableSessionRowProps = {
   originIndex: number;
   weekDays: Date[];
   dayRowRefs: React.RefObject<(View | null)[]>;
+  todayISO: string;
   onDragStateChange: (dayIndex: number | null) => void;
   onReschedule: (assignmentId: string, newDate: string) => void;
 };
 
 /** Long-press-then-drag, not a plain drag from touch-down — this is what
  * lets a normal vertical scroll of the week list coexist with dragging a
- * card, rather than every scroll attempt accidentally picking one up. */
+ * card, rather than every scroll attempt accidentally picking one up. A
+ * quick tap (released before the long-press threshold) opens the
+ * session's detail screen instead — Gesture.Race lets whichever gesture
+ * actually activates first win, so the two never fight over the touch. */
 function DraggableSessionRow({
   session,
   originIndex,
   weekDays,
   dayRowRefs,
+  todayISO,
   onDragStateChange,
   onReschedule,
 }: DraggableSessionRowProps) {
@@ -133,6 +187,10 @@ function DraggableSessionRow({
     [dayRowRefs, originIndex, onReschedule, session.id, weekDays, onDragStateChange]
   );
 
+  const handleOpenDetail = useCallback(() => {
+    router.push(`/assigned/${session.id}`);
+  }, [session.id]);
+
   const pan = Gesture.Pan()
     .activateAfterLongPress(350)
     .onStart(() => {
@@ -148,6 +206,12 @@ function DraggableSessionRow({
       translateY.value = withTiming(0, { duration: 200 });
     });
 
+  const tap = Gesture.Tap().onEnd((_event, success) => {
+    if (success) runOnJS(handleOpenDetail)();
+  });
+
+  const composedGesture = Gesture.Race(pan, tap);
+
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
     zIndex: translateY.value !== 0 ? 10 : 0,
@@ -155,9 +219,9 @@ function DraggableSessionRow({
   }));
 
   return (
-    <GestureDetector gesture={pan}>
+    <GestureDetector gesture={composedGesture}>
       <Animated.View style={[styles.sessionRow, styles.draggableSessionRow, animatedStyle]}>
-        <SessionLabel session={session} />
+        <SessionLabel session={session} todayISO={todayISO} />
       </Animated.View>
     </GestureDetector>
   );
@@ -328,7 +392,7 @@ export default function CalendarScreen() {
           {!loading && !error && viewMode === 'week' && (
             <>
               <ThemedText type="small" themeColor="textSecondary" style={styles.dragHint}>
-                Press and hold a session, then drag it to a different day.
+                Tap a session to view it, or press and hold to drag it to a different day.
               </ThemedText>
               <View style={styles.weekList}>
                 {weekDays.map((day, dayIndex) => {
@@ -361,6 +425,7 @@ export default function CalendarScreen() {
                             originIndex={dayIndex}
                             weekDays={weekDays}
                             dayRowRefs={dayRowRefs}
+                            todayISO={todayISO}
                             onDragStateChange={setActiveDragDayIndex}
                             onReschedule={handleReschedule}
                           />
@@ -400,6 +465,8 @@ export default function CalendarScreen() {
                 {monthDays.map((day) => {
                   const dateISO = toISODate(day);
                   const daySessions = sessionsByDate.get(dateISO) ?? [];
+                  const dayStatus = getDayVisualStatus(daySessions, todayISO);
+                  const dayGlyph = dayStatus === 'rest' ? null : STATUS_GLYPH[dayStatus];
                   const isCurrentMonth = day.getUTCMonth() === currentMonthIndex;
                   const isToday = dateISO === todayISO;
                   const isSelected = dateISO === selectedDate;
@@ -417,15 +484,12 @@ export default function CalendarScreen() {
                           style={!isCurrentMonth ? styles.monthCellOutside : undefined}>
                           {dayNumberLabel(day)}
                         </ThemedText>
-                        {daySessions.length > 0 && (
-                          <View style={styles.monthDotRow}>
-                            <View style={styles.monthDot} />
-                            {daySessions.length > 1 && (
-                              <ThemedText type="small" themeColor="textSecondary" style={styles.monthDotCount}>
-                                {daySessions.length}
-                              </ThemedText>
-                            )}
-                          </View>
+                        {dayGlyph && (
+                          <ThemedText
+                            type="small"
+                            style={[styles.monthStatusGlyph, { color: STATUS_GLYPH_COLOR[dayStatus as VisualStatus] }]}>
+                            {dayGlyph}
+                          </ThemedText>
                         )}
                       </View>
                     </Pressable>
@@ -443,7 +507,11 @@ export default function CalendarScreen() {
                   ) : (
                     (sessionsByDate.get(selectedDate) ?? []).map((sessionItem) => (
                       <View key={sessionItem.id} style={styles.sessionRow}>
-                        <SessionLabel session={sessionItem} />
+                        <Pressable
+                          style={styles.sessionLabelWrap}
+                          onPress={() => router.push(`/assigned/${sessionItem.id}`)}>
+                          <SessionLabel session={sessionItem} todayISO={todayISO} />
+                        </Pressable>
                         <Pressable
                           onPress={() =>
                             setMovingSession({
@@ -571,6 +639,9 @@ const styles = StyleSheet.create({
   statusCompleted: {
     color: Colors.tealBright,
   },
+  statusMissed: {
+    color: Accent,
+  },
   monthWeekdayRow: {
     flexDirection: 'row',
     marginTop: Spacing.two,
@@ -606,25 +677,21 @@ const styles = StyleSheet.create({
   monthCellOutside: {
     opacity: 0.5,
   },
-  monthDotRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-  },
-  monthDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: Colors.tealBright,
-  },
-  monthDotCount: {
-    fontSize: 10,
+  monthStatusGlyph: {
+    fontSize: 12,
+    lineHeight: 14,
   },
   selectedDayCard: {
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.one,
     marginTop: Spacing.two,
+  },
+  sessionLabelWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   moveLink: {
     paddingLeft: Spacing.two,

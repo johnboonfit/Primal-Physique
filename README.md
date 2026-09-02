@@ -1041,6 +1041,40 @@ No new SQL — `rescheduleAssignment(assignmentId, newDate)` already existed (bu
 4. Repeat steps 1-3 for Month view using **Move** instead of drag.
 5. To specifically confirm the failure-handling path: temporarily turn off your device's network mid-drag (or mid-tap-to-move), attempt a move, and confirm the app shows an error and reloads back to the real (unmoved) state rather than silently pretending the move worked.
 
+## Calendar visual states, and tapping into a session's detail
+
+No new SQL, and no new detail screen either — `/assigned/[id]` (the existing "logs performance, or shows it once completed" screen used by the Home tab's "Start" button) already did exactly what was asked here: editable weight/reps inputs with a completion button when a workout is still pending, or plain read-only logged numbers once it's done. This chunk's job was entirely wiring the calendar into that existing screen, plus the four visual states.
+
+**"Missed" isn't a new database status.** `assignments.status` is still just `pending`/`completed` — Missed is derived the moment the calendar renders, using the exact same definition the missed-workout auto-reschedule already uses: still pending, but its date has already passed. Nothing new to store, nothing that can drift out of sync with the real status column.
+
+**The four states, exactly as specified:**
+- **Completed** — a small teal ✓.
+- **Missed** — a small oxblood ⚑, deliberately no bigger or bolder than the check mark — "a flag, not an alarm."
+- **Upcoming** — no glyph at all. A plain, on-schedule session doesn't need to compete for attention with the two states that actually call for it.
+- **Rest day** — nothing. Same as Upcoming's "no glyph," the difference being there's no session there to label at all.
+
+**A design call on "Upcoming" in Month view specifically, worth flagging:** because Upcoming gets no glyph, a day with an upcoming session and an empty rest day look visually identical in the compact month grid — both just show a plain date number. That's intentional (the grid's job is to flag exceptions at a glance, not list everything), but say so if you'd rather Upcoming got a quiet dot in Month view to distinguish "something's here" from "nothing's here" — Week view doesn't have this ambiguity, since it already lists every session's name directly.
+
+**A day can hold more than one session**, so Month view's single glyph per day picks the state most worth surfacing: a missed session anywhere that day wins (most actionable), then an upcoming one, and only a day where everything is done reads as fully Completed.
+
+**Tapping now opens the actual workout:**
+- **Week view:** tap a session card to open its detail screen directly. This coexists with dragging on the exact same card — a quick tap (released before the 350ms long-press threshold that activates dragging) opens detail; holding past that threshold drags it instead. They're composed as a "race," so whichever one actually activates first is the one that runs — there's no scenario where both fire.
+- **Month view:** tap a day to open its detail card (unchanged from last chunk), then tap a specific session inside that card to open its detail screen. **Move** stays as a separate, adjacent action on the same row, not nested inside the tap target, so tapping "Move" never also opens the workout by accident.
+
+**One shared-component note:** none needed this chunk beyond what `ThemedView`'s ref-forwarding (from last chunk) already provides.
+
+**Verified beyond typecheck and static export** — this chunk added a new gesture composition (`Gesture.Race` between the drag and a new tap), which is exactly the kind of thing that can silently misfire. Ran a live dev server in a real browser and simulated both: a quick release correctly triggered navigation (the browser left the debug page entirely — nothing else in that code path could do that), while a sustained press-then-drag correctly stayed on the page and resolved to the exact right day, with zero console errors either way.
+
+**Verify all four states display correctly, and that tapping opens the right thing:**
+
+1. Set up one session of each kind: complete one (so it's `completed`), leave one dated yesterday untouched (so it reads `missed`), leave one dated in the future untouched (`upcoming`), and pick a day with nothing assigned at all (`rest`).
+2. In Week view, confirm: the completed session shows a small teal ✓ and "Completed"; the missed one shows a small oxblood ⚑ and "Missed" — clearly present but not shouting; the upcoming one shows no glyph, just the name and "Upcoming"; the empty day shows "Nothing scheduled." with nothing else.
+3. Switch to Month view and navigate to the same days — confirm the completed day shows a teal ✓, the missed day shows an oxblood ⚑, and both the upcoming-only day and the true rest day show a plain, unmarked date number.
+4. Tap the completed session (Week view directly, or Month view → day → session) — confirm it opens showing the actual logged weight/reps, not input fields.
+5. Tap the missed or upcoming session — confirm it opens the same screen with editable weight/reps inputs and a completion button (a missed session can still be logged late — nothing blocks that).
+6. In Week view, quickly tap-and-release a session — confirm it opens detail. Then press and hold the same card past roughly a third of a second before moving your finger — confirm it drags instead of opening anything.
+7. In Month view, tap a day with 2+ sessions of different statuses (e.g., one missed, one upcoming) — confirm the day's single glyph shows the missed flag (the higher-priority state), then confirm both individual sessions still show their own correct status once you open the day's detail card.
+
 ## Project structure reference
 
 ```
@@ -1087,7 +1121,7 @@ src/
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
-        calendar.tsx        # Calendar tab — Week/Month toggle; drag-and-drop reschedule (week) and tap-to-move (month)
+        calendar.tsx        # Calendar tab — Week/Month toggle; 4 visual states (Completed/Missed/Upcoming/Rest); drag (week) + tap-to-move (month); tap a session to open /assigned/[id]
   components/
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
