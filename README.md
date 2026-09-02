@@ -276,6 +276,27 @@ Still open, deliberately not addressed in this pass: every coach can still see a
 4. To prove the lockdown actually works (not just the UI): change that row's `role` to `coach` by hand, save, then log out and back in with that account in the app. Confirm it now lands on the coach's Home screen with My Workouts and Assignments — this proves promotion via the Table Editor is the real, working path.
 5. Confirm your **original** coach account still logs in as coach exactly as before — this change shouldn't have touched it.
 
+## Basic habit tracking
+
+Run `supabase/habits.sql` in the SQL Editor after `lock-coach-role.sql`. This adds two tables: `habits` (one row per habit a coach defines for a client — just a name) and `habit_logs` (one row per day a client checks a habit off). A habit can only be logged once per day at the database level, so a checked-off habit stays checked rather than a second tap creating a duplicate.
+
+**Coach side:** a new **Habits** link on the coach's home screen, leading to a list (with a hero count, same pattern as Workouts and Assignments) and a **+ New** form — pick a client, type a habit name (e.g. "10k steps"), save.
+
+**Client side:** the Home tab now has a **Today's Habits** section below Up Next, showing every habit as a row with a **○** (not done) or **✓** (done, in teal) on the right, plus a "**X/Y today**" count next to the section heading. Tapping an unchecked habit marks it done for today immediately.
+
+Two deliberate limits, same spirit as earlier chunks: there's **no un-checking** a habit once marked done today (matches how workout logging also can't be undone), and **the coach can't yet see whether a client is actually keeping up with their habits** — that data exists in the database now, but there's no coach-facing view of it yet. Both are natural next steps if you want them.
+
+**Verify it works:**
+
+1. Log in as coach, tap **Habits** — confirm the list is empty with a hero count of **0**.
+2. Tap **+ New**, pick your client, name it "10k steps", save. Confirm it appears in the list as "10k steps" with the client's email underneath, and the hero count is now **1**.
+3. Add a second habit for the same client, e.g. "Drink 3L water". Hero count should read **2**.
+4. Log in as that client. On the Home tab, confirm **Today's Habits** shows both habits, unchecked (○), with "**0/2 today**" next to the heading.
+5. Tap "10k steps" — confirm it flips to a teal ✓ immediately, and the count updates to "**1/2 today**".
+6. Leave the Home tab (switch to another tab) and come back — confirm "10k steps" is still checked and the count still reads 1/2 (proving it saved, not just an on-screen toggle).
+7. In Supabase's Table Editor, open `habit_logs` — confirm one row for "10k steps" with today's date and the right `client_id`.
+8. Log in as a different client account (one with no habits assigned) and confirm their Today's Habits section says "No habits set yet."
+
 ## Project structure reference
 
 ```
@@ -296,11 +317,15 @@ src/
         index.tsx        # list of assignments, with status
         new.tsx          # pick workout + client + date, save
         [id].tsx          # coach's view of one assignment — prescribed vs. actual
+      habits/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # list of habits the coach has created
+        new.tsx          # pick client + habit name, save
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar
-        index.tsx        # Home tab — greeting + Up Next
+        index.tsx        # Home tab — greeting, Up Next, Today's Habits checklist
         training.tsx      # Training tab — full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, add-entry popup, calorie total
         progress.tsx       # Progress tab — log/update today's weight, chronological history
@@ -319,6 +344,7 @@ src/
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
+    habits.ts                 # coach + client habit + habit-log database calls
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
@@ -330,4 +356,5 @@ supabase/
   food-logs.sql                  # paste in after client-name.sql, adds food_logs
   weight-logs.sql                  # paste in after food-logs.sql, adds weight_logs
   lock-coach-role.sql                # paste in after weight-logs.sql — security fix, read it first
+  habits.sql                           # paste in after lock-coach-role.sql, adds habits + habit_logs
 ```

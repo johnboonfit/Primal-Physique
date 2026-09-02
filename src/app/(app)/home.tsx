@@ -51,6 +51,10 @@ export default function HomeScreen() {
           <Link href="/assignments" style={styles.linkSpacing}>
             <ThemedText type="linkPrimary">Assignments</ThemedText>
           </Link>
+
+          <Link href="/habits" style={styles.linkSpacing}>
+            <ThemedText type="linkPrimary">Habits</ThemedText>
+          </Link>
         </ThemedView>
 
         <Pressable style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]} onPress={signOut}>

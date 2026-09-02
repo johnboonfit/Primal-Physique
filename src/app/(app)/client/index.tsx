@@ -9,6 +9,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
+import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -17,12 +18,24 @@ function getGreeting() {
   return 'Good evening';
 }
 
+function todayISODate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export default function ClientHomeScreen() {
   const { session, profile, signOut } = useAuth();
 
   const [assignments, setAssignments] = useState<ClientAssignmentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [habits, setHabits] = useState<MyHabit[]>([]);
+  const [completedIds, setCompletedIds] = useState<Set<string>>(new Set());
+  const [habitsLoading, setHabitsLoading] = useState(true);
+  const [habitsError, setHabitsError] = useState<string | null>(null);
+  const [completingId, setCompletingId] = useState<string | null>(null);
+
+  const logDate = todayISODate();
 
   // Reuses the same query the Training tab uses — "Up Next" is just the
   // pending ones, filtered client-side rather than a second database call.
@@ -49,8 +62,40 @@ export default function ClientHomeScreen() {
     }, [session])
   );
 
+  const loadHabits = useCallback(() => {
+    if (!session) return;
+    setHabitsLoading(true);
+    Promise.all([listMyHabits(session.user.id), listTodaysCompletedHabitIds(session.user.id, logDate)])
+      .then(([habitList, completed]) => {
+        setHabits(habitList);
+        setCompletedIds(completed);
+      })
+      .catch((err) => setHabitsError(err instanceof Error ? err.message : 'Failed to load your habits.'))
+      .finally(() => setHabitsLoading(false));
+  }, [session, logDate]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadHabits();
+    }, [loadHabits])
+  );
+
+  const handleCompleteHabit = async (habitId: string) => {
+    if (!session || completedIds.has(habitId)) return;
+    setCompletingId(habitId);
+    try {
+      await completeHabit(habitId, session.user.id, logDate);
+      setCompletedIds((current) => new Set(current).add(habitId));
+    } catch (err) {
+      setHabitsError(err instanceof Error ? err.message : 'Failed to save that.');
+    } finally {
+      setCompletingId(null);
+    }
+  };
+
   const upNext = assignments.filter((assignment) => assignment.status === 'pending');
   const displayName = profile?.full_name || profile?.email.split('@')[0] || '';
+  const completedCount = habits.filter((habit) => completedIds.has(habit.id)).length;
 
   return (
     <ThemedView style={styles.container}>
@@ -98,6 +143,45 @@ export default function ClientHomeScreen() {
                 </Pressable>
               </ThemedView>
             ))}
+
+          <View style={styles.habitsHeader}>
+            <ThemedText type="smallBold">Today's Habits</ThemedText>
+            {!habitsLoading && !habitsError && habits.length > 0 && (
+              <ThemedText type="smallBold" style={styles.habitsCount}>
+                {completedCount}/{habits.length} today
+              </ThemedText>
+            )}
+          </View>
+
+          {habitsLoading && <ActivityIndicator style={styles.loader} />}
+
+          {!habitsLoading && habitsError && <ThemedText style={styles.error}>{habitsError}</ThemedText>}
+
+          {!habitsLoading && !habitsError && habits.length === 0 && (
+            <ThemedText themeColor="textSecondary">No habits set yet.</ThemedText>
+          )}
+
+          {!habitsLoading &&
+            !habitsError &&
+            habits.map((habit) => {
+              const done = completedIds.has(habit.id);
+              return (
+                <Pressable key={habit.id} onPress={() => handleCompleteHabit(habit.id)} disabled={done}>
+                  <ThemedView type="backgroundElement" style={styles.habitRow}>
+                    <ThemedText type="smallBold" style={done ? styles.habitDoneText : undefined}>
+                      {habit.name}
+                    </ThemedText>
+                    {completingId === habit.id ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <ThemedText type="smallBold" style={done ? styles.habitCheckDone : styles.habitCheckPending}>
+                        {done ? '✓' : '○'}
+                      </ThemedText>
+                    )}
+                  </ThemedView>
+                </Pressable>
+              );
+            })}
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -153,5 +237,30 @@ const styles = StyleSheet.create({
   },
   startButtonText: {
     color: Colors.text,
+  },
+  habitsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: Spacing.two,
+  },
+  habitsCount: {
+    color: Colors.tealBright,
+  },
+  habitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+  },
+  habitDoneText: {
+    color: Colors.textSecondary,
+  },
+  habitCheckDone: {
+    color: Colors.tealBright,
+  },
+  habitCheckPending: {
+    color: Colors.textSecondary,
   },
 });
