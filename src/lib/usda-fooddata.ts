@@ -47,14 +47,19 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
     );
   }
 
-  const params = new URLSearchParams({
-    api_key: apiKey,
-    query: trimmed,
-    pageSize: '25',
+  // USDA's docs specify POST with a JSON body as the reliable way to
+  // filter by more than one dataType at once — a GET request with
+  // several repeated `dataType` params isn't well-supported and was
+  // producing an error response instead of results.
+  const response = await fetch(`${SEARCH_URL}?api_key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: trimmed,
+      dataType: DATA_TYPES,
+      pageSize: 25,
+    }),
   });
-  DATA_TYPES.forEach((type) => params.append('dataType', type));
-
-  const response = await fetch(`${SEARCH_URL}?${params.toString()}`);
 
   if (!response.ok) {
     if (response.status === 403) {
@@ -63,7 +68,10 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
     if (response.status === 429) {
       throw new Error('USDA FoodData Central rate limit reached. Wait a bit and try again.');
     }
-    throw new Error('Failed to search USDA FoodData Central. Check your connection and try again.');
+    const bodyText = await response.text().catch(() => '');
+    throw new Error(
+      `Failed to search USDA FoodData Central (status ${response.status}).${bodyText ? ` ${bodyText.slice(0, 200)}` : ' Check your connection and try again.'}`
+    );
   }
 
   const data = (await response.json()) as { foods?: Record<string, unknown>[] };
