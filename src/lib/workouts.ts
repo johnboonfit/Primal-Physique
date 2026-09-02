@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase';
 
 export type ExerciseDraft = {
+  exerciseLibraryId: string;
   name: string;
   setsReps: string;
 };
@@ -37,6 +38,7 @@ export async function createWorkout(
 
   const rows = exercises.map((exercise, index) => ({
     workout_id: workout.id as string,
+    exercise_library_id: exercise.exerciseLibraryId,
     name: exercise.name,
     sets_reps: exercise.setsReps,
     position: index,

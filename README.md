@@ -577,6 +577,34 @@ Run `supabase/exercise-library.sql` in the SQL Editor after `client-programme-vi
 6. In the app, open Exercise Library as a coach: search "curl" and confirm only curl variations show; clear the search and tap "Legs" and confirm every result's badge reads "Legs"; tap one result to expand it and confirm the instructions shown match what you saw in Supabase for that same exercise in step 5.
 7. Re-run `exercise-library.sql` a second time (paste and run again) — confirm the row count in `exercise_library` is still exactly 872 afterward, not 1744. The `on conflict (name) do nothing` at the end of the insert is what makes this safe to re-run without creating duplicates.
 
+## Workout builder: real exercise selection
+
+Run `supabase/link-exercise-library.sql` in the SQL Editor after `exercise-library.sql`.
+
+Up to now, adding an exercise to a workout meant typing its name freehand — no connection to anything, just text. This chunk replaces that with search-and-select against the Exercise Library imported last chunk. Since `/workouts/new` is the one shared screen for both standalone workouts and programme-week sessions, this one change covers both places a coach builds a session.
+
+**How it works now:** typing in the exercise field searches the ~870-exercise library (fetched once when the screen opens, filtered locally as you type — same approach as the library's own browse screen) and shows up to 8 matches with their muscle group. Tapping one locks it in — the field switches to showing the picked name with a "Change" link instead of an open text box. Sets/reps stays exactly the free-text field it always was.
+
+**What actually gets saved:** a new column, `workout_exercises.exercise_library_id`, is set to the picked exercise's real id — but `name` also gets that exercise's name copied into it at save time, exactly as if it had been typed. That second part is the whole reason nothing else needed to change.
+
+**Why old workouts need zero migration, and you can verify this yourself:** every screen that ever displays an exercise — the coach's own workout list, `assigned/[id]` where a client logs a session, the coach's assignment detail view, the programme week screen — reads `workout_exercises.name` and nothing else. That column is completely untouched by this chunk. An exercise typed in before today has `name` set to whatever was typed and `exercise_library_id` as `NULL` forever; an exercise picked from the library today has `name` set to the library's name and `exercise_library_id` pointing at a real row. Both look and behave identically everywhere that isn't the builder itself, because the one thing every display query actually reads was never touched.
+
+**Verify new workout creation:**
+
+1. Open My Workouts → + New (or add a session inside a programme week — same screen either way). Type part of an exercise name, e.g. "curl" — confirm a dropdown of matches appears, each showing a muscle group.
+2. Pick one. Confirm the field switches to a locked-in display of that exact name with a "Change" link, and typing is no longer possible there.
+3. Tap "Change" — confirm it reopens the search box, clearing the previous pick.
+4. Re-select the same exercise, fill in sets/reps, save the workout.
+5. In Supabase's Table Editor, find the new row in `workout_exercises` — confirm `exercise_library_id` is a real (non-null) uuid, and that it matches the `id` of that same exercise's row in `exercise_library`.
+6. Try to save a workout with zero exercises selected (search but never pick one) — confirm it's blocked with "Add at least one exercise from the library," and that no row gets left behind in `workouts` for that attempt.
+
+**Verify old workouts are unaffected** (exercise names only actually render on an assignment detail screen — not on My Workouts, which just shows a count — so this check goes through assigning):
+
+1. Pick a workout you built before this chunk (free-text exercises, predating today) — if you don't have one handy, any workout used in earlier verification steps qualifies.
+2. In Supabase, confirm its `workout_exercises` rows have `exercise_library_id = NULL` and their original `name` values untouched.
+3. Assign that workout to a test client (Assignments → New, or it may already be assigned from earlier testing), then view it as the coach (Assignments → tap it) or as that client (`assigned/[id]`) — confirm every exercise name shows exactly as it always did, with no error, blank field, or "unknown exercise" placeholder.
+4. As a final cross-check, assign a newly-built (library-linked) workout too, and compare the two assignment detail views side by side — both should render exercise names identically, even though only the new one has a real `exercise_library_id` behind it.
+
 ## Project structure reference
 
 ```
@@ -591,7 +619,7 @@ src/
       workouts/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's workouts
-        new.tsx          # create-workout form; also reused for sessions inside a programme week (?weekId=)
+        new.tsx          # create-workout form (search-select exercises from the library); also reused for programme-week sessions
       programmes/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # Template Library — list of the coach's programmes, with Duplicate
@@ -658,4 +686,5 @@ supabase/
   assign-programme.sql                        # paste in after programmes.sql, adds programme_blocks.client_id
   client-programme-view.sql                     # paste in after assign-programme.sql, adds start_date + client read access
   exercise-library.sql                            # paste in after client-programme-view.sql — schema AND the imported data itself
+  link-exercise-library.sql                         # paste in after exercise-library.sql, adds workout_exercises.exercise_library_id
 ```
