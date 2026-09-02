@@ -1,3 +1,4 @@
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
@@ -9,10 +10,15 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import { addFoodLog, listFoodLogsForDate, type FoodLogEntry, type Meal } from '@/lib/food-logs';
-import type { FoodSearchResult } from '@/lib/open-food-facts';
+import { addFoodLog, listFoodLogsForDate, type FoodLogEntry, type FoodSource, type Meal } from '@/lib/food-logs';
+import { getProductByBarcode, type FoodSearchResult } from '@/lib/open-food-facts';
 import { searchFoods } from '@/lib/usda-fooddata';
 import { awardMealXp } from '@/lib/xp';
+
+// EAN-13/EAN-8 and UPC-A/UPC-E cover essentially every retail packaged
+// food barcode worldwide — no need to scan for QR codes or other
+// symbologies here.
+const FOOD_BARCODE_TYPES = ['ean13', 'ean8', 'upc_a', 'upc_e'] as const;
 
 const MEALS: { key: Meal; label: string }[] = [
   { key: 'breakfast', label: 'Breakfast' },
@@ -58,9 +64,16 @@ export default function NutritionScreen() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selected, setSelected] = useState<FoodSearchResult | null>(null);
+  const [selectedSource, setSelectedSource] = useState<FoodSource | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const [scanning, setScanning] = useState(false);
+  const [barcodeLoading, setBarcodeLoading] = useState(false);
+  const [barcodeError, setBarcodeError] = useState<string | null>(null);
+  const [permission, requestPermission] = useCameraPermissions();
+  const hasScannedRef = useRef(false);
 
   const searchRequestId = useRef(0);
 
@@ -126,14 +139,63 @@ export default function NutritionScreen() {
     setResults([]);
     setSearchError(null);
     setSelected(null);
+    setSelectedSource(null);
     setFormError(null);
+    setScanning(false);
+    setBarcodeLoading(false);
+    setBarcodeError(null);
   };
 
-  const closeModal = () => setActiveMeal(null);
+  const closeModal = () => {
+    setActiveMeal(null);
+    setScanning(false);
+  };
+
+  const handleOpenScanner = async () => {
+    setBarcodeError(null);
+    if (!permission?.granted) {
+      const result = await requestPermission();
+      if (!result.granted) {
+        setBarcodeError(
+          result.canAskAgain
+            ? 'Camera access is needed to scan a barcode.'
+            : 'Camera access was denied — enable it for this app in your device settings, or search instead.'
+        );
+        return;
+      }
+    }
+    hasScannedRef.current = false;
+    setScanning(true);
+  };
+
+  // CameraView keeps firing this repeatedly while the same barcode stays
+  // in frame — the ref guard makes sure only the first detection per
+  // scan session actually triggers a lookup.
+  const handleBarcodeScanned = ({ data }: BarcodeScanningResult) => {
+    if (hasScannedRef.current) return;
+    hasScannedRef.current = true;
+    setScanning(false);
+    setBarcodeLoading(true);
+    setBarcodeError(null);
+
+    getProductByBarcode(data)
+      .then((product) => {
+        if (product) {
+          setSelected(product);
+          setSelectedSource('open_food_facts');
+        } else {
+          setBarcodeError(`Barcode ${data} wasn't found in Open Food Facts — try searching instead.`);
+        }
+      })
+      .catch((err) => {
+        setBarcodeError(err instanceof Error ? err.message : 'Failed to look up that barcode.');
+      })
+      .finally(() => setBarcodeLoading(false));
+  };
 
   const handleSave = async () => {
     setFormError(null);
-    if (!session || !activeMeal || !selected) return;
+    if (!session || !activeMeal || !selected || !selectedSource) return;
 
     setSaving(true);
     try {
@@ -143,7 +205,7 @@ export default function NutritionScreen() {
         protein: selected.proteinPer100g,
         carbs: selected.carbsPer100g,
         fat: selected.fatPer100g,
-        source: 'usda_fdc',
+        source: selectedSource,
         sourceId: selected.id || null,
       });
       // Only the day's first meal actually awards XP — the database
@@ -249,8 +311,32 @@ export default function NutritionScreen() {
               Add to {MEALS.find((m) => m.key === activeMeal)?.label}
             </ThemedText>
 
-            {!selected ? (
+            {scanning ? (
               <>
+                <View style={styles.cameraContainer}>
+                  <CameraView
+                    style={styles.camera}
+                    facing="back"
+                    barcodeScannerSettings={{ barcodeTypes: [...FOOD_BARCODE_TYPES] }}
+                    onBarcodeScanned={handleBarcodeScanned}
+                  />
+                </View>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.scanHint}>
+                  Point the camera at the product's barcode.
+                </ThemedText>
+                <Pressable onPress={() => setScanning(false)}>
+                  <ThemedText type="linkPrimary">Cancel scan</ThemedText>
+                </Pressable>
+              </>
+            ) : !selected ? (
+              <>
+                <Pressable onPress={handleOpenScanner} style={styles.scanButton}>
+                  <ThemedText type="linkPrimary">📷 Scan a barcode instead</ThemedText>
+                </Pressable>
+
+                {barcodeLoading && <ActivityIndicator style={styles.searchLoader} />}
+                {!barcodeLoading && barcodeError && <ThemedText style={styles.error}>{barcodeError}</ThemedText>}
+
                 <TextInput
                   value={search}
                   onChangeText={setSearch}
@@ -270,7 +356,12 @@ export default function NutritionScreen() {
 
                 <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
                   {results.map((result) => (
-                    <Pressable key={result.id || result.name} onPress={() => setSelected(result)}>
+                    <Pressable
+                      key={result.id || result.name}
+                      onPress={() => {
+                        setSelected(result);
+                        setSelectedSource('usda_fdc');
+                      }}>
                       <View style={styles.resultRow}>
                         <ThemedText type="small" style={styles.resultName}>
                           {result.name}
@@ -296,7 +387,11 @@ export default function NutritionScreen() {
                   {selected.carbsPer100g !== null ? ` · ${round(selected.carbsPer100g)}g carbs` : ''}
                   {selected.fatPer100g !== null ? ` · ${round(selected.fatPer100g)}g fat` : ''}
                 </ThemedText>
-                <Pressable onPress={() => setSelected(null)}>
+                <Pressable
+                  onPress={() => {
+                    setSelected(null);
+                    setSelectedSource(null);
+                  }}>
                   <ThemedText type="linkPrimary">← Search again</ThemedText>
                 </Pressable>
               </>
@@ -408,6 +503,22 @@ const styles = StyleSheet.create({
   },
   searchLoader: {
     marginVertical: Spacing.two,
+  },
+  scanButton: {
+    alignSelf: 'flex-start',
+    marginBottom: Spacing.two,
+  },
+  cameraContainer: {
+    height: 300,
+    borderRadius: Spacing.two,
+    overflow: 'hidden',
+  },
+  camera: {
+    flex: 1,
+  },
+  scanHint: {
+    textAlign: 'center',
+    marginTop: Spacing.two,
   },
   noResults: {
     textAlign: 'center',

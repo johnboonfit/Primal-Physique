@@ -609,7 +609,7 @@ Up to now, adding an exercise to a workout meant typing its name freehand — no
 
 Run `supabase/food-log-macros.sql` in the SQL Editor after `link-exercise-library.sql`.
 
-**Update from the very next chunk:** Open Food Facts turned out to be weak on generic whole foods ("chicken breast," "rice") since it's built for barcoded packaged products. Typed search now goes through USDA FoodData Central instead — see "Typed food search: USDA FoodData Central" below. `src/lib/open-food-facts.ts` itself is untouched and still fully working, just not wired into typed search anymore; it's kept in place as the natural fit for a future barcode-scan feature, where its barcode-keyed data is exactly what you'd want. Everything below describes what was true when this was the active search path — the general concepts (live query, snapshot storage, per-100g, old-entry handling) still apply identically to the USDA integration that replaced it.
+**Update, two chunks later:** Open Food Facts turned out to be weak on generic whole foods ("chicken breast," "rice") since it's built for barcoded packaged products. Typed search now goes through USDA FoodData Central instead — see "Typed food search: USDA FoodData Central" below. Open Food Facts is back in active use, though — barcode scanning (see "Barcode scanning" further below) calls `src/lib/open-food-facts.ts`'s barcode-lookup function directly, which is exactly what this source is actually good at. Everything below describes what was true when Open Food Facts also handled typed search — the general concepts (live query, snapshot storage, per-100g, old-entry handling) still apply identically to both the USDA search integration and the barcode lookup that both replaced and reused this file.
 
 This replaced the old "type a food name, type a calorie number" flow with a live search against [Open Food Facts](https://world.openfoodfacts.org) — a public, open food database. No API key, no account, no setup: `src/lib/open-food-facts.ts` just calls their search endpoint directly from the app.
 
@@ -661,6 +661,28 @@ No new SQL — `food_logs.source`/`source_id` already existed from the previous 
 6. As a sanity check against the old source: search the same food (e.g. "chicken breast") and compare mentally to what Open Food Facts used to return for it — USDA's results should be visibly more relevant and complete for these generic terms.
 7. Remove or misspell the API key in `.env` temporarily, restart the dev server, and search anything — confirm a clear "USDA FoodData Central rejected the API key" message appears rather than a silent failure or crash, then restore the real key.
 
+## Barcode scanning
+
+No new SQL, no new environment variable — this reuses `food_logs.source`/`source_id` from two chunks ago (now able to record `open_food_facts` again) and Open Food Facts' existing `searchFoods`-adjacent module, just calling a different endpoint on it.
+
+**This is the app's first use of the device camera**, via `expo-camera` (added as a dependency this chunk, with its config plugin registered in `app.json`). One real environment quirk worth knowing: passing a custom permission-message option to that plugin (e.g. `{ cameraPermission: "..." }`) triggers a bug in this Expo SDK 57 setup's plugin-resolution step that breaks `expo export` entirely with an unrelated-looking "package.json does not exist" error. The fix was to list the plugin bare (`"expo-camera"`, no options object) — which means the camera permission prompt uses Expo's default wording ("Allow Primal-Physique to access your camera") instead of custom copy mentioning barcodes specifically. Functionally identical, just a slightly more generic permission prompt; not worth chasing further since it works correctly.
+
+**How scanning connects to everything already built:** tapping "📷 Scan a barcode instead" inside the same "Add to [meal]" modal used for search asks for camera permission (only if not already granted), then shows a live camera preview. The moment a barcode is decoded, the preview stops and the app calls Open Food Facts' actual barcode-lookup endpoint (`/api/v2/product/{barcode}.json`) — a single direct lookup, not a search, which is the thing Open Food Facts has always been strong at (every product there is keyed by barcode; that was never the part that was broken). From there, it's the exact same flow as a typed search result: macros shown, "Log this" saves the same kind of snapshot to `food_logs`, just with `source = open_food_facts` instead of `usda_fdc` — the two sources sit side by side in the same table, distinguished only by that column.
+
+**If the barcode isn't found:** the app doesn't dead-end — it drops back to the search screen (not another camera prompt) with a plain message: "Barcode `<code>` wasn't found in Open Food Facts — try searching instead," and the USDA search box is right there to use immediately.
+
+**Why this needs a real device, not just the web preview:** barcode scanning works through a real camera pointed at a real physical barcode — the Codespace web preview can technically request webcam access, but there's nothing to physically scan through a laptop webcam pointed at a screen or across a room. Test this on your phone via Expo Go (scan the QR code from `npx expo start`) for it to mean anything.
+
+**Verify it against real packaged products:**
+
+1. On your phone, open the app in Expo Go, go to Nutrition → "+ Add" on any meal → "📷 Scan a barcode instead." Grant camera access when prompted (first time only).
+2. Pick a real packaged food from your kitchen with a barcode — a cereal box, a can, a protein bar wrapper. Point the camera steadily at the barcode until it's decoded (should take a second or two).
+3. Confirm the app shows that exact product's name and a full per-100g macro breakdown, not a different product and not blank fields.
+4. Tap "Log this," then check `food_logs` in Supabase — confirm `source` reads `open_food_facts`, `source_id` matches the barcode printed on the package (check the numbers under the actual barcode lines on the box), and the macros match what's on the product's own nutrition label (per-100g row, not per-serving — compare against the "per 100g" column if the label has one, since US labels are often per-serving only and won't match directly).
+5. Try a second, different product the same way — confirm it doesn't reuse the first product's data (a real, independent lookup each time).
+6. Try scanning something with no barcode data in Open Food Facts — an unusual or very new product is most likely to actually miss; a generic pantry staple usually won't, since OFF's whole strength is barcoded packaged goods. Confirm you get the "wasn't found... try searching instead" message, not a crash or a dead end, and that the search box is immediately usable right there.
+7. Deny camera permission (or check in your phone's Settings after denying once) and confirm the app shows a clear message about needing camera access rather than a blank camera view or a crash.
+
 ## Project structure reference
 
 ```
@@ -701,7 +723,7 @@ src/
         _layout.tsx      # client-only guard + the 5-tab bar
         index.tsx        # Home tab — greeting, streak, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
-        nutrition.tsx      # Nutrition tab — 4 meal sections, live USDA FoodData Central search, calorie + macro totals
+        nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calorie + macro totals
         progress.tsx       # Progress tab — log/update today's weight, chronological history
         calendar.tsx        # placeholder
   components/
@@ -719,7 +741,7 @@ src/
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a macro snapshot, not a live link
-    open-food-facts.ts       # searchFoods() — live query against Open Food Facts' public API; built but not currently wired in (kept for a future barcode feature)
+    open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
     habits.ts                 # coach + client habit + habit-log database calls

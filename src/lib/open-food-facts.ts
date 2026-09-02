@@ -6,6 +6,7 @@
  */
 
 const SEARCH_URL = 'https://world.openfoodfacts.org/cgi/search.pl';
+const PRODUCT_URL = 'https://world.openfoodfacts.org/api/v2/product';
 
 export type FoodSearchResult = {
   /** Open Food Facts' barcode, when the product has one — used as a
@@ -105,4 +106,53 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
     // back down to a sane number to actually show.
     .filter((result): result is FoodSearchResult => result.name.length > 0 && result.caloriesPer100g !== null)
     .slice(0, 20);
+}
+
+/**
+ * Looks up one exact product by its scanned barcode — Open Food Facts'
+ * actual strength, since every product there is keyed by barcode. This
+ * is the only place this app calls Open Food Facts now that typed
+ * search goes through USDA FoodData Central instead; barcode lookup
+ * was never the weak part.
+ *
+ * Returns null (not an error) for "no such barcode" or "found, but
+ * missing the data needed to log it" — both are ordinary, expected
+ * outcomes the scanner screen turns into a plain "not found" message,
+ * not a failure.
+ */
+export async function getProductByBarcode(barcode: string): Promise<FoodSearchResult | null> {
+  const trimmed = barcode.trim();
+  if (!trimmed) return null;
+
+  const params = new URLSearchParams({ fields: 'code,product_name,brands,nutriments' });
+
+  const response = await fetch(`${PRODUCT_URL}/${encodeURIComponent(trimmed)}.json?${params.toString()}`, {
+    headers: {
+      'User-Agent': 'PrimalPhysique-App - Fitness Coaching App',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to look up that barcode. Check your connection and try again.');
+  }
+
+  const data = (await response.json()) as { status?: number; product?: Record<string, unknown> };
+
+  if (data.status !== 1 || !data.product) return null;
+
+  const nutriments = (data.product.nutriments as Record<string, unknown> | undefined) ?? {};
+  const name = (data.product.product_name as string | undefined)?.trim() ?? '';
+  const caloriesPer100g = caloriesFromNutriments(nutriments);
+
+  if (!name || caloriesPer100g === null) return null;
+
+  return {
+    id: (data.product.code as string | undefined) || trimmed,
+    name,
+    brand: (data.product.brands as string | undefined)?.split(',')[0]?.trim() || null,
+    caloriesPer100g,
+    proteinPer100g: toNumberOrNull(nutriments['proteins_100g']),
+    carbsPer100g: toNumberOrNull(nutriments['carbohydrates_100g']),
+    fatPer100g: toNumberOrNull(nutriments['fat_100g']),
+  };
 }
