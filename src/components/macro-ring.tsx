@@ -54,8 +54,13 @@ export function MacroRing({ value, label, progress }: MacroRingProps) {
             strokeDasharray={`${CIRCUMFERENCE} ${CIRCUMFERENCE}`}
             strokeDashoffset={dashOffset}
             strokeLinecap="round"
-            rotation={-90}
-            origin={`${SIZE / 2}, ${SIZE / 2}`}
+            // `rotation`/`origin` are deprecated in this version of
+            // react-native-svg (origin specifically expects a numeric
+            // [x, y] tuple, not the "x, y" string form) — the standard
+            // SVG `transform` string is the documented replacement for
+            // both, and starts the arc from the top instead of the
+            // default 3 o'clock position.
+            transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
           />
         </Svg>
         <View style={styles.centerLabel} pointerEvents="none">
