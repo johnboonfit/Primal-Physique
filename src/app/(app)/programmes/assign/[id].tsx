@@ -72,8 +72,11 @@ export default function AssignProgrammeScreen() {
 
     setSaving(true);
     try {
-      await assignProgrammeToClient(session.user.id, clientId, id, startDate);
-      router.replace('/assignments');
+      const newProgrammeId = await assignProgrammeToClient(session.user.id, clientId, id, startDate);
+      // Land on the programme just assigned, not the (unrelated at this
+      // point) individual-workout Assignments list — this is the only
+      // place a coach can see its Weeks, calorie target, and calendar.
+      router.replace(`/programmes/${newProgrammeId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong assigning this programme.');
     } finally {

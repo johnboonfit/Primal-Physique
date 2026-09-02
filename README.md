@@ -1085,6 +1085,8 @@ No new SQL. Both pieces of this chunk lean entirely on data and permissions that
 
 **Where it shows up for the coach:** open a client's *assigned* programme (not a template — templates have no client or real dates to show a calendar for) in Programme Builder, and a new "Client Calendar" section appears below the Weeks list, with a one-line note that it's the same calendar the client sees. Because `programmes/[id].tsx` had no scrolling before (its Weeks list was a `scrollEnabled={false}` FlatList relying on nothing else on the page needing to scroll), the whole screen is now wrapped in a `ScrollView` too — needed simply because the page is longer now, not a behavior change for anything already there.
 
+**A real, pre-existing gap this surfaced:** there was no way for a coach to actually navigate to a client's assigned programme at all — the Template Library only lists templates (`client_id is null`, by design), and assigning a programme redirected to the unrelated individual-workout Assignments list, never to the programme itself. That made the new Client Calendar (and the Calorie target editor from an earlier chunk) unreachable for anything beyond the moment right after creating it, if even that. Fixed two ways: assigning a programme now lands the coach directly on the programme it just created instead of `/assignments`, and the coach's **Clients** detail page now has a **Programme** section — the client's current assigned programme, tap through any time to reach its Weeks, calorie target, and calendar.
+
 **2. The phase overlay** ("Phase 4 — Week 2/6") is derived, not stored: `listClientPhases()` (new, in `programmes.ts`) fetches every assigned programme this client has ever had, oldest first — "Phase 4" literally just means "the 4th one," in the order they started. `getPhaseForDate()` then works out, for any given date, which of those phases (if any) covers it, and which week of that phase it falls in — the exact same week-number math `getClientProgramme()` already uses for "Week 2/6" on the Training tab, reapplied here to whatever date is currently in view rather than always "today." It reads `referenceDate` (the same anchor both Week and Month navigation already use — it's always somewhere inside whichever period is on screen) so the label updates correctly the moment you page forward or back, in either view mode. If the visible period falls in a gap between phases, or before/after every phase the client's ever had, the label just doesn't show — there's nothing true to say.
 
 **Verify the coach and client are genuinely looking at the same data, not two systems that happen to look similar:**
@@ -1121,7 +1123,7 @@ src/
         index.tsx        # Template Library — list of the coach's programmes, with Duplicate
         new.tsx          # create-programme form — name, goal type, duration, cover image, training days
         [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week; Calorie target editor + embedded SessionCalendar for assigned (client) instances
-        assign/[id].tsx     # pick a client + start date, assign a template to them
+        assign/[id].tsx     # pick a client + start date, assign a template to them — redirects straight to the new assigned programme, not the unrelated Assignments list
         week/[weekId].tsx  # one week of a programme — its sessions, + New session
       exercise-library/
         _layout.tsx      # coach-only guard for now
@@ -1138,7 +1140,7 @@ src/
       clients/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of every client account
-        [id].tsx          # one client's detail page — Nutrition section (target + 14-day food log history, delete)
+        [id].tsx          # one client's detail page — Programme section (assigned programme card, links to Programme Builder) + Nutrition section (target + 14-day food log history, delete)
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/

@@ -8,7 +8,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { getClient, type ClientSummary } from '@/lib/clients';
 import { deleteFoodLog, listFoodLogHistory, type DailyFoodLog } from '@/lib/food-logs';
-import { GOAL_TYPES } from '@/lib/programmes';
+import { getClientProgramme, GOAL_TYPES, type ClientProgrammeView } from '@/lib/programmes';
 import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
 
 const HISTORY_DAYS = 14;
@@ -34,6 +34,7 @@ export default function ClientDetailScreen() {
   const [client, setClient] = useState<ClientSummary | null>(null);
   const [history, setHistory] = useState<DailyFoodLog[]>([]);
   const [target, setTarget] = useState<CalorieTarget | null>(null);
+  const [programme, setProgramme] = useState<ClientProgrammeView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -41,13 +42,14 @@ export default function ClientDetailScreen() {
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true);
-    Promise.all([getClient(id), listFoodLogHistory(id, HISTORY_DAYS), getCalorieTarget(id)])
-      .then(([clientData, historyData, targetData]) => {
+    Promise.all([getClient(id), listFoodLogHistory(id, HISTORY_DAYS), getCalorieTarget(id), getClientProgramme(id)])
+      .then(([clientData, historyData, targetData, programmeData]) => {
         setClient(clientData);
         setHistory(historyData);
         setTarget(targetData);
+        setProgramme(programmeData);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load this client's nutrition."))
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load this client's details."))
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -87,6 +89,25 @@ export default function ClientDetailScreen() {
             {client.fullName && (
               <ThemedText type="small" themeColor="textSecondary">
                 {client.email}
+              </ThemedText>
+            )}
+
+            <ThemedText type="smallBold" style={styles.sectionLabel}>
+              Programme
+            </ThemedText>
+
+            {programme ? (
+              <Pressable onPress={() => router.push(`/programmes/${programme.id}`)}>
+                <ThemedView type="backgroundElement" style={styles.programmeCard}>
+                  <ThemedText type="smallBold">{programme.name}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Week {programme.currentWeekNumber}/{programme.durationWeeks} · View programme &amp; calendar →
+                  </ThemedText>
+                </ThemedView>
+              </Pressable>
+            ) : (
+              <ThemedText type="small" themeColor="textSecondary">
+                No programme assigned yet.
               </ThemedText>
             )}
 
@@ -185,6 +206,11 @@ const styles = StyleSheet.create({
   },
   sectionLabel: {
     marginTop: Spacing.three,
+  },
+  programmeCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.half,
   },
   targetCard: {
     borderRadius: Spacing.two,
