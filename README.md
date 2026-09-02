@@ -605,11 +605,13 @@ Up to now, adding an exercise to a workout meant typing its name freehand — no
 3. Assign that workout to a test client (Assignments → New, or it may already be assigned from earlier testing), then view it as the coach (Assignments → tap it) or as that client (`assigned/[id]`) — confirm every exercise name shows exactly as it always did, with no error, blank field, or "unknown exercise" placeholder.
 4. As a final cross-check, assign a newly-built (library-linked) workout too, and compare the two assignment detail views side by side — both should render exercise names identically, even though only the new one has a real `exercise_library_id` behind it.
 
-## Real nutrition data: Open Food Facts
+## Real nutrition data: Open Food Facts (superseded for typed search — see next section)
 
 Run `supabase/food-log-macros.sql` in the SQL Editor after `link-exercise-library.sql`.
 
-This replaces the old "type a food name, type a calorie number" flow with a live search against [Open Food Facts](https://world.openfoodfacts.org) — a public, open food database. No API key, no account, no setup: `src/lib/open-food-facts.ts` just calls their search endpoint directly from the app.
+**Update from the very next chunk:** Open Food Facts turned out to be weak on generic whole foods ("chicken breast," "rice") since it's built for barcoded packaged products. Typed search now goes through USDA FoodData Central instead — see "Typed food search: USDA FoodData Central" below. `src/lib/open-food-facts.ts` itself is untouched and still fully working, just not wired into typed search anymore; it's kept in place as the natural fit for a future barcode-scan feature, where its barcode-keyed data is exactly what you'd want. Everything below describes what was true when this was the active search path — the general concepts (live query, snapshot storage, per-100g, old-entry handling) still apply identically to the USDA integration that replaced it.
+
+This replaced the old "type a food name, type a calorie number" flow with a live search against [Open Food Facts](https://world.openfoodfacts.org) — a public, open food database. No API key, no account, no setup: `src/lib/open-food-facts.ts` just calls their search endpoint directly from the app.
 
 **Live query, snapshot storage — the important distinction.** Every search is a real, live network call, made fresh each time — nothing from Open Food Facts is ever cached or stored ahead of time (unlike the Exercise Library, which really was a one-time import). But the moment a client taps a result to log it, its calories/protein/carbs/fat get copied as plain numbers into that `food_logs` row and saved. From that point on, the app never looks the food up again — if Open Food Facts later corrects that product's data, or the product listing disappears entirely, the log entry a client already saved stays exactly as it was the day they logged it. That's what "snapshot, not a live reference" means in practice: one network call at the moment of logging, and zero afterward.
 
@@ -634,6 +636,30 @@ This replaces the old "type a food name, type a calorie number" flow with a live
 4. Confirm the day's macro totals (Protein/Carbs/Fat, under the calorie hero number) increased by exactly that entry's numbers.
 5. The permanence check: note the `source_id` you just saved, then in the app search for and log a *different* food entirely — confirm the first entry's numbers in Supabase are completely unchanged. There's no live link back to Open Food Facts to accidentally refresh or overwrite it.
 6. Check an entry logged before this chunk (if you have one) — confirm `protein`/`carbs`/`fat` show as `NULL` in Supabase, and that the day's macro totals still correctly exclude it from protein/carbs/fat while still including its calories.
+
+## Typed food search: USDA FoodData Central
+
+No new SQL — `food_logs.source`/`source_id` already existed from the previous chunk; this just writes `usda_fdc` into them instead of `open_food_facts`.
+
+**Why this exists:** Open Food Facts is crowdsourced from packaged product labels — great for "Kellogg's Corn Flakes," weak on "chicken breast" or "rice," because nobody scans a raw chicken breast's barcode. USDA FoodData Central is the opposite: U.S. government lab-analyzed and dietary-survey data, built specifically to answer "what's in a plain, generic food" — exactly the gap Open Food Facts had. Typed search (the only kind of food search this app has ever had) now goes there instead. Open Food Facts itself is untouched, just no longer wired into the search box — it's the right tool for a barcode-scan feature if one gets built later, since barcode is its whole reason for being.
+
+**Getting the free key, one time:** sign up at [fdc.nal.usda.gov/api-key-signup](https://fdc.nal.usda.gov/api-key-signup) (name + email, no payment) — the key arrives by email within a few minutes. Add it to `.env` as `EXPO_PUBLIC_USDA_FDC_API_KEY=...` (see `.env.example`) and restart the dev server. Same "safe to embed" reasoning as the Supabase keys: this isn't a secret, it just lifts USDA's shared-anonymous rate limit from 30 requests/hour to 1,000/hour.
+
+**Which USDA data gets searched, and why:** USDA FoodData Central has several data types. This app searches only `Foundation`, `SR Legacy`, and `Survey (FNDDS)` — lab-analyzed reference foods and the "as eaten" everyday items people actually search for (e.g. "chicken, breast, meat only, cooked, roasted"). It deliberately excludes `Branded` (USDA's own packaged-product data) — that's exactly what Open Food Facts already covers, and mixing it in would bring back the same noisy, incomplete-entry problem this change exists to avoid.
+
+**Same snapshot rules as before, same "per 100g" convention.** Nothing about how the data gets saved changed — a search result's calories/protein/carbs/fat are copied into `food_logs` the moment it's picked, never re-fetched afterward, and USDA's `foodNutrients` values are per-100g just like Open Food Facts', so the two sources stay directly comparable and no serving-size math had to change.
+
+**A note on the two "Energy" entries USDA returns.** Most USDA foods list separate energy figures in kcal and kJ as two different entries in the same food's nutrient list. The search code specifically matches the one with `unitName` of `kcal` — picking the wrong one would silently save a calorie count roughly 4× too high (1 kcal ≈ 4.18 kJ).
+
+**Verify chicken breast, rice, and other generic foods now return real results:**
+
+1. Search "chicken breast" — confirm real entries appear (e.g. "Chicken, broilers or fryers, breast, meat only, cooked, roasted"), each with a calories-per-100g figure in a sensible range (roughly 150–170 cal/100g for cooked, skinless chicken breast — not 0, not four digits).
+2. Search "rice" — confirm real entries appear (e.g. "Rice, white, long-grain, cooked"), roughly 120–150 cal/100g for cooked white rice.
+3. Search "apple" and "egg" — confirm both return sensible, real results too (apple: roughly 50–55 cal/100g; whole egg: roughly 140–150 cal/100g).
+4. Pick one result, confirm its protein/carbs/fat all show non-zero, plausible values for that food (a cooked chicken breast should show high protein, near-zero carbs).
+5. Log it, then check that row in `food_logs` — confirm `source` reads `usda_fdc` and `source_id` holds a numeric FDC id, and that the saved macros match what was shown on screen.
+6. As a sanity check against the old source: search the same food (e.g. "chicken breast") and compare mentally to what Open Food Facts used to return for it — USDA's results should be visibly more relevant and complete for these generic terms.
+7. Remove or misspell the API key in `.env` temporarily, restart the dev server, and search anything — confirm a clear "USDA FoodData Central rejected the API key" message appears rather than a silent failure or crash, then restore the real key.
 
 ## Project structure reference
 
@@ -675,7 +701,7 @@ src/
         _layout.tsx      # client-only guard + the 5-tab bar
         index.tsx        # Home tab — greeting, streak, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
-        nutrition.tsx      # Nutrition tab — 4 meal sections, live Open Food Facts search, calorie + macro totals
+        nutrition.tsx      # Nutrition tab — 4 meal sections, live USDA FoodData Central search, calorie + macro totals
         progress.tsx       # Progress tab — log/update today's weight, chronological history
         calendar.tsx        # placeholder
   components/
@@ -693,7 +719,8 @@ src/
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a macro snapshot, not a live link
-    open-food-facts.ts       # searchFoods() — live query against Open Food Facts' public API, nothing stored here
+    open-food-facts.ts       # searchFoods() — live query against Open Food Facts' public API; built but not currently wired in (kept for a future barcode feature)
+    usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables

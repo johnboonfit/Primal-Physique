@@ -12,12 +12,15 @@ export type FoodLogEntry = {
   fat: number | null;
 };
 
+export type FoodSource = 'usda_fdc' | 'open_food_facts';
+
 export type FoodLogDraft = {
   name: string;
   calories: number;
   protein: number | null;
   carbs: number | null;
   fat: number | null;
+  source: FoodSource;
   sourceId: string | null;
 };
 
@@ -44,11 +47,11 @@ export async function listFoodLogsForDate(clientId: string, logDate: string): Pr
 
 /**
  * Saves a snapshot of the food's macros exactly as they were at the
- * moment it was picked from Open Food Facts — calories, protein, carbs,
- * fat, all copied in as plain numbers. `sourceId` is kept purely as a
- * record of where this came from; nothing ever reads it back to refresh
- * the numbers, so a later change to the food's real data (or the food
- * disappearing from Open Food Facts entirely) can never alter a log
+ * moment it was picked — calories, protein, carbs, fat, all copied in
+ * as plain numbers. `source`/`sourceId` are kept purely as a record of
+ * where this came from; nothing ever reads them back to refresh the
+ * numbers, so a later change to the food's real data upstream (or the
+ * food disappearing from that source entirely) can never alter a log
  * entry that's already been saved.
  */
 export async function addFoodLog(clientId: string, logDate: string, meal: Meal, food: FoodLogDraft) {
@@ -61,7 +64,7 @@ export async function addFoodLog(clientId: string, logDate: string, meal: Meal, 
     protein: food.protein,
     carbs: food.carbs,
     fat: food.fat,
-    source: 'open_food_facts',
+    source: food.source,
     source_id: food.sourceId,
   });
 

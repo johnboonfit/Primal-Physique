@@ -10,7 +10,8 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { addFoodLog, listFoodLogsForDate, type FoodLogEntry, type Meal } from '@/lib/food-logs';
-import { searchFoods, type FoodSearchResult } from '@/lib/open-food-facts';
+import type { FoodSearchResult } from '@/lib/open-food-facts';
+import { searchFoods } from '@/lib/usda-fooddata';
 import { awardMealXp } from '@/lib/xp';
 
 const MEALS: { key: Meal; label: string }[] = [
@@ -78,8 +79,8 @@ export default function NutritionScreen() {
     }, [load])
   );
 
-  // Live search against Open Food Facts — debounced so it doesn't fire
-  // on every keystroke, and guarded against a slow older request
+  // Live search against USDA FoodData Central — debounced so it doesn't
+  // fire on every keystroke, and guarded against a slow older request
   // clobbering a faster, more recent one.
   useEffect(() => {
     if (activeMeal === null || selected) return;
@@ -142,6 +143,7 @@ export default function NutritionScreen() {
         protein: selected.proteinPer100g,
         carbs: selected.carbsPer100g,
         fat: selected.fatPer100g,
+        source: 'usda_fdc',
         sourceId: selected.id || null,
       });
       // Only the day's first meal actually awards XP — the database
@@ -252,7 +254,7 @@ export default function NutritionScreen() {
                 <TextInput
                   value={search}
                   onChangeText={setSearch}
-                  placeholder="Search Open Food Facts"
+                  placeholder="Search USDA FoodData Central"
                   placeholderTextColor={theme.textSecondary}
                   autoFocus
                   style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
