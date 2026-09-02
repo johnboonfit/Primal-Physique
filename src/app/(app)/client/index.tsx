@@ -11,6 +11,7 @@ import { useAuth } from '@/context/auth-context';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
 import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
+import { awardHabitXp, getXpSummary, type XpSummary } from '@/lib/xp';
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -39,6 +40,9 @@ export default function ClientHomeScreen() {
   const [momentum, setMomentum] = useState<MomentumBreakdown | null>(null);
   const [momentumLoading, setMomentumLoading] = useState(true);
   const [momentumError, setMomentumError] = useState<string | null>(null);
+
+  const [xp, setXp] = useState<XpSummary | null>(null);
+  const [xpLoading, setXpLoading] = useState(true);
 
   const logDate = todayISODate();
 
@@ -108,12 +112,35 @@ export default function ClientHomeScreen() {
     }, [session])
   );
 
+  const loadXp = useCallback(() => {
+    if (!session) return;
+    setXpLoading(true);
+    getXpSummary(session.user.id)
+      .then(setXp)
+      .catch((err) => console.error('Failed to load XP:', err))
+      .finally(() => setXpLoading(false));
+  }, [session]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadXp();
+    }, [loadXp])
+  );
+
   const handleCompleteHabit = async (habitId: string) => {
     if (!session || completedIds.has(habitId)) return;
     setCompletingId(habitId);
     try {
       await completeHabit(habitId, session.user.id, logDate);
       setCompletedIds((current) => new Set(current).add(habitId));
+      // Same "don't let the bonus layer break the core action" rule as
+      // the other two award points.
+      try {
+        await awardHabitXp(session.user.id, habitId, logDate);
+        loadXp();
+      } catch (xpErr) {
+        console.error('Failed to award habit XP:', xpErr);
+      }
     } catch (err) {
       setHabitsError(err instanceof Error ? err.message : 'Failed to save that.');
     } finally {
@@ -137,6 +164,23 @@ export default function ClientHomeScreen() {
               <ThemedText type="linkPrimary">Sign out</ThemedText>
             </Pressable>
           </View>
+
+          {!xpLoading && xp && (
+            <ThemedView type="backgroundElement" style={styles.xpCard}>
+              <View style={styles.xpHeader}>
+                <ThemedText type="smallBold">Level {xp.level}</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  {xp.totalXp} XP
+                </ThemedText>
+              </View>
+              <View style={styles.xpTrack}>
+                <View style={[styles.xpFill, { width: `${((xp.totalXp % 500) / 500) * 100}%` }]} />
+              </View>
+              <ThemedText type="small" themeColor="textSecondary">
+                {xp.totalXp % 500}/500 to Level {xp.level + 1}
+              </ThemedText>
+            </ThemedView>
+          )}
 
           {momentumLoading && <ActivityIndicator style={styles.loader} />}
 
@@ -307,5 +351,27 @@ const styles = StyleSheet.create({
   },
   habitCheckPending: {
     color: Colors.textSecondary,
+  },
+  xpCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  xpHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  xpTrack: {
+    width: '100%',
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: Colors.backgroundSelected,
+    overflow: 'hidden',
+  },
+  xpFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: Colors.tealBright,
   },
 });

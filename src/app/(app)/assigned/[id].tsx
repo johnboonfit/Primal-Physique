@@ -9,6 +9,11 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { getAssignmentDetail, logWorkout, type AssignmentDetail } from '@/lib/assignments';
+import { awardWorkoutXp } from '@/lib/xp';
+
+function todayISODate() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 type ExerciseInput = {
   weight: string;
@@ -90,6 +95,14 @@ export default function AssignedWorkoutDetailScreen() {
     setSaving(true);
     try {
       await logWorkout(session.user.id, detail.id, entries);
+      // XP is a bonus layer on top of completion, not a requirement for
+      // it — if awarding XP hiccups, the workout still saved as
+      // complete, so we don't want that to surface as an error here.
+      try {
+        await awardWorkoutXp(session.user.id, detail.id, todayISODate());
+      } catch (xpErr) {
+        console.error('Failed to award workout XP:', xpErr);
+      }
       const refreshed = await getAssignmentDetail(detail.id);
       setDetail(refreshed);
       setInputs(buildInputsFromDetail(refreshed));

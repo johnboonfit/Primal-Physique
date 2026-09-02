@@ -10,6 +10,7 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { addFoodLog, listFoodLogsForDate, type FoodLogEntry, type Meal } from '@/lib/food-logs';
+import { awardMealXp } from '@/lib/xp';
 
 const MEALS: { key: Meal; label: string }[] = [
   { key: 'breakfast', label: 'Breakfast' },
@@ -85,6 +86,13 @@ export default function NutritionScreen() {
     setSaving(true);
     try {
       await addFoodLog(session.user.id, logDate, activeMeal, trimmedName, Math.round(parsedCalories));
+      // Only the day's first meal actually awards XP — the database
+      // silently rejects the rest, so it's always safe to call this.
+      try {
+        await awardMealXp(session.user.id, logDate);
+      } catch (xpErr) {
+        console.error('Failed to award meal XP:', xpErr);
+      }
       closeModal();
       load();
     } catch (err) {

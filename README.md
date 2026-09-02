@@ -352,6 +352,35 @@ Because every rate divides by the full 7-day week (not days-elapsed-so-far), the
 5. Log in as that client on the app, look at the Momentum Score card, and confirm it matches your hand-calculated number (to two decimal places).
 6. Log a new workout completion, meal, or habit for that client, refresh the Home tab, and confirm the score changes in the direction you'd expect (up, generally) — then re-run the queries and re-check the math to confirm it still matches exactly.
 
+## XP and levels
+
+Run `supabase/xp.sql` in the SQL Editor after `habits.sql`. **Read this one before running it** — it includes a security fix, not just the new feature.
+
+**The security fix, first:** the very first setup script gave every logged-in user permission to update *any* column on their own `profiles` row — not just their name. That means, until now, a client could have called Supabase's update API directly (skipping the app entirely) and set their own `role` to `coach`, completely undoing the signup lockdown from a few chunks ago. This script closes that — a user can now only ever change their own `full_name` column, nothing else. This is unrelated to XP by itself, but it had to be fixed as part of this chunk, because otherwise a client could also just set `total_xp` to any number directly, making the whole ledger pointless.
+
+**The XP system:** four ways to earn it — workout completed (50 XP, once per workout, however many times you look at it), first meal logged each day (10 XP, logging a second or third meal the same day earns nothing more), each habit completed (5 XP per habit per day — two habits done means two separate 5 XP awards), and an active-day bonus (15 XP, once per day, awarded automatically the moment all three of the above have happened on the same day). Every award is recorded as its own row in a new `xp_events` table — a permanent ledger, not just a number that changes — and a database trigger keeps a running `total_xp` on the client's profile in sync automatically. The Home dashboard now shows "Level X" and total XP with its own small progress bar, sitting between the greeting and the Momentum Score card. Level = total XP ÷ 500, rounded down, plus 1 (so 0–499 XP is level 1, 500–999 is level 2, and so on).
+
+The database — not just the app — refuses to award XP that doesn't check out: wrong amount for the reason, a workout that isn't actually marked complete, a habit that isn't actually yours, or an active-day bonus claimed before all three categories are actually logged that day. Same standard as the coach-role lockdown: even someone bypassing the app entirely and calling the API directly can't cheat this.
+
+**Verify a specific day's XP by hand:**
+
+1. Pick a client, open Supabase's Table Editor → `profiles` → note their current `total_xp`. Call this **before**.
+2. As that client in the app: complete one pending workout (any numbers, Mark Complete).
+3. Log one meal under any section (any name/calories).
+4. Immediately log a **second** meal, same day, different name — this is the key test: it should **not** add any more nutrition XP.
+5. Complete one habit. If they have a second habit, complete that too — habits are per-habit, so this should award XP twice.
+6. In Supabase's SQL Editor, run:
+   ```sql
+   select reason, amount, event_date from xp_events
+   where client_id = 'PASTE_CLIENT_ID' and event_date = current_date
+   order by created_at;
+   ```
+7. Check the rows by hand: exactly one `workout_completed` (50), exactly one `meal_logged` (10, not two — confirming step 4 didn't double-award), one `habit_completed` row per habit you completed (5 each), and — since all three categories now have at least one row today — exactly one `active_day_bonus` (15).
+8. Add up the `amount` column yourself. Example: 1 workout + 1 meal + 2 habits + the bonus = 50 + 10 + 5 + 5 + 15 = **85**.
+9. Back in `profiles`, check `total_xp` again — confirm it now reads exactly **before + 85** (or whatever your own sum came to).
+10. On the client's Home tab, confirm the Level/XP display shows that same total, and the level shown equals `floor(total_xp ÷ 500) + 1`.
+11. Log a third meal, same day — confirm `total_xp` does **not** change again, proving the duplicate-prevention holds even after everything else already fired.
+
 ## Project structure reference
 
 ```
@@ -380,7 +409,7 @@ src/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar
-        index.tsx        # Home tab — greeting, Momentum Score, Up Next, Today's Habits checklist
+        index.tsx        # Home tab — greeting, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, add-entry popup, calorie total
         progress.tsx       # Progress tab — log/update today's weight, chronological history
@@ -401,6 +430,7 @@ src/
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
+    xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
@@ -413,4 +443,5 @@ supabase/
   weight-logs.sql                  # paste in after food-logs.sql, adds weight_logs
   lock-coach-role.sql                # paste in after weight-logs.sql — security fix, read it first
   habits.sql                           # paste in after lock-coach-role.sql, adds habits + habit_logs
+  xp.sql                                 # paste in after habits.sql — adds XP, also a security fix; read it first
 ```
