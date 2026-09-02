@@ -1,3 +1,4 @@
+import { getActiveGoalModifier, type GoalType } from '@/lib/programmes';
 import { supabase } from '@/lib/supabase';
 
 const WINDOW_DAYS = 14;
@@ -12,6 +13,10 @@ const MIN_LOGGED_DAYS = 7;
 // At or above this many logged days, the window is complete enough to
 // call 'high' confidence rather than 'medium'.
 const HIGH_CONFIDENCE_DAYS = 12;
+// TDEE is only ever recalculated on app open, and only once this many
+// days have passed since the last successful calculation — see
+// checkAndRecalculateTdeeIfDue.
+const RECALC_INTERVAL_DAYS = 7;
 
 function addDays(isoDate: string, days: number) {
   const date = new Date(`${isoDate}T00:00:00.000Z`);
@@ -191,5 +196,69 @@ export async function getTdeeConfidence(clientId: string, asOfDate: string): Pro
     missedFoodLogs,
     missedWeighIns,
     reason,
+  };
+}
+
+/**
+ * Runs the same "on app open" check the missed-workout auto-reschedule
+ * uses: no scheduled background job, just a look at whether it's due the
+ * moment the client happens to open the app. That's a reasonable trade
+ * here for the same reason it was there — with one coach and a handful
+ * of clients there's no infrastructure to run or monitor a real cron job
+ * for, and a target that's a day or two late to update because the
+ * client didn't open the app is harmless (they just keep eating at last
+ * week's number a bit longer), unlike a missed workout that actually
+ * needs a same-day decision. A true weekly job only earns its keep once
+ * targets need to update even when nobody opens the app.
+ *
+ * Does nothing if fewer than RECALC_INTERVAL_DAYS have passed since the
+ * last successful calculation. Once that's satisfied, it defers entirely
+ * to calculateAndSaveTdee's own data-quality gate — if the trailing
+ * 14-day window still doesn't have enough logged days, nothing is
+ * written and the current target keeps showing, exactly as it would if
+ * fewer than 7 days had passed at all.
+ */
+export async function checkAndRecalculateTdeeIfDue(clientId: string, today: string) {
+  const latest = await getLatestTdeeEstimate(clientId);
+
+  if (latest) {
+    const daysSinceLastCalc = Math.round(
+      (new Date(`${today}T00:00:00.000Z`).getTime() - new Date(`${latest.calculatedDate}T00:00:00.000Z`).getTime()) /
+        (24 * 60 * 60 * 1000)
+    );
+    if (daysSinceLastCalc < RECALC_INTERVAL_DAYS) return;
+  }
+
+  await calculateAndSaveTdee(clientId, today);
+}
+
+export type CalorieTarget = {
+  estimatedTdee: number;
+  calculatedDate: string;
+  /** Null when the client has no assigned programme yet — the target
+   * still gets shown, just at a 0% (maintenance) modifier, since "no
+   * active phase" isn't a reason to show nothing. */
+  goalType: GoalType | null;
+  modifierPercent: number;
+  targetCalories: number;
+};
+
+/**
+ * The client's real calorie target: their latest stored TDEE, adjusted
+ * by their current phase's goal modifier. Returns null if there's no
+ * TDEE estimate yet at all (not enough history logged).
+ */
+export async function getCalorieTarget(clientId: string): Promise<CalorieTarget | null> {
+  const estimate = await getLatestTdeeEstimate(clientId);
+  if (!estimate) return null;
+
+  const goalModifier = await getActiveGoalModifier(clientId);
+
+  return {
+    estimatedTdee: estimate.estimatedTdee,
+    calculatedDate: estimate.calculatedDate,
+    goalType: goalModifier?.goalType ?? null,
+    modifierPercent: goalModifier?.modifierPercent ?? 0,
+    targetCalories: estimate.estimatedTdee * (1 + (goalModifier?.modifierPercent ?? 0) / 100),
   };
 }

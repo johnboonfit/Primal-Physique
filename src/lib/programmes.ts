@@ -9,6 +9,28 @@ export const GOAL_TYPES: { key: GoalType; label: string }[] = [
   { key: 'strength', label: 'Strength' },
 ];
 
+/**
+ * The valid calorie-target range for each goal type, as a % adjustment
+ * off TDEE. `null` means the target is fixed at 0% (maintenance) and
+ * isn't coach-adjustable — Recomp is explicitly maintenance by
+ * definition, and Strength isn't a bulk/cut phase either, so it defaults
+ * to the same fixed 0% until told otherwise.
+ */
+export const GOAL_MODIFIER_RANGES: Record<GoalType, { min: number; max: number; default: number } | null> = {
+  cutting: { min: -20, max: -15, default: -17.5 },
+  bulking: { min: 10, max: 15, default: 12.5 },
+  recomp: null,
+  strength: null,
+};
+
+export type GoalModifier = {
+  programmeId: string;
+  goalType: GoalType;
+  /** The active %, already resolved: whatever the coach set, or this
+   * goal type's default/fixed value if they haven't touched it. */
+  modifierPercent: number;
+};
+
 export type ScheduledDay = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 
 export const SCHEDULED_DAYS: { key: ScheduledDay; label: string }[] = [
@@ -50,6 +72,10 @@ export type ProgrammeWeekSummary = {
 
 export type ProgrammeDetail = ProgrammeSummary & {
   weeks: ProgrammeWeekSummary[];
+  /** Set only for a client's own assigned instance, never a template. */
+  clientId: string | null;
+  /** Null means "using this goal type's default" — see GOAL_MODIFIER_RANGES. */
+  calorieTargetPercent: number | null;
 };
 
 export type ProgrammeWeekContext = {
@@ -128,7 +154,9 @@ export async function listProgrammes(coachId: string): Promise<ProgrammeSummary[
 export async function getProgrammeDetail(programmeId: string): Promise<ProgrammeDetail> {
   const { data, error } = await supabase
     .from('programme_blocks')
-    .select('id, name, description, cover_image_url, goal_type, duration_weeks, scheduled_days, created_at')
+    .select(
+      'id, name, description, cover_image_url, goal_type, duration_weeks, scheduled_days, created_at, client_id, calorie_target_percent'
+    )
     .eq('id', programmeId)
     .single();
 
@@ -152,12 +180,62 @@ export async function getProgrammeDetail(programmeId: string): Promise<Programme
     scheduledDays: (data.scheduled_days as ScheduledDay[] | null) ?? [],
     createdAt: data.created_at as string,
     weekCount: (weeks ?? []).length,
+    clientId: data.client_id as string | null,
+    calorieTargetPercent: data.calorie_target_percent as number | null,
     weeks: (weeks ?? []).map((row) => ({
       id: row.id as string,
       weekNumber: row.week_number as number,
       workoutCount: (row.workouts as { count: number }[] | null)?.[0]?.count ?? 0,
     })),
   };
+}
+
+/**
+ * Sets the coach-adjustable calorie-target % for a client's assigned
+ * programme. Clamped into that goal type's valid range (see
+ * GOAL_MODIFIER_RANGES) rather than rejected outright — a coach typing
+ * -25 for a cutting phase almost certainly means "as aggressive as
+ * possible," which -20 already is. Throws for a fixed-0% goal type
+ * (Recomp/Strength), since there's nothing to adjust there.
+ */
+export async function setGoalModifierPercent(programmeId: string, goalType: GoalType, percent: number) {
+  const range = GOAL_MODIFIER_RANGES[goalType];
+  if (!range) throw new Error('This goal type uses a fixed maintenance target and has no adjustable percentage.');
+
+  const clamped = Math.min(range.max, Math.max(range.min, percent));
+  const { error } = await supabase
+    .from('programme_blocks')
+    .update({ calorie_target_percent: clamped })
+    .eq('id', programmeId);
+
+  if (error) throw error;
+}
+
+/**
+ * The client's current phase for calorie-target purposes: whichever
+ * assigned programme has the most recent start date, same definition
+ * "current phase" uses everywhere else in this app (see
+ * getClientProgramme). Returns null if nothing's been assigned yet.
+ */
+export async function getActiveGoalModifier(clientId: string): Promise<GoalModifier | null> {
+  const { data, error } = await supabase
+    .from('programme_blocks')
+    .select('id, goal_type, calorie_target_percent')
+    .eq('client_id', clientId)
+    .not('start_date', 'is', null)
+    .order('start_date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+
+  const goalType = data.goal_type as GoalType;
+  const range = GOAL_MODIFIER_RANGES[goalType];
+  const stored = data.calorie_target_percent as number | null;
+  const modifierPercent = range === null ? 0 : (stored ?? range.default);
+
+  return { programmeId: data.id as string, goalType, modifierPercent };
 }
 
 /** Adds one more week on top of however many the programme already has. */

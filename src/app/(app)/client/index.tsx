@@ -21,6 +21,7 @@ import { listFoodLogsForDate } from '@/lib/food-logs';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
 import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
 import { getCurrentStreak } from '@/lib/streak';
+import { checkAndRecalculateTdeeIfDue } from '@/lib/tdee';
 import { hasWeightLogForDate } from '@/lib/weight-logs';
 import { awardHabitXp, getXpSummary, type XpSummary } from '@/lib/xp';
 
@@ -118,6 +119,22 @@ export default function ClientHomeScreen() {
       .catch((err) => console.error('Failed to check for overdue workouts:', err));
     // Deliberately only re-runs if the signed-in user changes — this is
     // an "on app open" check, not a "keep re-checking" one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  // Same "on app open" simplification as the overdue-workout check above,
+  // and for the same reason: no scheduled job to build or monitor, and a
+  // calorie target that's a day or two late to refresh because the
+  // client didn't open the app costs nothing (they just keep eating at
+  // last week's number a little longer). checkAndRecalculateTdeeIfDue
+  // itself is a no-op unless 7+ days have passed AND the data-quality
+  // gate still passes, so calling it here every app open is cheap and
+  // correct even though this effect fires every time.
+  useEffect(() => {
+    if (!session) return;
+    checkAndRecalculateTdeeIfDue(session.user.id, logDate).catch((err) =>
+      console.error('Failed to check whether TDEE needs recalculating:', err)
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 

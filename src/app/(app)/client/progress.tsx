@@ -10,13 +10,7 @@ import { WeightTrendChart } from '@/components/weight-trend-chart';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import {
-  calculateAndSaveTdee,
-  getLatestTdeeEstimate,
-  getTdeeConfidence,
-  type TdeeConfidence,
-  type TdeeEstimate,
-} from '@/lib/tdee';
+import { getLatestTdeeEstimate, getTdeeConfidence, type TdeeConfidence, type TdeeEstimate } from '@/lib/tdee';
 import { listWeightLogs, saveWeightLog, type WeightLogEntry } from '@/lib/weight-logs';
 
 function round(value: number) {
@@ -96,7 +90,6 @@ export default function ProgressScreen() {
     setSaving(true);
     try {
       await saveWeightLog(session.user.id, logDate, parsedWeight);
-      await calculateAndSaveTdee(session.user.id, logDate);
       load();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Something went wrong saving this entry.');

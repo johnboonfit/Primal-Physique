@@ -861,6 +861,34 @@ No new SQL this chunk — `src/lib/tdee.ts` and two screens changed. Three piece
 6. Open the Home tab as a client who hasn't logged weight or food yet today — confirm the nudge card appears with the correct specific wording (both missing / weight only / food only), and that it disappears once both are logged and you revisit the tab.
 7. As a sanity check on the "recovers cleanly" side: log at least 4 more backdated weight days (bringing the trailing-14 count back to 7+) and re-save today's weight — confirm `tdee_estimates` now updates to a fresh `calculated_date` and a recalculated `estimated_tdee`, and the Progress tab's confidence badge moves out of Low.
 
+## Calorie targets: the final piece of Adaptive TDEE
+
+Run `supabase/calorie-target.sql` in the SQL Editor after `tdee-estimates.sql`. This closes the loop: TDEE (calculated) → a goal-based adjustment → an actual number the client eats to, shown against what they've logged.
+
+**1. Target setting.** A client's real calorie target is their latest stored `estimated_tdee`, adjusted by whatever goal type their **current phase** is (the same assigned programme `getClientProgramme` already treats as "current" — whichever has the most recent start date):
+
+- **Cutting** → TDEE − 15% to − 20%
+- **Bulking** → TDEE + 10% to + 15%
+- **Recomp** → TDEE ± 0% (fixed, not adjustable — Recomp means maintenance by definition)
+- **Strength** wasn't part of the three goal types you specified for this — it defaults to the same fixed 0% as Recomp until you tell me otherwise, since it's not a bulk/cut phase either.
+
+The exact percentage within the Cutting/Bulking range is coach-adjustable per client, not a hardcoded single number — it lives on `programme_blocks.calorie_target_percent` (nullable; `null` means "use this goal's default," which is the middle of its range: −17.5% for Cutting, +12.5% for Bulking). A coach adjusts it from the programme detail screen (tap **Calorie target** on a client's assigned programme) — typing a value outside the valid range clamps to the nearest bound rather than rejecting it (e.g. typing −25 for a Cutting phase saves as −20, since that's already "as aggressive as this range allows").
+
+A client with no assigned programme yet still gets a target — at a 0% (maintenance) modifier, since "no active phase" isn't a reason to show nothing.
+
+**2. Weekly cadence, simplified.** TDEE used to recalculate every time a client saved their weight (from the last chunk). That's too often for a *target* a client eats against day to day — it should hold steady for a stretch, not shift underneath them every time they step on the scale. So instead: every time the Home tab opens, `checkAndRecalculateTdeeIfDue()` checks whether **7 or more days** have passed since the last successful calculation. If yes, it hands off to the existing `calculateAndSaveTdee()` — which still runs its own data-quality gate from the last chunk, so a due-for-recalculation window that's too thin still doesn't overwrite anything. If either check fails (too soon, or not enough data), nothing happens and the client keeps seeing last week's number.
+
+This is the exact same simplification the missed-workout auto-reschedule already uses, and for the same underlying reason: a true scheduled job (a server-side cron hitting every client nightly) is real infrastructure to build, deploy, and monitor, and with one coach and a handful of clients it buys nothing a check-on-open doesn't already cover. The two cases differ only in how much a delay costs: a missed *workout* needs a same-day decision (the client is standing there wondering what to do right now), so auto-reschedule's on-open check matters immediately. A calorie *target* that's a day or two late to refresh because the client didn't happen to open the app costs nothing — they just keep eating at last week's number a little longer, which is harmless since it was a trustworthy number when it was calculated. A real background job would only start earning its keep if targets needed to update even when nobody opens the app at all.
+
+**3. Wired into the Nutrition tab.** The hero calorie number is now real progress, not a bare count: **calories logged today**, a progress bar filling toward the **real calculated target**, and a line underneath naming the goal ("Cutting (−17.5% of TDEE) · TDEE 2717 kcal"). A client with no TDEE estimate yet (not enough history) sees the old plain count with a note explaining why there's no target yet, instead of a broken or fake number.
+
+**Verify all three:**
+
+1. **Target math** — using a client with an existing `estimated_tdee` (e.g. 2717 from an earlier chunk's verification) assigned to a Cutting programme with no `calorie_target_percent` override: open that client's Nutrition tab and confirm the target shown is `2717 × (1 − 0.175) ≈ 2242` and the meta line reads "Cutting (−17.5% of TDEE) · TDEE 2717 kcal".
+2. **Coach adjustment** — as that client's coach, open the assigned programme, tap **Calorie target**, enter `-20`, save. Reload the client's Nutrition tab and confirm the target recalculates to `2717 × 0.80 ≈ 2174` immediately (no need to wait for any recalculation — the modifier applies live to whatever TDEE is already stored). Try entering `-30` and confirm it saves as `-20` (clamped), not rejected or silently ignored.
+3. **Weekly cadence** — check `select calculated_date from tdee_estimates where client_id = 'PASTE_CLIENT_ID';`, note the date. Open the app as that client (Home tab) the same day — confirm the date is unchanged (fewer than 7 days have passed). Manually backdate it to force the check: `update tdee_estimates set calculated_date = current_date - 8 where client_id = 'PASTE_CLIENT_ID';`, then reopen the Home tab (a fresh app load, not just switching tabs — the check runs once per app open) — confirm `calculated_date` is now today's date (assuming the data-quality gate still passes; if you've also let that client's logging go thin, confirm it correctly does NOT update instead).
+4. **Progress bar** — on the Nutrition tab, log enough food to exceed the target and confirm the progress bar caps out at a full bar rather than erroring or overflowing its container (HeroStat clamps the fill to 100% — going over target is a real, expected state, just not one the bar can show as "more than full").
+
 ## Project structure reference
 
 ```
@@ -880,7 +908,7 @@ src/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # Template Library — list of the coach's programmes, with Duplicate
         new.tsx          # create-programme form — name, goal type, duration, cover image, training days
-        [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week
+        [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week; Calorie target editor for assigned (client) instances
         assign/[id].tsx     # pick a client + start date, assign a template to them
         week/[weekId].tsx  # one week of a programme — its sessions, + New session
       exercise-library/
@@ -899,9 +927,9 @@ src/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar
-        index.tsx        # Home tab — greeting, streak, daily logging nudge, Level/XP, Momentum Score, Up Next, Today's Habits checklist
+        index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
-        nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calorie + macro totals
+        nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab — log/update today's weight, weight+trend chart, Estimated TDEE + confidence, chronological history
         calendar.tsx        # placeholder
   components/
@@ -917,14 +945,14 @@ src/
   lib/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() database calls
-    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName()
+    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / getActiveGoalModifier() / setGoalModifierPercent()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
     weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend) / listWeightLogs() / hasWeightLogForDate() database calls
-    tdee.ts                   # calculateAndSaveTdee() (gated on 7+/14 logged days) / getLatestTdeeEstimate() / getTdeeConfidence()
+    tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
@@ -952,4 +980,5 @@ supabase/
   food-log-quantity.sql                                 # adds quantity_grams to food_logs (order vs. other food_logs files doesn't matter)
   weight-trend.sql                                        # adds weight_logs.weight_trend + one-time backfill of existing rows
   tdee-estimates.sql                                        # paste in after weight-trend.sql, adds tdee_estimates
+  calorie-target.sql                                          # paste in after tdee-estimates.sql, adds programme_blocks.calorie_target_percent
 ```

@@ -11,7 +11,9 @@ import { useTheme } from '@/hooks/use-theme';
 import {
   addProgrammeWeek,
   getProgrammeDetail,
+  GOAL_MODIFIER_RANGES,
   GOAL_TYPES,
+  setGoalModifierPercent,
   updateProgrammeName,
   type ProgrammeDetail,
 } from '@/lib/programmes';
@@ -37,6 +39,11 @@ export default function ProgrammeDetailScreen() {
   const [nameDraft, setNameDraft] = useState('');
   const [savingName, setSavingName] = useState(false);
 
+  const [editingTarget, setEditingTarget] = useState(false);
+  const [targetDraft, setTargetDraft] = useState('');
+  const [savingTarget, setSavingTarget] = useState(false);
+  const [targetError, setTargetError] = useState<string | null>(null);
+
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true);
@@ -59,6 +66,13 @@ export default function ProgrammeDetailScreen() {
     if (programme && !editingName) setNameDraft(programme.name);
   }, [programme, editingName]);
 
+  useEffect(() => {
+    if (!programme || editingTarget) return;
+    const range = GOAL_MODIFIER_RANGES[programme.goalType];
+    const resolved = range ? (programme.calorieTargetPercent ?? range.default) : 0;
+    setTargetDraft(String(resolved));
+  }, [programme, editingTarget]);
+
   const handleSaveName = async () => {
     if (!programme) return;
     const trimmed = nameDraft.trim();
@@ -73,6 +87,31 @@ export default function ProgrammeDetailScreen() {
       setError(err instanceof Error ? err.message : 'Failed to rename this programme.');
     } finally {
       setSavingName(false);
+    }
+  };
+
+  const handleSaveTarget = async () => {
+    if (!programme) return;
+    setTargetError(null);
+
+    const range = GOAL_MODIFIER_RANGES[programme.goalType];
+    if (!range) return;
+
+    const parsed = Number(targetDraft);
+    if (targetDraft.trim() === '' || Number.isNaN(parsed)) {
+      setTargetError('Enter a number.');
+      return;
+    }
+
+    setSavingTarget(true);
+    try {
+      await setGoalModifierPercent(programme.id, programme.goalType, parsed);
+      setEditingTarget(false);
+      load();
+    } catch (err) {
+      setTargetError(err instanceof Error ? err.message : 'Failed to save this target.');
+    } finally {
+      setSavingTarget(false);
     }
   };
 
@@ -162,6 +201,66 @@ export default function ProgrammeDetailScreen() {
                 {programme.description}
               </ThemedText>
             )}
+
+            {programme.clientId &&
+              (() => {
+                const range = GOAL_MODIFIER_RANGES[programme.goalType];
+                return (
+                  <ThemedView type="backgroundElement" style={styles.targetCard}>
+                    <ThemedText type="smallBold">Calorie target</ThemedText>
+                    {!range ? (
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {goalLabel(programme.goalType)} is a fixed maintenance target (TDEE ± 0%) — nothing to
+                        adjust.
+                      </ThemedText>
+                    ) : editingTarget ? (
+                      <>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          Valid range for {goalLabel(programme.goalType)}: {range.min}% to {range.max}%
+                        </ThemedText>
+                        <View style={styles.targetEditRow}>
+                          <TextInput
+                            value={targetDraft}
+                            onChangeText={setTargetDraft}
+                            keyboardType="numbers-and-punctuation"
+                            autoFocus
+                            style={[styles.targetInput, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                          />
+                          <ThemedText type="smallBold">%</ThemedText>
+                          <Pressable
+                            style={[styles.renameSaveButton, savingTarget && styles.pressed]}
+                            onPress={handleSaveTarget}
+                            disabled={savingTarget}>
+                            {savingTarget ? (
+                              <ActivityIndicator size="small" color={Colors.text} />
+                            ) : (
+                              <ThemedText type="smallBold" style={styles.renameSaveText}>
+                                Save
+                              </ThemedText>
+                            )}
+                          </Pressable>
+                          <Pressable onPress={() => setEditingTarget(false)}>
+                            <ThemedText themeColor="textSecondary">Cancel</ThemedText>
+                          </Pressable>
+                        </View>
+                        {targetError && <ThemedText style={styles.error}>{targetError}</ThemedText>}
+                      </>
+                    ) : (
+                      (() => {
+                        const resolvedPercent = programme.calorieTargetPercent ?? range.default;
+                        return (
+                          <Pressable onPress={() => setEditingTarget(true)}>
+                            <ThemedText type="small" themeColor="textSecondary">
+                              TDEE {resolvedPercent > 0 ? '+' : ''}
+                              {resolvedPercent}% · Tap to adjust
+                            </ThemedText>
+                          </Pressable>
+                        );
+                      })()
+                    )}
+                  </ThemedView>
+                );
+              })()}
 
             <View style={styles.sectionHeaderRow}>
               <ThemedText type="smallBold">Weeks</ThemedText>
@@ -256,6 +355,25 @@ const styles = StyleSheet.create({
   },
   description: {
     marginTop: Spacing.two,
+  },
+  targetCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    marginTop: Spacing.three,
+    gap: Spacing.half,
+  },
+  targetEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  targetInput: {
+    width: 80,
+    borderWidth: 1,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.two,
+    fontSize: 16,
   },
   sectionHeaderRow: {
     flexDirection: 'row',

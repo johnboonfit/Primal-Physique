@@ -13,6 +13,8 @@ import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { addFoodLog, listFoodLogsForDate, type FoodLogEntry, type FoodSource, type Meal } from '@/lib/food-logs';
 import { getProductByBarcode, type FoodSearchResult } from '@/lib/open-food-facts';
+import { GOAL_TYPES } from '@/lib/programmes';
+import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
 import { searchFoods } from '@/lib/usda-fooddata';
 import { awardMealXp } from '@/lib/xp';
 
@@ -40,6 +42,11 @@ function todayDisplayDate() {
 
 function round(value: number) {
   return Math.round(value * 10) / 10;
+}
+
+function goalLabel(goalType: CalorieTarget['goalType']) {
+  if (!goalType) return 'Maintenance';
+  return GOAL_TYPES.find((g) => g.key === goalType)?.label ?? goalType;
 }
 
 /** Scales a per-100g figure to a given quantity in grams — e.g. 165
@@ -73,6 +80,8 @@ export default function NutritionScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [target, setTarget] = useState<CalorieTarget | null>(null);
+
   const [activeMeal, setActiveMeal] = useState<Meal | null>(null);
   const [search, setSearch] = useState('');
   const [results, setResults] = useState<FoodSearchResult[]>([]);
@@ -100,6 +109,10 @@ export default function NutritionScreen() {
       .then(setEntries)
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load today's food log."))
       .finally(() => setLoading(false));
+
+    getCalorieTarget(session.user.id)
+      .then(setTarget)
+      .catch((err) => console.error('Failed to load calorie target:', err));
   }, [session, logDate]);
 
   useFocusEffect(
@@ -281,7 +294,32 @@ export default function NutritionScreen() {
           {loading && <ActivityIndicator style={styles.loader} />}
           {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
-          {!loading && !error && <HeroStat value={totalCalories} label="Calories Today" />}
+          {!loading && !error && target && (
+            <>
+              <HeroStat
+                value={totalCalories}
+                label={`of ${Math.round(target.targetCalories)} kcal target`}
+                progress={totalCalories / target.targetCalories}
+              />
+              <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
+                {goalLabel(target.goalType)}
+                {target.goalType && target.modifierPercent !== 0
+                  ? ` (${target.modifierPercent > 0 ? '+' : ''}${round(target.modifierPercent)}% of TDEE)`
+                  : ''}
+                {' · TDEE '}
+                {Math.round(target.estimatedTdee)} kcal
+              </ThemedText>
+            </>
+          )}
+
+          {!loading && !error && !target && (
+            <>
+              <HeroStat value={totalCalories} label="Calories Today" />
+              <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
+                Log your weight and meals daily — once there's enough history, your real calorie target shows here.
+              </ThemedText>
+            </>
+          )}
 
           {!loading && !error && entries.length > 0 && (
             <View style={styles.macroRow}>
@@ -496,6 +534,10 @@ const styles = StyleSheet.create({
   error: {
     color: Accent,
     textAlign: 'center',
+  },
+  targetMeta: {
+    textAlign: 'center',
+    marginTop: -Spacing.two,
   },
   macroRow: {
     flexDirection: 'row',
