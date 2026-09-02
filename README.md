@@ -1241,6 +1241,47 @@ Four things this chunk, all built around one new idea: a check-in **occurrence**
 5. As the coach, open that client's page — confirm the same check-in no longer appears under "Individual check-ins" either (it's excluded from the coach's active list the same way), while the SQL row from step 4 still proves it exists.
 6. For the coach-initiated side of the same rule: as the coach, remove a check-in that's still `pending` — confirm in SQL that the row is gone entirely (`select … where id = '<id>'` returns nothing). Then remove one that's already `completed` — confirm in SQL the row is still there with `archived = true`, submitted answers in `form_responses` still intact.
 
+## Real Compliance Score
+
+No new database tables — same shape as Momentum Score: pure calculation over data that already exists (`form_check_ins`, `food_logs`, the real Adaptive TDEE target from `tdee.ts`), computed fresh whenever it's asked for (`src/lib/compliance.ts`). It displays in two places: a new **Compliance** sub-tab on the client's Progress screen (first in the row, ahead of Metrics/Measure/Photos — it's meant to be the first thing a client checks), and a color-coded `{score}%` badge on each row of the coach's Clients list.
+
+**The formula**, over the trailing 28 days ending today:
+
+- **Punctuality** = check-ins submitted on time ÷ check-ins scheduled in the window (if none were scheduled, this counts as 1 — nothing to miss). "On time" means `status = 'completed'` and `completed_at` at or before that occurrence's own `due_at`; late-but-eventually-submitted counts against this the same as never submitted. The query deliberately does **not** filter out archived rows — a missed check-in that got auto-archived still has to count against punctuality, which is exactly why archiving a check-in has never meant deleting it.
+- **Macro adherence** = days within ±15% of the client's current calorie target ÷ 28. A day with nothing logged is 0 calories against the target, which is always outside 15% of any real target — an unlogged day fails automatically, by design, not as a special case. If the client has no calorie target at all yet (too new for a TDEE estimate), this counts as 1 — same "nothing to miss" reasoning as punctuality.
+- **Score = round(((punctuality + macro adherence) / 2) × 100)**
+
+**One simplification worth knowing about:** macro adherence compares every one of the 28 days against the client's *current* calorie target, not whatever target happened to be active on that specific historical day. If a client's TDEE recalculated mid-window and their target moved, days before that change are still judged against the new number. This is the same shortcut Momentum Score and the Nutrition tab already take — nothing in the app currently answers "what was the target as of date X," only "what is the target right now" — and a mid-window change is the exception, not the rule, since TDEE only recalculates roughly weekly. Worth revisiting if it ever produces a visibly wrong-looking number for a client who just had a big goal change.
+
+**Hypothetical walkthrough** (illustrative numbers only — I don't have a live connection to your database in this environment, so this isn't a real client's data; use the verification steps below on an actual client to get a real number):
+
+Picture a client, "Sarah," with a weekly Monday check-in and a calorie target of 1980 kcal/day (a 2400 kcal TDEE, cutting at −17.5%). Over the last 28 days:
+
+- **Punctuality:** 4 Mondays fell in the window. She submitted on time twice, submitted one late (Thursday, past a Wednesday cutoff), and one occurrence went unanswered long enough to auto-archive as missed. That's 2 of 4 on time → **50%**.
+- **Macro adherence:** of the 28 days, 4 have nothing logged (automatic fails), 6 of the remaining 24 logged a day clearly outside ±15% of 1980, and 18 landed inside that range. That's 18 of 28 → **64%**.
+- **Compliance Score:** (50% + 64%) ÷ 2 = **57%**.
+
+That's a client who's roughly on track with food most days but slipping on check-ins — the kind of number that should prompt a conversation about accountability, not necessarily programming.
+
+**Verify the number is actually correct**, on a real client, the same way Momentum Score's section above does:
+
+1. In Supabase, find the client's id (**Table Editor** → `profiles`) and today's date minus 27 days (the 28-day window start).
+2. Punctuality — **SQL Editor**:
+   ```sql
+   select due_at, status, completed_at from form_check_ins
+   where client_id = 'PASTE_CLIENT_ID' and scheduled_date between 'WINDOW_START' and 'TODAY';
+   ```
+   Count the rows returned (the denominator), then count how many have `status = 'completed'` and `completed_at <= due_at` (the numerator). Divide.
+3. Macro adherence — first find their current target: latest `tdee_estimates.estimated_tdee` for that client, adjusted by `programme_blocks.calorie_target_percent` on their current phase (or the goal default, −17.5% for Cutting / +12.5% for Bulking / 0% for Recomp — see "Calorie targets" above), or just read whatever the Nutrition tab currently shows them. Then:
+   ```sql
+   select log_date, sum(calories) from food_logs
+   where client_id = 'PASTE_CLIENT_ID' and log_date between 'WINDOW_START' and 'TODAY'
+   group by log_date;
+   ```
+   For each of the 28 calendar days in the window (treating any day missing from these results as 0 calories), check whether the total is within 15% of the target. Count how many days qualify, out of 28.
+4. Average the two percentages from steps 2 and 3, round to the nearest whole number.
+5. Open the app as that client (Progress → Compliance), or as the coach on the Clients list, and confirm the displayed score matches your hand-calculated number exactly.
+
 ## Project structure reference
 
 ```
@@ -1277,7 +1318,7 @@ src/
         new.tsx          # pick client + habit name, save
       clients/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of every client account
+        index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge (getComplianceScore, fetched non-blockingly per client after the list itself loads)
         [id].tsx          # one client's detail page — Programme section + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete)
       forms/
         _layout.tsx      # coach-only guard for everything below
@@ -1294,7 +1335,7 @@ src/
         index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next (merges pending workouts + due check-ins), Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
-        progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
+        progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
         chat.tsx             # Chat tab — placeholder ("coming soon"); no messaging system built yet
         calendar.tsx        # Not a tab anymore, still a real route — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />, reached via Training's "View Calendar" link
   components/
@@ -1304,6 +1345,7 @@ src/
     measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
     photo-compare-slider.tsx  # generic, reusable before/after image slider — drag to reveal, pinch either photo to resize it
     photos-panel.tsx            # Progress → Photos sub-tab content (front/side/back upload, gallery, compare tool)
+    compliance-panel.tsx          # Progress → Compliance sub-tab content — HeroStat + punctuality/macro-adherence breakdown cards, reads getComplianceScore()
     session-calendar.tsx          # <SessionCalendar clientId role> — the real Week/Month calendar, shared by client/calendar.tsx and Programme Builder; also renders due/completed check-ins (own status marker, tappable only for role="client")
     time-range-toggle.tsx     # shared 1W/1M/6M/1Y/All Time chip row, used by both MetricsPanel and MeasurePanel
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)
@@ -1333,6 +1375,7 @@ src/
     tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
+    compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls

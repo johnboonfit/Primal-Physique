@@ -1,17 +1,25 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Spacing } from '@/constants/theme';
+import { getComplianceScore } from '@/lib/compliance';
 import { listClients, type ClientSummary } from '@/lib/clients';
+
+function complianceColor(score: number) {
+  if (score >= 80) return Colors.tealBright;
+  if (score < 50) return Accent;
+  return Colors.textSecondary;
+}
 
 export default function ClientsListScreen() {
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [complianceByClient, setComplianceByClient] = useState<Record<string, number>>({});
 
   useFocusEffect(
     useCallback(() => {
@@ -20,7 +28,30 @@ export default function ClientsListScreen() {
       setLoading(true);
       listClients()
         .then((data) => {
-          if (!cancelled) setClients(data);
+          if (cancelled) return;
+          setClients(data);
+          // Runs after the list itself is already showing — one coach,
+          // a handful of clients, so a per-client fetch here is cheap,
+          // same scale assumption Momentum Score already makes. A
+          // failure on any one client's score never blocks the rest of
+          // the list from loading or showing theirs.
+          Promise.all(
+            data.map((client) =>
+              getComplianceScore(client.id)
+                .then((result) => [client.id, result.score] as const)
+                .catch((err) => {
+                  console.error(`Failed to calculate compliance for client ${client.id}:`, err);
+                  return [client.id, null] as const;
+                })
+            )
+          ).then((results) => {
+            if (cancelled) return;
+            const next: Record<string, number> = {};
+            results.forEach(([id, score]) => {
+              if (score !== null) next[id] = score;
+            });
+            setComplianceByClient(next);
+          });
         })
         .catch((err) => {
           if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load clients.');
@@ -57,18 +88,28 @@ export default function ClientsListScreen() {
             data={clients}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
-            renderItem={({ item }) => (
-              <Pressable onPress={() => router.push(`/clients/${item.id}`)}>
-                <ThemedView type="backgroundElement" style={styles.card}>
-                  <ThemedText type="smallBold">{item.fullName || item.email}</ThemedText>
-                  {item.fullName && (
-                    <ThemedText type="small" themeColor="textSecondary">
-                      {item.email}
-                    </ThemedText>
-                  )}
-                </ThemedView>
-              </Pressable>
-            )}
+            renderItem={({ item }) => {
+              const score = complianceByClient[item.id];
+              return (
+                <Pressable onPress={() => router.push(`/clients/${item.id}`)}>
+                  <ThemedView type="backgroundElement" style={styles.card}>
+                    <View style={styles.cardInfo}>
+                      <ThemedText type="smallBold">{item.fullName || item.email}</ThemedText>
+                      {item.fullName && (
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {item.email}
+                        </ThemedText>
+                      )}
+                    </View>
+                    {score !== undefined && (
+                      <ThemedText type="smallBold" style={{ color: complianceColor(score) }}>
+                        {score}%
+                      </ThemedText>
+                    )}
+                  </ThemedView>
+                </Pressable>
+              );
+            }}
           />
         )}
 
@@ -103,8 +144,15 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.four,
   },
   card: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     borderRadius: Spacing.two,
     padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  cardInfo: {
+    flex: 1,
     gap: Spacing.half,
   },
   backButton: {
