@@ -5,10 +5,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { WeightTrendChart } from '@/components/weight-trend-chart';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { listWeightLogs, saveWeightLog, type WeightLogEntry } from '@/lib/weight-logs';
+
+function round(value: number) {
+  return Math.round(value * 10) / 10;
+}
 
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
@@ -105,6 +110,12 @@ export default function ProgressScreen() {
             )}
           </Pressable>
 
+          {!loading && !error && logs.length >= 2 && (
+            <ThemedView type="backgroundElement" style={styles.chartCard}>
+              <WeightTrendChart entries={logs} />
+            </ThemedView>
+          )}
+
           <ThemedText type="smallBold" style={styles.historyLabel}>
             History
           </ThemedText>
@@ -122,7 +133,13 @@ export default function ProgressScreen() {
                 <ThemedText type="small" themeColor="textSecondary">
                   {entry.logDate}
                 </ThemedText>
-                <ThemedText type="smallBold">{entry.weight}</ThemedText>
+                <ThemedText type="smallBold">
+                  {entry.weight}
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {'  ·  trend '}
+                    {round(entry.weightTrend)}
+                  </ThemedText>
+                </ThemedText>
               </ThemedView>
             ))}
         </ScrollView>
@@ -168,6 +185,11 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: Colors.text,
+  },
+  chartCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    marginTop: Spacing.three,
   },
   historyLabel: {
     marginTop: Spacing.three,

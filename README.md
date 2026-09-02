@@ -723,6 +723,44 @@ Adds `react-native-svg` as a dependency. No SQL, no schema change — purely a d
 4. Log a food that's almost pure fat (e.g. plain oil or butter, if available in a search) and confirm the Fat ring visibly fills up more than before, while Protein/Carbs shrink proportionally — the three rings should visibly respond to real changes in what's logged.
 5. With zero entries logged today, confirm the ring row doesn't render at all (same "nothing to show yet" behavior the old text row had), rather than showing three empty or broken rings.
 
+## Smoothed weight trend (the foundation for Adaptive TDEE)
+
+Run `supabase/weight-trend.sql` in the SQL Editor after `food-log-quantity.sql` (order relative to the other food_logs files doesn't matter — this one only touches `weight_logs`).
+
+**The problem this solves:** a single day's scale weight is noisy — water, sodium, food volume, hormones all move it several pounds in either direction with zero relation to actual fat loss or gain. `weight_trend` is a smoothed line that reacts slowly to any one reading, so it tracks real change instead of daily noise. This is the exact foundation Adaptive TDEE will read from later — nothing about that is built yet, this chunk is purely the trend calculation itself.
+
+**The formula, exactly as specified:** `trend_today = (0.15 × raw_weight_today) + (0.85 × trend_yesterday)`. Two rules fill the gaps the formula alone doesn't cover, both confirmed by hand before any code was written:
+
+- **The very first weigh-in a client ever logs seeds the trend** — `trend = raw weight`, since there's no prior trend to blend with yet.
+- **A day with no weigh-in doesn't get a trend value computed for it at all** — there's no row in `weight_logs` for that day (same as it's always worked), so there's nothing to store. The client's next real weigh-in just uses whatever trend was last computed, however many days ago that was. A 1-day gap and a 5-day gap behave identically — the gap length itself never enters the math.
+
+**Where it's computed:** `saveWeightLog()` looks up the most recent `weight_trend` from strictly before the date being logged (not today's own row, so re-saving today's weight twice doesn't chain off itself), applies the formula, and saves both `weight` and `weight_trend` together. Existing history got a one-time backfill in the same migration, using a recursive SQL query that walks each client's log history in date order applying the identical rule.
+
+**The chart:** the Progress tab now shows actual weight (teal) and the smoothed trend (oxblood/red) on the same line chart, once at least 2 entries exist. Points are spaced by real elapsed time — a week-long gap between weigh-ins visibly takes up more horizontal space than two weigh-ins a day apart, rather than pretending every gap is equal. Each history row below the chart also now shows both numbers side by side.
+
+**Verify the stored values match the hand calculation:**
+
+1. Pick a test client and, via Supabase's SQL Editor, insert a clean run of backdated weight_logs rows matching the hand-worked example from the design step (adjust dates to whatever's recent, skip one date in the middle to simulate the gap):
+   ```sql
+   insert into weight_logs (client_id, log_date, weight) values
+     ('PASTE_CLIENT_ID', current_date - 9, 200.0),
+     ('PASTE_CLIENT_ID', current_date - 8, 199.2),
+     ('PASTE_CLIENT_ID', current_date - 7, 200.5),
+     ('PASTE_CLIENT_ID', current_date - 6, 198.8),
+     ('PASTE_CLIENT_ID', current_date - 5, 199.5),
+     -- current_date - 4 deliberately skipped
+     ('PASTE_CLIENT_ID', current_date - 3, 198.0),
+     ('PASTE_CLIENT_ID', current_date - 2, 197.6),
+     ('PASTE_CLIENT_ID', current_date - 1, 198.9)
+   on conflict (client_id, log_date) do nothing;
+   ```
+2. Re-run `weight-trend.sql`'s backfill portion (or just the whole file again — it's idempotent) so these new rows get their `weight_trend` computed.
+3. Query them back in order: `select log_date, weight, weight_trend from weight_logs where client_id = 'PASTE_CLIENT_ID' order by log_date;`
+4. Compare against the hand-worked table: 200.00, 199.88, 199.97, 199.80, 199.75, *(gap)*, 199.49, 199.21, 199.16 — each stored `weight_trend` should match to the second decimal place.
+5. Now log **today's** weight through the app itself (as that client, e.g. 197.2) — confirm the new row's `weight_trend` continues the sequence correctly (≈198.87, picking up from 199.16 exactly as if the gap had never been there).
+6. Update today's weight a second time through the app (change the number, save again) — confirm `weight_trend` recomputes from yesterday's trend again, not from the first save's already-updated value (i.e. it doesn't drift further each time you re-save the same day).
+7. Open the Progress tab as that client — confirm the chart shows both lines, the teal one visibly noisier than the smooth red one, and that the gap day doesn't break the line or show as a flat plateau — it should just connect straight across.
+
 ## Project structure reference
 
 ```
@@ -764,12 +802,13 @@ src/
         index.tsx        # Home tab — greeting, streak, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calorie + macro totals
-        progress.tsx       # Progress tab — log/update today's weight, chronological history
+        progress.tsx       # Progress tab — log/update today's weight, weight+trend chart, chronological history
         calendar.tsx        # placeholder
   components/
     coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
+    weight-trend-chart.tsx  # SVG line chart — actual weight (teal) + smoothed trend (red) on the Progress tab
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
@@ -784,7 +823,7 @@ src/
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
-    weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
+    weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend) / listWeightLogs() database calls
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
@@ -810,4 +849,5 @@ supabase/
   link-exercise-library.sql                         # paste in after exercise-library.sql, adds workout_exercises.exercise_library_id
   food-log-macros.sql                                 # paste in after link-exercise-library.sql, adds protein/carbs/fat to food_logs
   food-log-quantity.sql                                 # adds quantity_grams to food_logs (order vs. other food_logs files doesn't matter)
+  weight-trend.sql                                        # adds weight_logs.weight_trend + one-time backfill of existing rows
 ```
