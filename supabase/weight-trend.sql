@@ -29,11 +29,13 @@ alter table public.weight_logs
 -- smoothing formula against whichever entry came immediately before it
 -- (regardless of how many calendar days separate them).
 with recursive trend_calc as (
-  select distinct on (client_id)
-    id, client_id, log_date, weight,
-    weight as weight_trend
-  from public.weight_logs
-  order by client_id, log_date asc
+  (
+    select distinct on (client_id)
+      id, client_id, log_date, weight,
+      weight as weight_trend
+    from public.weight_logs
+    order by client_id, log_date asc
+  )
 
   union all
 
