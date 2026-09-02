@@ -98,6 +98,8 @@ export async function createProgramme(coachId: string, draft: ProgrammeDraft): P
   return programme.id as string;
 }
 
+/** Templates only — a programme with client_id set is a client's own
+ * assigned instance, not something to offer for reuse or duplication. */
 export async function listProgrammes(coachId: string): Promise<ProgrammeSummary[]> {
   const { data, error } = await supabase
     .from('programme_blocks')
@@ -105,6 +107,7 @@ export async function listProgrammes(coachId: string): Promise<ProgrammeSummary[
       'id, name, description, cover_image_url, goal_type, duration_weeks, scheduled_days, created_at, programme_weeks(count)'
     )
     .eq('coach_id', coachId)
+    .is('client_id', null)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -176,14 +179,23 @@ export async function updateProgrammeName(programmeId: string, name: string) {
   if (error) throw error;
 }
 
+type CopiedWeek = {
+  weekId: string;
+  weekNumber: number;
+  /** New workout ids for this week's sessions, in the same order the
+   * original sessions were created — needed by assignment to zip
+   * sessions with calculated dates in a stable, predictable order. */
+  workoutIds: string[];
+};
+
 /**
- * Makes a genuinely independent copy of a programme: a new
- * programme_blocks row, its own new programme_weeks rows, and its own
- * new workouts + workout_exercises underneath each week — nothing in the
- * copy references a row from the original, so editing one can never
- * touch the other. This is the same copying logic client-assignment will
- * reuse next chunk (assigning a template means giving the client their
- * own copy of it, not pointing them at the coach's shared one).
+ * The one place that actually copies a programme: a new programme_blocks
+ * row, its own new programme_weeks rows, and its own new workouts +
+ * workout_exercises underneath each week — nothing in the copy
+ * references a row from the original, so editing one can never touch
+ * the other. Both "Duplicate" (making another template) and "Assign to
+ * a client" (making a client's own instance) call this same function;
+ * the only difference between them is what `overrides` says.
  *
  * Done as a straightforward sequence of reads and inserts rather than
  * one database transaction — there's no Postgres function for this yet,
@@ -191,10 +203,14 @@ export async function updateProgrammeName(programmeId: string, name: string) {
  * deleted; deleting the top-level row cascades down and cleans up
  * whatever weeks/workouts/exercises had already been copied under it.
  */
-export async function duplicateProgramme(coachId: string, programmeId: string): Promise<string> {
+async function copyProgrammeStructure(
+  coachId: string,
+  programmeId: string,
+  overrides: { name: string; clientId: string | null }
+): Promise<{ programmeId: string; weeks: CopiedWeek[] }> {
   const { data: source, error: sourceError } = await supabase
     .from('programme_blocks')
-    .select('name, description, cover_image_url, goal_type, duration_weeks, scheduled_days')
+    .select('description, cover_image_url, goal_type, duration_weeks, scheduled_days')
     .eq('id', programmeId)
     .single();
 
@@ -204,7 +220,8 @@ export async function duplicateProgramme(coachId: string, programmeId: string): 
     .from('programme_blocks')
     .insert({
       coach_id: coachId,
-      name: `${source.name} (Copy)`,
+      client_id: overrides.clientId,
+      name: overrides.name,
       description: source.description,
       cover_image_url: source.cover_image_url,
       goal_type: source.goal_type,
@@ -227,6 +244,8 @@ export async function duplicateProgramme(coachId: string, programmeId: string): 
 
     if (weeksError) throw weeksError;
 
+    const copiedWeeks: CopiedWeek[] = [];
+
     for (const week of sourceWeeks ?? []) {
       const { data: newWeek, error: newWeekError } = await supabase
         .from('programme_weeks')
@@ -240,9 +259,12 @@ export async function duplicateProgramme(coachId: string, programmeId: string): 
       const { data: sourceWorkouts, error: workoutsError } = await supabase
         .from('workouts')
         .select('id, name')
-        .eq('programme_week_id', week.id);
+        .eq('programme_week_id', week.id)
+        .order('created_at', { ascending: true });
 
       if (workoutsError) throw workoutsError;
+
+      const workoutIds: string[] = [];
 
       for (const workout of sourceWorkouts ?? []) {
         const { data: newWorkout, error: newWorkoutError } = await supabase
@@ -252,6 +274,7 @@ export async function duplicateProgramme(coachId: string, programmeId: string): 
           .single();
 
         if (newWorkoutError) throw newWorkoutError;
+        workoutIds.push(newWorkout.id as string);
 
         const { data: sourceExercises, error: exercisesError } = await supabase
           .from('workout_exercises')
@@ -274,6 +297,156 @@ export async function duplicateProgramme(coachId: string, programmeId: string): 
           if (newExercisesError) throw newExercisesError;
         }
       }
+
+      copiedWeeks.push({ weekId: newWeekId, weekNumber: week.week_number as number, workoutIds });
+    }
+
+    return { programmeId: newProgrammeId, weeks: copiedWeeks };
+  } catch (err) {
+    await supabase.from('programme_blocks').delete().eq('id', newProgrammeId);
+    throw err;
+  }
+}
+
+/** Makes another independent template, named "<original> (Copy)". See
+ * `copyProgrammeStructure` for what "independent" actually guarantees. */
+export async function duplicateProgramme(coachId: string, programmeId: string): Promise<string> {
+  const { data: source, error: sourceError } = await supabase
+    .from('programme_blocks')
+    .select('name')
+    .eq('id', programmeId)
+    .single();
+
+  if (sourceError) throw sourceError;
+
+  const { programmeId: newProgrammeId } = await copyProgrammeStructure(coachId, programmeId, {
+    name: `${source.name} (Copy)`,
+    clientId: null,
+  });
+
+  return newProgrammeId;
+}
+
+function toISODate(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(date: Date, days: number) {
+  const copy = new Date(date);
+  copy.setUTCDate(copy.getUTCDate() + days);
+  return copy;
+}
+
+const WEEKDAY_INDEX: Record<ScheduledDay, number> = {
+  sun: 0,
+  mon: 1,
+  tue: 2,
+  wed: 3,
+  thu: 4,
+  fri: 5,
+  sat: 6,
+};
+
+/**
+ * For one week of the programme (1-indexed), works out the actual
+ * calendar date of each scheduled training day. Week 1 is the 7-day
+ * span starting on startDate (whatever weekday that happens to be), not
+ * a Monday-aligned calendar week — so a plan starting on a Thursday
+ * still gets its Monday/Wednesday/Friday sessions in the right place
+ * relative to day one. Returned in chronological order.
+ */
+function computeWeekSessionDates(startDate: Date, weekNumber: number, scheduledDays: ScheduledDay[]): Date[] {
+  const weekStart = addDays(startDate, (weekNumber - 1) * 7);
+  const weekStartWeekday = weekStart.getUTCDay();
+
+  const dates = scheduledDays.map((day) => {
+    const offset = (WEEKDAY_INDEX[day] - weekStartWeekday + 7) % 7;
+    return addDays(weekStart, offset);
+  });
+
+  return dates.sort((a, b) => a.getTime() - b.getTime());
+}
+
+/**
+ * Assigns a template to a client: duplicates it into a client-owned
+ * instance (via the exact same copyProgrammeStructure used by
+ * "Duplicate"), then creates one ordinary `assignments` row per
+ * session, dated using the start date, that session's week number, and
+ * the programme's scheduled training days.
+ *
+ * Those `assignments` rows are the only new thing any other feature
+ * needs to know about — Up Next, the missed-workout auto-reschedule,
+ * Momentum Score, and streaks all already read from `assignments`
+ * without caring where a workout came from, so a programme-based
+ * session shows up in all four automatically.
+ *
+ * Validates before writing anything: the template must have at least
+ * one scheduled training day, and no week may hold more sessions than
+ * there are training days to put them on (nowhere to legally place the
+ * extra one). Either failure aborts with no rows written at all, rather
+ * than guessing or partially assigning.
+ */
+export async function assignProgrammeToClient(
+  coachId: string,
+  clientId: string,
+  templateId: string,
+  startDate: string
+): Promise<string> {
+  const { data: template, error: templateError } = await supabase
+    .from('programme_blocks')
+    .select('name, scheduled_days')
+    .eq('id', templateId)
+    .single();
+
+  if (templateError) throw templateError;
+
+  const scheduledDays = (template.scheduled_days as ScheduledDay[] | null) ?? [];
+  if (scheduledDays.length === 0) {
+    throw new Error('This template has no training days set — add training days to it before assigning it.');
+  }
+
+  const { data: weeks, error: weeksError } = await supabase
+    .from('programme_weeks')
+    .select('week_number, workouts(count)')
+    .eq('programme_id', templateId)
+    .order('week_number');
+
+  if (weeksError) throw weeksError;
+
+  const overloadedWeek = (weeks ?? []).find(
+    (week) => ((week.workouts as { count: number }[] | null)?.[0]?.count ?? 0) > scheduledDays.length
+  );
+
+  if (overloadedWeek) {
+    const sessionCount = (overloadedWeek.workouts as { count: number }[] | null)?.[0]?.count ?? 0;
+    throw new Error(
+      `Week ${overloadedWeek.week_number} has ${sessionCount} sessions, but this programme only trains ` +
+        `${scheduledDays.length} day${scheduledDays.length === 1 ? '' : 's'} a week. Reduce sessions in that ` +
+        `week or add another training day before assigning.`
+    );
+  }
+
+  const { programmeId: newProgrammeId, weeks: copiedWeeks } = await copyProgrammeStructure(coachId, templateId, {
+    name: template.name as string,
+    clientId,
+  });
+
+  try {
+    const start = new Date(`${startDate}T00:00:00.000Z`);
+
+    const assignmentRows = copiedWeeks.flatMap((week) => {
+      const dates = computeWeekSessionDates(start, week.weekNumber, scheduledDays);
+      return week.workoutIds.map((workoutId, index) => ({
+        coach_id: coachId,
+        client_id: clientId,
+        workout_id: workoutId,
+        assigned_date: toISODate(dates[index]),
+      }));
+    });
+
+    if (assignmentRows.length > 0) {
+      const { error: assignmentsError } = await supabase.from('assignments').insert(assignmentRows);
+      if (assignmentsError) throw assignmentsError;
     }
   } catch (err) {
     await supabase.from('programme_blocks').delete().eq('id', newProgrammeId);

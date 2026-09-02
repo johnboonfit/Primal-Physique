@@ -98,6 +98,9 @@ export default function ProgrammesListScreen() {
                   </ThemedText>
                 </Pressable>
                 <View style={styles.cardActions}>
+                  <Pressable onPress={() => router.push(`/programmes/assign/${item.id}`)}>
+                    <ThemedText type="linkPrimary">Assign</ThemedText>
+                  </Pressable>
                   <Pressable onPress={() => handleDuplicate(item.id)} disabled={duplicatingId === item.id}>
                     {duplicatingId === item.id ? (
                       <ActivityIndicator size="small" />
@@ -165,6 +168,7 @@ const styles = StyleSheet.create({
   cardActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    gap: Spacing.three,
   },
   backButton: {
     alignItems: 'center',

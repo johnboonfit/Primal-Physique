@@ -471,6 +471,50 @@ If copying fails partway through (a network hiccup mid-copy, say), the half-made
 8. Go back into the app and open the **original** template again — confirm its name is still exactly what it was in step 2, and its Week 1 session is still there, unchanged, with its exercises intact.
 9. For the strongest proof: in Supabase's Table Editor, edit the copy's session name (or one of its exercises) directly — there's no in-app rename for sessions yet — then reload the original template in the app. It should show no trace of that change, since the copy's session row and the original's session row have always been two separate rows.
 
+## Assigning a programme to a client
+
+Run `supabase/assign-programme.sql` in the SQL Editor after `programmes.sql`.
+
+This is the payoff for the last two chunks: a coach can now take a template and actually put it to work for a real client, with real dates.
+
+**No new "schedule" system was built.** Every feature that already reads a client's schedule — Home's Up Next, the missed-workout auto-reschedule, Momentum Score's workout-completion rate, and streaks — reads from the same `assignments` table it always has, and none of them care whether a `workouts` row came from a standalone workout or a programme session. So assigning a programme does exactly two things: it duplicates the template (the exact same independent-copy logic proven last chunk) into a copy owned by that client, and it inserts one ordinary `assignments` row per session, with a calculated date. That's it — no other file changed. The moment those rows exist, Up Next shows them, the reschedule check picks up any that go overdue, Momentum Score counts them toward the week's workout rate, and completing one counts toward the streak, all automatically.
+
+**One column was added:** `programme_blocks.client_id`, nullable. `NULL` means template (shows in the Template Library); set means "this is one client's own copy." The Template Library now only lists templates — a client's assigned copy is hidden from it, so it can't accidentally get duplicated or reassigned as if it were reusable.
+
+**How the dates are calculated:** the coach picks a start date. Week 1 is the 7-day span starting exactly on that date — not the calendar Monday, whatever weekday the start date happens to be. Within that 7-day span, each of the programme's scheduled training days gets mapped to its actual calendar date, and the week's sessions (in the order they were built) are handed out to those dates in chronological order. Week 2 is the next 7-day span, and so on. A day that's scheduled but has no session that week is simply skipped — nothing forces every training day to have a session.
+
+**Two things block an assignment outright, before anything is written:** the template must have at least one training day set (there's no way to add one after the fact yet — a known gap, flagged rather than silently worked around), and no single week may have more sessions than there are training days to put them on. Either failure means nothing gets written at all — no half-assigned programme.
+
+**Verify the dates calculated correctly** (a worked example you can reproduce exactly):
+
+1. Build (or duplicate) a template with training days set to Mon/Wed/Fri, and put exactly one session in each of Week 1, 2, and 3 (three sessions total, one per week — keeps this test simple).
+2. From the Template Library, tap Assign. Pick a client, and set the start date to `2026-09-03` (a Thursday) — or, if you're reading this after that date, pick any Thursday and adjust the expected dates below by the same offset.
+3. Confirm. You should land on Assignments, showing three new rows for that client.
+4. Check the exact dates against this table (Week 1 starts the moment the plan begins, so its session lands the very next scheduled day — not before, and not on the start date itself unless the start date happens to be a scheduled day):
+
+   | Week | Expected date |
+   |------|---------------|
+   | 1    | 2026-09-04 (Fri) |
+   | 2    | 2026-09-11 (Fri) |
+   | 3    | 2026-09-18 (Fri) |
+
+   (With only one session per week, it always lands on the *earliest* scheduled day inside that week's 7-day span — here, Friday comes before the following Monday and Wednesday once you count forward from a Thursday start.)
+5. For the multi-session case: put all three training days' worth of sessions into Week 1 alone (3 sessions, Mon/Wed/Fri all used), assign again with the same Thursday start date, and confirm the three resulting dates are exactly `2026-09-04`, `2026-09-07`, `2026-09-09` — in that order, matching the order you built the sessions in.
+6. Try assigning a template with an empty week (a week with zero sessions in the middle of the programme) — confirm no `assignments` row gets created for that week, but the other weeks' dates are still correct.
+7. Try assigning a template that has 4 sessions crammed into one week but only 2 training days set — confirm the app refuses with a clear error naming that week, and check in Supabase that no `programme_blocks`, `programme_weeks`, `workouts`, or `assignments` rows were created for that attempt at all.
+
+**Verify the client's copy is genuinely independent** (same method as last chunk's duplicate check, now applied to an assigned instance):
+
+1. After assigning, open `programme_blocks` in Supabase and find the new row — confirm its `client_id` matches the client you picked, and its `id` is different from the template's `id`.
+2. Edit one of the copy's session names or exercises directly in Supabase, then reopen the original template in the Template Library — confirm it shows no trace of that change.
+3. Confirm the copy does **not** appear in the Template Library list (only the original does) — proving assigned instances stay out of the reusable-template pool.
+
+**Verify it plugs into the existing systems, not a separate one:**
+
+1. As that client, open the Home tab — the assigned sessions should appear under Up Next, sorted by date, indistinguishable from a standalone assignment.
+2. Backdate one of the assigned sessions via SQL (same technique as the auto-reschedule verification) and reopen Home — confirm it gets picked up and moved by the missed-workout reschedule exactly like before.
+3. Complete one of the assigned sessions and check Momentum Score and the streak both move — proving neither needed to know the workout came from a programme.
+
 ## Project structure reference
 
 ```
@@ -491,6 +535,7 @@ src/
         index.tsx        # Template Library — list of the coach's programmes, with Duplicate
         new.tsx          # create-programme form — name, goal type, duration, cover image, training days
         [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week
+        assign/[id].tsx     # pick a client + start date, assign a template to them
         week/[weekId].tsx  # one week of a programme — its sessions, + New session
       assignments/
         _layout.tsx      # coach-only guard for everything below
@@ -521,7 +566,7 @@ src/
   lib/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() database calls
-    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / updateProgrammeName()
+    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / updateProgrammeName()
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
@@ -544,4 +589,5 @@ supabase/
   xp.sql                                 # paste in after habits.sql — adds XP, also a security fix; read it first
   reschedule.sql                          # paste in after xp.sql — column-level security fix; read it first
   programmes.sql                            # paste in after reschedule.sql, adds programme_blocks + programme_weeks
+  assign-programme.sql                        # paste in after programmes.sql, adds programme_blocks.client_id
 ```
