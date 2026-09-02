@@ -1197,6 +1197,26 @@ New tables (`supabase/form-templates.sql`): `form_templates` (one row per form �
 5. For a harder check than "looks right in the app": open the SQL Editor and run `select * from form_questions where form_id = '<id>' order by position;` — confirm one row per question, in the order you built them, with `question_type` matching what you picked and `config` holding exactly what you'd expect (e.g. `{"options": ["Yes", "No"]}`, `{"min": 1, "max": 10}`).
 6. Try saving with a question left blank, or a select with only 1 option, or a scale with min ≥ max — confirm each is rejected with a clear "Question N: ..." message and nothing gets saved (check the SQL Editor shows no new `form_templates` row from the failed attempt).
 
+## Recurring check-in assignments (assignment only — filling the form out is next)
+
+New table (`supabase/form-assignments.sql`): `form_assignments` — one row per (form, client) pairing, holding just a recurrence rule (`recurrence_day`, one of `mon`..`sun` — the exact same day keys `programme_blocks.scheduled_days` already uses, not a new representation) and `due_window_hours` (a plain positive integer). Same coach-assigns-something-to-a-client RLS shape as `assignments.sql`/`habits.sql`: you have to be a coach, the client has to be a client, and the form has to be one of your own.
+
+**Why this is one row per assignment, not one row per future occurrence:** a programme has a fixed duration, so `assignProgrammeToClient` can pre-generate every session's date up front and be done with it. A weekly check-in never ends on its own — there's no fixed number of future dates to generate in advance. So `form_assignments` stores only the *rule*, and `listUpcomingCheckInDates()` (in `src/lib/form-assignments.ts`) computes actual dates from that rule on demand, walking forward from whatever "today" happens to be when it's asked. Nothing about a future occurrence is ever written to the database until this chunk's scope ends — that's deliberate, and it's also literally the answer to "how do I verify this generates the right dates going forward": there's no row to eyeball, there's a function to call.
+
+**The date math itself** reuses `WEEKDAY_INDEX` (now exported from `programmes.ts`) — the same day-key-to-weekday-number mapping `computeWeekSessionDates` already uses to place a programme's sessions — rather than a second copy of the same seven numbers that could quietly drift out of sync with the first. Given a recurrence day and a starting date, it finds the very next matching weekday (today counts, if today already is that weekday — the first check-in isn't pushed a week out just because the coach happened to assign it on the right day), then returns every 7th day after that, as many as asked for. Each occurrence's deadline is that date at midnight UTC plus the due-window hours — so a Monday check-in with a 48-hour window is on time until Wednesday at midnight UTC.
+
+**The assign screen** (`forms/assign/[id].tsx`, reached via a new "Assign" link on each Check-in Forms card) shows a live "Next 5 check-ins" preview that recomputes the moment the coach changes the day or the due window — before anything is saved. This isn't just a nice touch; it's the most direct way to catch a wrong recurrence rule before it goes out to a real client, and it's exactly what got hand-verified this chunk.
+
+**Verified the actual math, not just that it typechecks** — recurrence date generation is exactly the kind of logic that can look right and be subtly wrong (off-by-one-week, wrong weekday, deadline math that breaks on a non-24-hour window). Ran a standalone script against the real function with several scenarios: assigning on a Wednesday for a Monday recurrence correctly lands the first check-in on the *next* Monday, not a Monday two weeks out; assigning exactly on the recurrence day includes that day as the first occurrence rather than skipping a week; every one of the 7 possible recurrence days resolves to a date that actually falls on that weekday; consecutive occurrences are always exactly 7 days apart; and a due window that isn't a multiple of 24 hours (30h) correctly produces a deadline with a non-midnight time, not a silently-rounded one. Separately, drove the assign screen's live preview through a throwaway debug page and confirmed switching the day chip and editing the due-window field both correctly recompute the visible list in real time.
+
+**Verify an assignment actually generates the right scheduled dates going forward, not just a single one-off entry:**
+1. As the coach, open Check-in Forms → pick a form → Assign.
+2. Pick a client, pick a day of the week, leave the due window at 48 — confirm "Next 5 check-ins" shows five dates, all on the day you picked, each exactly 7 days after the last.
+3. Change the day — confirm the whole preview list updates immediately to the new weekday, before you've saved anything.
+4. Change the due window to something odd, like 30 — confirm each "Due until" timestamp shifts by exactly that many hours from midnight on its scheduled date, not just to the next full day.
+5. Tap Assign — confirm it lands you on that client's own page, showing a new "Check-in Schedule" section with the form's name and "Weekly on [Day] · due within Xh."
+6. For the real proof this isn't a one-off: open the SQL Editor and run `select * from form_assignments where client_id = '<id>';` — confirm there's exactly **one row**, holding only the rule (day + due-window hours), with no per-occurrence rows anywhere — then separately confirm (by re-opening the assign screen for that same form/client, or re-running the preview math by hand for a later date) that the same rule keeps producing correct future dates indefinitely, not just for the dates shown at the moment you assigned it.
+
 ## Project structure reference
 
 ```
@@ -1234,12 +1254,13 @@ src/
       clients/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of every client account
-        [id].tsx          # one client's detail page — Programme section (assigned programme card, links to Programme Builder) + Nutrition section (target + 14-day food log history, delete)
+        [id].tsx          # one client's detail page — Programme section + Check-in Schedule section (recurring form assignments) + Nutrition section (target + 14-day food log history, delete)
       forms/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of the coach's check-in form templates
+        index.tsx        # list of the coach's check-in form templates, with Assign
         new.tsx          # form builder — name + ordered question list, each with a type (short text/number/single select/multi select/scale/measurement) and type-driven config
         [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
+        assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
@@ -1288,6 +1309,7 @@ src/
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
+    form-assignments.ts            # createFormAssignment() / listClientFormAssignments() database calls + listUpcomingCheckInDates() — pure, computes future dates from a recurrence rule, nothing stored per-occurrence
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once

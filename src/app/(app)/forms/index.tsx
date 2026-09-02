@@ -1,6 +1,6 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HeroStat } from '@/components/hero-stat';
@@ -51,7 +51,7 @@ export default function FormsListScreen() {
           </Pressable>
         </ThemedView>
         <ThemedText themeColor="textSecondary" type="small" style={styles.subtitle}>
-          Reusable check-in forms — not yet scheduled or assigned to a client.
+          Reusable check-in forms — assign one to a client on a recurring schedule.
         </ThemedText>
 
         {!loading && !error && <HeroStat value={forms.length} label="Forms Built" />}
@@ -72,14 +72,19 @@ export default function FormsListScreen() {
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => (
-              <Pressable onPress={() => router.push(`/forms/${item.id}`)}>
-                <ThemedView type="backgroundElement" style={styles.card}>
+              <ThemedView type="backgroundElement" style={styles.card}>
+                <Pressable onPress={() => router.push(`/forms/${item.id}`)}>
                   <ThemedText type="smallBold">{item.name}</ThemedText>
                   <ThemedText type="small" themeColor="textSecondary">
                     {item.questionCount} question{item.questionCount === 1 ? '' : 's'}
                   </ThemedText>
-                </ThemedView>
-              </Pressable>
+                </Pressable>
+                <View style={styles.cardActions}>
+                  <Pressable onPress={() => router.push(`/forms/assign/${item.id}`)}>
+                    <ThemedText type="linkPrimary">Assign</ThemedText>
+                  </Pressable>
+                </View>
+              </ThemedView>
             )}
           />
         )}
@@ -133,7 +138,11 @@ const styles = StyleSheet.create({
   card: {
     borderRadius: Spacing.two,
     padding: Spacing.three,
-    gap: Spacing.half,
+    gap: Spacing.two,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
   },
   backButton: {
     alignItems: 'center',

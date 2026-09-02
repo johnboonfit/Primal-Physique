@@ -431,7 +431,10 @@ function addDays(date: Date, days: number) {
   return copy;
 }
 
-const WEEKDAY_INDEX: Record<ScheduledDay, number> = {
+/** Exported so form-assignments.ts's recurring-check-in date math can
+ * reuse the exact same day-key-to-weekday mapping, rather than a second
+ * copy of the same seven numbers that could quietly drift out of sync. */
+export const WEEKDAY_INDEX: Record<ScheduledDay, number> = {
   sun: 0,
   mon: 1,
   tue: 2,

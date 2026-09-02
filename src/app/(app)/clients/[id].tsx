@@ -8,7 +8,8 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { getClient, type ClientSummary } from '@/lib/clients';
 import { deleteFoodLog, listFoodLogHistory, type DailyFoodLog } from '@/lib/food-logs';
-import { getClientProgramme, GOAL_TYPES, type ClientProgrammeView } from '@/lib/programmes';
+import { listClientFormAssignments, type ClientFormAssignment } from '@/lib/form-assignments';
+import { getClientProgramme, GOAL_TYPES, SCHEDULED_DAYS, type ClientProgrammeView } from '@/lib/programmes';
 import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
 
 const HISTORY_DAYS = 14;
@@ -20,6 +21,10 @@ function round(value: number) {
 function goalLabel(goalType: CalorieTarget['goalType']) {
   if (!goalType) return 'Maintenance';
   return GOAL_TYPES.find((g) => g.key === goalType)?.label ?? goalType;
+}
+
+function dayLabel(day: ClientFormAssignment['recurrenceDay']) {
+  return SCHEDULED_DAYS.find((d) => d.key === day)?.label ?? day;
 }
 
 function targetDeltaLabel(totalCalories: number, targetCalories: number) {
@@ -35,6 +40,7 @@ export default function ClientDetailScreen() {
   const [history, setHistory] = useState<DailyFoodLog[]>([]);
   const [target, setTarget] = useState<CalorieTarget | null>(null);
   const [programme, setProgramme] = useState<ClientProgrammeView | null>(null);
+  const [formAssignments, setFormAssignments] = useState<ClientFormAssignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -42,12 +48,19 @@ export default function ClientDetailScreen() {
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true);
-    Promise.all([getClient(id), listFoodLogHistory(id, HISTORY_DAYS), getCalorieTarget(id), getClientProgramme(id)])
-      .then(([clientData, historyData, targetData, programmeData]) => {
+    Promise.all([
+      getClient(id),
+      listFoodLogHistory(id, HISTORY_DAYS),
+      getCalorieTarget(id),
+      getClientProgramme(id),
+      listClientFormAssignments(id),
+    ])
+      .then(([clientData, historyData, targetData, programmeData, formAssignmentData]) => {
         setClient(clientData);
         setHistory(historyData);
         setTarget(targetData);
         setProgramme(programmeData);
+        setFormAssignments(formAssignmentData);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load this client's details."))
       .finally(() => setLoading(false));
@@ -109,6 +122,25 @@ export default function ClientDetailScreen() {
               <ThemedText type="small" themeColor="textSecondary">
                 No programme assigned yet.
               </ThemedText>
+            )}
+
+            <ThemedText type="smallBold" style={styles.sectionLabel}>
+              Check-in Schedule
+            </ThemedText>
+
+            {formAssignments.length === 0 ? (
+              <ThemedText type="small" themeColor="textSecondary">
+                No recurring check-ins assigned yet.
+              </ThemedText>
+            ) : (
+              formAssignments.map((assignment) => (
+                <ThemedView key={assignment.id} type="backgroundElement" style={styles.scheduleCard}>
+                  <ThemedText type="smallBold">{assignment.formName}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Weekly on {dayLabel(assignment.recurrenceDay)} · due within {assignment.dueWindowHours}h
+                  </ThemedText>
+                </ThemedView>
+              ))
             )}
 
             <ThemedText type="smallBold" style={styles.sectionLabel}>
@@ -211,6 +243,12 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.half,
+  },
+  scheduleCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.half,
+    marginTop: Spacing.half,
   },
   targetCard: {
     borderRadius: Spacing.two,
