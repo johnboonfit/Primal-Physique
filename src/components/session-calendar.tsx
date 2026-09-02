@@ -8,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { listMyAssignments, rescheduleAssignment, type ClientAssignmentSummary } from '@/lib/assignments';
+import { listVisibleCheckIns, type CalendarCheckIn } from '@/lib/form-check-ins';
 import { getPhaseForDate, listClientPhases, type ClientPhaseSummary } from '@/lib/programmes';
 
 type ViewMode = 'week' | 'month';
@@ -127,6 +128,47 @@ function SessionLabel({ session, todayISO }: { session: ClientAssignmentSummary;
         {STATUS_TEXT_LABEL[status]}
       </ThemedText>
     </>
+  );
+}
+
+/** A check-in's own tiny status system — deliberately not merged into
+ * the workout sessions' 3-state priority glyph on a shared day: they're
+ * a different kind of thing, and folding "one pending check-in" into
+ * "this day's most urgent workout state" would just lose information
+ * rather than add it. A 'missed' check-in never actually reaches this
+ * component — it's archived (and excluded from the query that feeds
+ * this calendar) the moment it's marked missed.
+ *
+ * Only tappable for role="client": /checkins/[id] is the client's own
+ * fill-out screen (submitting writes form_responses.client_id as
+ * whoever's signed in), so a coach opening it from Programme Builder
+ * would hit a permission error trying to submit on someone else's
+ * behalf. The coach still sees it here — just as information, not a
+ * link — and manages it from the Clients page instead. */
+function CheckInRow({ checkIn, role }: { checkIn: CalendarCheckIn; role: 'client' | 'coach' }) {
+  const isCompleted = checkIn.status === 'completed';
+  const content = (
+    <View style={styles.checkInRow}>
+      <ThemedText type="small">
+        {isCompleted && (
+          <ThemedText type="small" style={{ color: Colors.tealBright }}>
+            ✓{' '}
+          </ThemedText>
+        )}
+        {checkIn.formName}
+      </ThemedText>
+      <ThemedText type="small" themeColor={isCompleted ? undefined : 'textSecondary'} style={isCompleted ? styles.statusCompleted : undefined}>
+        {isCompleted ? 'Completed' : 'Check-in due'}
+      </ThemedText>
+    </View>
+  );
+
+  if (role !== 'client') return content;
+
+  return (
+    <Pressable onPress={() => router.push({ pathname: '/checkins/[id]', params: { id: checkIn.id } })}>
+      {content}
+    </Pressable>
   );
 }
 
@@ -255,6 +297,7 @@ export type SessionCalendarProps = {
 export function SessionCalendar({ clientId, role }: SessionCalendarProps) {
   const [assignments, setAssignments] = useState<ClientAssignmentSummary[]>([]);
   const [phases, setPhases] = useState<ClientPhaseSummary[]>([]);
+  const [checkIns, setCheckIns] = useState<CalendarCheckIn[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -281,10 +324,11 @@ export function SessionCalendar({ clientId, role }: SessionCalendarProps) {
 
   const load = useCallback(() => {
     setLoading(true);
-    Promise.all([listMyAssignments(clientId), listClientPhases(clientId)])
-      .then(([assignmentData, phaseData]) => {
+    Promise.all([listMyAssignments(clientId), listClientPhases(clientId), listVisibleCheckIns(clientId)])
+      .then(([assignmentData, phaseData, checkInData]) => {
         setAssignments(assignmentData);
         setPhases(phaseData);
+        setCheckIns(checkInData);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load this calendar.'))
       .finally(() => setLoading(false));
@@ -308,6 +352,16 @@ export function SessionCalendar({ clientId, role }: SessionCalendarProps) {
     }
     return map;
   }, [assignments]);
+
+  const checkInsByDate = useMemo(() => {
+    const map = new Map<string, CalendarCheckIn[]>();
+    for (const checkIn of checkIns) {
+      const existing = map.get(checkIn.scheduledDate);
+      if (existing) existing.push(checkIn);
+      else map.set(checkIn.scheduledDate, [checkIn]);
+    }
+    return map;
+  }, [checkIns]);
 
   const todayISO = toISODate(todayUTC());
 
@@ -442,6 +496,7 @@ export function SessionCalendar({ clientId, role }: SessionCalendarProps) {
             {weekDays.map((day, dayIndex) => {
               const dateISO = toISODate(day);
               const daySessions = sessionsByDate.get(dateISO) ?? [];
+              const dayCheckIns = checkInsByDate.get(dateISO) ?? [];
               const isToday = dateISO === todayISO;
               return (
                 <ThemedView
@@ -457,24 +512,29 @@ export function SessionCalendar({ clientId, role }: SessionCalendarProps) {
                       {isToday ? ' · Today' : ''}
                     </ThemedText>
                   </View>
-                  {daySessions.length === 0 ? (
+                  {daySessions.length === 0 && dayCheckIns.length === 0 ? (
                     <ThemedText type="small" themeColor="textSecondary">
                       Nothing scheduled.
                     </ThemedText>
                   ) : (
-                    daySessions.map((sessionItem) => (
-                      <DraggableSessionRow
-                        key={sessionItem.id}
-                        session={sessionItem}
-                        originIndex={dayIndex}
-                        weekDays={weekDays}
-                        dayRowRefs={dayRowRefs}
-                        todayISO={todayISO}
-                        detailHref={detailHref}
-                        onDragStateChange={setActiveDragDayIndex}
-                        onReschedule={handleReschedule}
-                      />
-                    ))
+                    <>
+                      {daySessions.map((sessionItem) => (
+                        <DraggableSessionRow
+                          key={sessionItem.id}
+                          session={sessionItem}
+                          originIndex={dayIndex}
+                          weekDays={weekDays}
+                          dayRowRefs={dayRowRefs}
+                          todayISO={todayISO}
+                          detailHref={detailHref}
+                          onDragStateChange={setActiveDragDayIndex}
+                          onReschedule={handleReschedule}
+                        />
+                      ))}
+                      {dayCheckIns.map((checkIn) => (
+                        <CheckInRow key={checkIn.id} checkIn={checkIn} role={role} />
+                      ))}
+                    </>
                   )}
                 </ThemedView>
               );
@@ -510,8 +570,10 @@ export function SessionCalendar({ clientId, role }: SessionCalendarProps) {
             {monthDays.map((day) => {
               const dateISO = toISODate(day);
               const daySessions = sessionsByDate.get(dateISO) ?? [];
+              const dayCheckIns = checkInsByDate.get(dateISO) ?? [];
               const dayStatus = getDayVisualStatus(daySessions, todayISO);
               const dayGlyph = dayStatus === 'rest' ? null : STATUS_GLYPH[dayStatus];
+              const hasPendingCheckIn = dayCheckIns.some((c) => c.status === 'pending');
               const isCurrentMonth = day.getUTCMonth() === currentMonthIndex;
               const isToday = dateISO === todayISO;
               const isSelected = dateISO === selectedDate;
@@ -536,6 +598,13 @@ export function SessionCalendar({ clientId, role }: SessionCalendarProps) {
                         {dayGlyph}
                       </ThemedText>
                     )}
+                    {/* A separate small dot, not folded into dayGlyph above —
+                     * a due check-in is a different kind of thing from a
+                     * workout's state, so it gets its own marker rather than
+                     * competing for the same glyph slot. */}
+                    {dayCheckIns.length > 0 && (
+                      <View style={[styles.checkInDot, hasPendingCheckIn && styles.checkInDotPending]} />
+                    )}
                   </View>
                 </Pressable>
               );
@@ -545,31 +614,36 @@ export function SessionCalendar({ clientId, role }: SessionCalendarProps) {
           {selectedDate && (
             <ThemedView type="backgroundElement" style={styles.selectedDayCard}>
               <ThemedText type="smallBold">{selectedDate}</ThemedText>
-              {(sessionsByDate.get(selectedDate) ?? []).length === 0 ? (
+              {(sessionsByDate.get(selectedDate) ?? []).length === 0 && (checkInsByDate.get(selectedDate) ?? []).length === 0 ? (
                 <ThemedText type="small" themeColor="textSecondary">
                   Nothing scheduled.
                 </ThemedText>
               ) : (
-                (sessionsByDate.get(selectedDate) ?? []).map((sessionItem) => (
-                  <View key={sessionItem.id} style={styles.sessionRow}>
-                    <Pressable style={styles.sessionLabelWrap} onPress={() => router.push(detailHref(sessionItem.id))}>
-                      <SessionLabel session={sessionItem} todayISO={todayISO} />
-                    </Pressable>
-                    <Pressable
-                      onPress={() =>
-                        setMovingSession({
-                          id: sessionItem.id,
-                          workoutName: sessionItem.workoutName,
-                          fromDate: selectedDate,
-                        })
-                      }
-                      style={styles.moveLink}>
-                      <ThemedText type="small" style={styles.moveLinkText}>
-                        Move
-                      </ThemedText>
-                    </Pressable>
-                  </View>
-                ))
+                <>
+                  {(sessionsByDate.get(selectedDate) ?? []).map((sessionItem) => (
+                    <View key={sessionItem.id} style={styles.sessionRow}>
+                      <Pressable style={styles.sessionLabelWrap} onPress={() => router.push(detailHref(sessionItem.id))}>
+                        <SessionLabel session={sessionItem} todayISO={todayISO} />
+                      </Pressable>
+                      <Pressable
+                        onPress={() =>
+                          setMovingSession({
+                            id: sessionItem.id,
+                            workoutName: sessionItem.workoutName,
+                            fromDate: selectedDate,
+                          })
+                        }
+                        style={styles.moveLink}>
+                        <ThemedText type="small" style={styles.moveLinkText}>
+                          Move
+                        </ThemedText>
+                      </Pressable>
+                    </View>
+                  ))}
+                  {(checkInsByDate.get(selectedDate) ?? []).map((checkIn) => (
+                    <CheckInRow key={checkIn.id} checkIn={checkIn} role={role} />
+                  ))}
+                </>
               )}
             </ThemedView>
           )}
@@ -718,6 +792,23 @@ const styles = StyleSheet.create({
   monthStatusGlyph: {
     fontSize: 12,
     lineHeight: 14,
+  },
+  checkInRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  checkInDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: Colors.tealBright,
+    marginTop: 2,
+  },
+  checkInDotPending: {
+    backgroundColor: Colors.tealBright,
   },
   selectedDayCard: {
     borderRadius: Spacing.two,

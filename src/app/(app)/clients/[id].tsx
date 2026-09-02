@@ -1,16 +1,32 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { getClient, type ClientSummary } from '@/lib/clients';
 import { deleteFoodLog, listFoodLogHistory, type DailyFoodLog } from '@/lib/food-logs';
-import { listClientFormAssignments, type ClientFormAssignment } from '@/lib/form-assignments';
+import { archiveFormAssignment, listClientFormAssignments, type ClientFormAssignment } from '@/lib/form-assignments';
+import {
+  archiveOrDeleteCheckIn,
+  listClientCheckInInstances,
+  type ClientCheckInInstance,
+} from '@/lib/form-check-ins';
 import { getClientProgramme, GOAL_TYPES, SCHEDULED_DAYS, type ClientProgrammeView } from '@/lib/programmes';
 import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
+
+type PendingAction =
+  | { kind: 'cancel-schedule'; id: string; formName: string }
+  | { kind: 'remove-checkin'; id: string; formName: string; scheduledDate: string; status: ClientCheckInInstance['status'] };
+
+const CHECK_IN_STATUS_LABEL: Record<ClientCheckInInstance['status'], string> = {
+  pending: 'Pending',
+  completed: 'Completed',
+  missed: 'Missed',
+};
 
 const HISTORY_DAYS = 14;
 
@@ -41,9 +57,14 @@ export default function ClientDetailScreen() {
   const [target, setTarget] = useState<CalorieTarget | null>(null);
   const [programme, setProgramme] = useState<ClientProgrammeView | null>(null);
   const [formAssignments, setFormAssignments] = useState<ClientFormAssignment[]>([]);
+  const [checkInInstances, setCheckInInstances] = useState<ClientCheckInInstance[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [actioning, setActioning] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     if (!id) return;
@@ -54,13 +75,15 @@ export default function ClientDetailScreen() {
       getCalorieTarget(id),
       getClientProgramme(id),
       listClientFormAssignments(id),
+      listClientCheckInInstances(id),
     ])
-      .then(([clientData, historyData, targetData, programmeData, formAssignmentData]) => {
+      .then(([clientData, historyData, targetData, programmeData, formAssignmentData, checkInInstanceData]) => {
         setClient(clientData);
         setHistory(historyData);
         setTarget(targetData);
         setProgramme(programmeData);
         setFormAssignments(formAssignmentData);
+        setCheckInInstances(checkInInstanceData);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load this client's details."))
       .finally(() => setLoading(false));
@@ -81,6 +104,25 @@ export default function ClientDetailScreen() {
       setError(err instanceof Error ? err.message : 'Failed to delete that entry.');
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleConfirmAction = async () => {
+    if (!pendingAction) return;
+    setActionError(null);
+    setActioning(true);
+    try {
+      if (pendingAction.kind === 'cancel-schedule') {
+        await archiveFormAssignment(pendingAction.id);
+      } else {
+        await archiveOrDeleteCheckIn(pendingAction.id);
+      }
+      setPendingAction(null);
+      load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Something went wrong.');
+    } finally {
+      setActioning(false);
     }
   };
 
@@ -128,6 +170,8 @@ export default function ClientDetailScreen() {
               Check-in Schedule
             </ThemedText>
 
+            {actionError && <ThemedText style={styles.error}>{actionError}</ThemedText>}
+
             {formAssignments.length === 0 ? (
               <ThemedText type="small" themeColor="textSecondary">
                 No recurring check-ins assigned yet.
@@ -139,8 +183,50 @@ export default function ClientDetailScreen() {
                   <ThemedText type="small" themeColor="textSecondary">
                     Weekly on {dayLabel(assignment.recurrenceDay)} · due within {assignment.dueWindowHours}h
                   </ThemedText>
+                  <View style={styles.cardActions}>
+                    <Pressable
+                      onPress={() =>
+                        setPendingAction({ kind: 'cancel-schedule', id: assignment.id, formName: assignment.formName })
+                      }>
+                      <ThemedText type="small" style={styles.removeText}>
+                        Cancel schedule
+                      </ThemedText>
+                    </Pressable>
+                  </View>
                 </ThemedView>
               ))
+            )}
+
+            {checkInInstances.length > 0 && (
+              <>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.checkInInstancesLabel}>
+                  Individual check-ins
+                </ThemedText>
+                {checkInInstances.map((instance) => (
+                  <ThemedView key={instance.id} type="backgroundElement" style={styles.checkInInstanceCard}>
+                    <View style={styles.checkInInstanceInfo}>
+                      <ThemedText type="small">{instance.formName}</ThemedText>
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {instance.scheduledDate} · {CHECK_IN_STATUS_LABEL[instance.status]}
+                      </ThemedText>
+                    </View>
+                    <Pressable
+                      onPress={() =>
+                        setPendingAction({
+                          kind: 'remove-checkin',
+                          id: instance.id,
+                          formName: instance.formName,
+                          scheduledDate: instance.scheduledDate,
+                          status: instance.status,
+                        })
+                      }>
+                      <ThemedText type="small" style={styles.removeText}>
+                        Remove
+                      </ThemedText>
+                    </Pressable>
+                  </ThemedView>
+                ))}
+              </>
             )}
 
             <ThemedText type="smallBold" style={styles.sectionLabel}>
@@ -210,6 +296,24 @@ export default function ClientDetailScreen() {
           </ScrollView>
         )}
       </SafeAreaView>
+
+      <ConfirmDialog
+        visible={pendingAction !== null}
+        title={pendingAction?.kind === 'cancel-schedule' ? 'Cancel this schedule?' : 'Remove this check-in?'}
+        message={
+          pendingAction?.kind === 'cancel-schedule'
+            ? `Stops new weekly check-ins for "${pendingAction.formName}" from being created. Any check-ins already generated aren't affected.`
+            : pendingAction?.kind === 'remove-checkin'
+              ? pendingAction.status === 'pending'
+                ? `"${pendingAction.formName}" (${pendingAction.scheduledDate}) hasn't been submitted yet, so it will be permanently deleted.`
+                : `"${pendingAction.formName}" (${pendingAction.scheduledDate}) is already ${CHECK_IN_STATUS_LABEL[pendingAction.status].toLowerCase()} — it will be archived, not deleted, so it still counts toward Compliance Score / On Time-Late tracking.`
+              : ''
+        }
+        confirmLabel={pendingAction?.kind === 'cancel-schedule' ? 'Cancel schedule' : 'Remove'}
+        busy={actioning}
+        onConfirm={handleConfirmAction}
+        onCancel={() => setPendingAction(null)}
+      />
     </ThemedView>
   );
 }
@@ -249,6 +353,29 @@ const styles = StyleSheet.create({
     padding: Spacing.three,
     gap: Spacing.half,
     marginTop: Spacing.half,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  removeText: {
+    color: Colors.textSecondary,
+  },
+  checkInInstancesLabel: {
+    marginTop: Spacing.two,
+  },
+  checkInInstanceCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    marginTop: Spacing.half,
+    gap: Spacing.two,
+  },
+  checkInInstanceInfo: {
+    flex: 1,
+    gap: Spacing.half,
   },
   targetCard: {
     borderRadius: Spacing.two,

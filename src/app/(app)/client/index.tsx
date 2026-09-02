@@ -18,6 +18,7 @@ import {
   type OverdueAssignment,
 } from '@/lib/assignments';
 import { listFoodLogsForDate } from '@/lib/food-logs';
+import { ensureCheckInsUpToDate, listUpNextCheckIns, type UpNextCheckIn } from '@/lib/form-check-ins';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
 import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
 import { getCurrentStreak } from '@/lib/streak';
@@ -36,6 +37,16 @@ function todayISODate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** Whatever "the next thing to do" actually is — a pending workout or a
+ * due check-in — reduced to just what the Up Next card needs to render,
+ * so both kinds share one list and one card style. */
+type UpNextItem = {
+  kind: 'workout' | 'checkin';
+  id: string;
+  title: string;
+  date: string;
+};
+
 export default function ClientHomeScreen() {
   const { session, profile, signOut } = useAuth();
   const theme = useTheme();
@@ -43,6 +54,10 @@ export default function ClientHomeScreen() {
   const [assignments, setAssignments] = useState<ClientAssignmentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [checkIns, setCheckIns] = useState<UpNextCheckIn[]>([]);
+  const [checkInsLoading, setCheckInsLoading] = useState(true);
+  const [checkInsError, setCheckInsError] = useState<string | null>(null);
 
   const [habits, setHabits] = useState<MyHabit[]>([]);
   const [completedIds, setCompletedIds] = useState<Set<string>>(new Set());
@@ -119,6 +134,38 @@ export default function ClientHomeScreen() {
       .catch((err) => console.error('Failed to check for overdue workouts:', err));
     // Deliberately only re-runs if the signed-in user changes — this is
     // an "on app open" check, not a "keep re-checking" one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  // Reuses the same "Up Next" section the workout list already renders
+  // into — a check-in is just another kind of item in that list, not a
+  // separate section with its own display logic.
+  const loadCheckIns = useCallback(() => {
+    if (!session) return;
+    setCheckInsLoading(true);
+    listUpNextCheckIns(session.user.id)
+      .then((data) => setCheckIns(data))
+      .catch((err) => setCheckInsError(err instanceof Error ? err.message : 'Failed to load your check-ins.'))
+      .finally(() => setCheckInsLoading(false));
+  }, [session]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadCheckIns();
+    }, [loadCheckIns])
+  );
+
+  // Same "on app open" shape as the missed-workout auto-reschedule
+  // above, and for the same reason: materializing a check-in that
+  // should exist by now (and archiving any gone stale) only needs to
+  // happen once the client's actually looking, not on a schedule
+  // nobody's watching. Runs before the first fetch so Up Next never
+  // shows a moment-stale list right after opening the app.
+  useEffect(() => {
+    if (!session) return;
+    ensureCheckInsUpToDate(session.user.id)
+      .then(() => loadCheckIns())
+      .catch((err) => console.error('Failed to update check-in schedule:', err));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
@@ -271,7 +318,30 @@ export default function ClientHomeScreen() {
     }
   };
 
-  const upNext = assignments.filter((assignment) => assignment.status === 'pending');
+  // One merged, date-sorted list — a check-in is rendered in the exact
+  // same Up Next section and card as a pending workout, just with its
+  // own destination and button label, rather than a second section
+  // with its own display logic.
+  const upNext: UpNextItem[] = [
+    ...assignments
+      .filter((assignment) => assignment.status === 'pending')
+      .map((assignment) => ({
+        kind: 'workout' as const,
+        id: assignment.id,
+        title: assignment.workoutName,
+        date: assignment.assignedDate,
+      })),
+    ...checkIns.map((checkIn) => ({
+      kind: 'checkin' as const,
+      id: checkIn.id,
+      title: checkIn.formName,
+      date: checkIn.scheduledDate,
+    })),
+  ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  const upNextLoading = loading || checkInsLoading;
+  const upNextError = error || checkInsError;
+
   const displayName = profile?.full_name || profile?.email.split('@')[0] || '';
   const completedCount = habits.filter((habit) => completedIds.has(habit.id)).length;
 
@@ -410,36 +480,36 @@ export default function ClientHomeScreen() {
             <ThemedText type="smallBold" style={styles.sectionLabel}>
               Up Next
             </ThemedText>
-            {!loading && !error && upNext.length > 0 && (
+            {!upNextLoading && !upNextError && upNext.length > 0 && (
               <ThemedText type="smallBold" themeColor="textSecondary">
                 {upNext.length} pending
               </ThemedText>
             )}
           </View>
 
-          {loading && <ActivityIndicator style={styles.loader} />}
+          {upNextLoading && <ActivityIndicator style={styles.loader} />}
 
-          {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
+          {!upNextLoading && upNextError && <ThemedText style={styles.error}>{upNextError}</ThemedText>}
 
-          {!loading && !error && upNext.length === 0 && (
+          {!upNextLoading && !upNextError && upNext.length === 0 && (
             <ThemedText themeColor="textSecondary">Nothing pending — you&apos;re all caught up.</ThemedText>
           )}
 
-          {!loading &&
-            !error &&
-            upNext.map((assignment) => (
-              <ThemedView key={assignment.id} type="backgroundElement" style={styles.upNextCard}>
+          {!upNextLoading &&
+            !upNextError &&
+            upNext.map((item) => (
+              <ThemedView key={`${item.kind}-${item.id}`} type="backgroundElement" style={styles.upNextCard}>
                 <View style={styles.upNextInfo}>
-                  <ThemedText type="smallBold">{assignment.workoutName}</ThemedText>
+                  <ThemedText type="smallBold">{item.title}</ThemedText>
                   <ThemedText type="small" themeColor="textSecondary">
-                    {assignment.assignedDate}
+                    {item.date}
                   </ThemedText>
                 </View>
                 <Pressable
                   style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}
-                  onPress={() => router.push(`/assigned/${assignment.id}`)}>
+                  onPress={() => router.push(item.kind === 'workout' ? `/assigned/${item.id}` : `/checkins/${item.id}`)}>
                   <ThemedText type="smallBold" style={styles.startButtonText}>
-                    Start
+                    {item.kind === 'workout' ? 'Start' : 'Fill out'}
                   </ThemedText>
                 </Pressable>
               </ThemedView>

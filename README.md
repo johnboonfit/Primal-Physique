@@ -1217,6 +1217,30 @@ New table (`supabase/form-assignments.sql`): `form_assignments` — one row per 
 5. Tap Assign — confirm it lands you on that client's own page, showing a new "Check-in Schedule" section with the form's name and "Weekly on [Day] · due within Xh."
 6. For the real proof this isn't a one-off: open the SQL Editor and run `select * from form_assignments where client_id = '<id>';` — confirm there's exactly **one row**, holding only the rule (day + due-window hours), with no per-occurrence rows anywhere — then separately confirm (by re-opening the assign screen for that same form/client, or re-running the preview math by hand for a later date) that the same rule keeps producing correct future dates indefinitely, not just for the dates shown at the moment you assigned it.
 
+## Client check-in fill-out, Up Next / Calendar visibility, and archive-not-delete
+
+Four things this chunk, all built around one new idea: a check-in **occurrence** is now a real row (`form_check_ins`), not just something computed on the fly from the recurrence rule. The rule (`form_assignments`) still says "weekly on Monday" forever; this table is what actually exists for a given week, once it's close enough to matter.
+
+**1. `form_check_ins` and `form_responses`** (`supabase/form-check-ins.sql`). A check-in occurrence has three states — `pending`, `completed`, `missed` — plus a separate `archived` flag. Those are deliberately two different things: `status` records what actually happened, `archived` decides what's still visible. A missed check-in gets **both** `status='missed'` and `archived=true` set at the same moment, but the row is never deleted — Compliance Score and On Time/Late tracking (next chunk) read this history, so it has to still exist and still be queryable, just not shown anywhere active. `form_responses` holds the actual submitted answers, one row per (check-in, question) — same shape as `workout_logs`' one-row-per-exercise, for the same reason: the answer's shape genuinely varies by question type, so a flexible per-question row beats one big JSON blob per submission.
+
+**2. Lazy materialization, not a schedule.** `ensureCheckInsUpToDate()` (in `src/lib/form-check-ins.ts`) runs once per app open on the client's Home tab — same "on app open" shape as the missed-workout auto-reschedule and the weekly TDEE check already there, no server cron to build or monitor. For each of the client's active recurring assignments, it reuses `listUpcomingCheckInDates()` (the exact function from last chunk's assign-screen preview — not a second date-math implementation) to work out which occurrence should exist by "today + 2 days," upserts it if it doesn't exist yet (silently no-ops if it does, via a `unique(form_assignment_id, scheduled_date)` constraint), then sweeps for anything still `pending` more than 7 days past its scheduled date and archives it as `missed`. This single function is what makes a check-in "appear 2 days before due" and "disappear a week after, but never truly vanish" — both are just consequences of when this function chooses to insert a row and when it chooses to archive one, not two separate features.
+
+**3. Client fill-out screen** (`checkins/[id].tsx`). Reuses last chunk's extensible type system in the other direction: `question-types.ts` now also declares an `answerKind` (`short_text` / `numeric` / `single_choice` / `multi_choice` / `scale` — five kinds for six types, since `number` and `measurement` both just need a numeric box, differing only in whether `config.unit` happens to be set) plus `validateAnswer`/`toStoredAnswer` per type. `question-answer-input.tsx`'s `<AnswerInput>` has exactly one render branch per kind, mirroring `ConfigFieldEditor`'s shape — the fill-out screen itself never branches on question type, same as the builder never did. Once completed, a check-in renders read-only instead of swapping back to a blank form.
+
+**4. Up Next and Calendar reuse, not reinvention.** Home's Up Next now merges pending workouts and due check-ins into one date-sorted list, in the exact same card style, differing only in the button label ("Start" vs "Fill out") and destination. `SessionCalendar` fetches check-ins alongside sessions and phases (one query, sliced by date client-side, same as it already does for sessions) and renders them in both Week and Month view — a plain, non-draggable row in Week view, a small dot indicator plus a listing in Month view's selected-day card. Check-ins deliberately get their **own** status marker rather than being folded into the workout sessions' 3-state priority glyph on a shared day — they're a different kind of thing, and merging them would lose information, not add it. One access-control detail worth calling out: a check-in row is only tappable when `role="client"` — a coach viewing a client's calendar through Programme Builder sees it (useful information), but tapping through to `/checkins/[id]` and trying to submit would hit an RLS wall (that screen submits as whoever's signed in, and a coach isn't the client), so the coach's version is display-only.
+
+**5. Coach delete/cancel, following the same archive rule.** Two actions on the Clients page's Check-in Schedule section, both behind the shared `ConfirmDialog`: "Cancel schedule" archives the `form_assignments` row (stops new occurrences; already-generated ones are untouched, since they still reference it), and "Remove" on an individual check-in instance checks its status first — still `pending` means nothing worth keeping, so it's a real delete; already `completed` or `missed` means archive instead, never delete, exactly the rule point 3 established and for the same reason.
+
+**Verified the archive lifecycle directly**, since "disappears from view but still exists" is precisely the kind of thing that's easy to get backwards (delete when you meant archive, or filter so aggressively the row becomes unreachable even by id). Ran a standalone script simulating the real upsert-and-sweep logic against a fake table: confirmed a check-in genuinely doesn't materialize 3 days before due but does at exactly 2; confirmed a still-pending check-in survives untouched the day before its 7-day cutoff and is archived-as-missed the day after; confirmed the archived row is excluded from every "active" filter yet still present in the raw table with its real `status`/`archived` values (not deleted); confirmed a completed check-in is never touched by the missed-sweep no matter how old; and confirmed running the generation step repeatedly never creates a duplicate row for the same week. Separately, drove the new `<AnswerInput>` live through all six question types in a browser — every type validated correctly when blank, accepted valid input, and produced the exact right stored shape (real numbers where numbers are expected, a replaced single selection rather than an additive one, a growing/shrinking array for multi-select) with zero console errors.
+
+**Verify the archive behaviour specifically — a missed check-in disappears from view but the record still exists and is queryable:**
+1. As the coach, assign a check-in on a day that's already a few days past (e.g. if today's Wednesday, assign it for "Monday" — the first occurrence lands this coming Monday, so to test the *missed* path specifically, pick a form/client where you can wait, or directly insert a test row in SQL — see step 4 below for the faster path).
+2. As the client, confirm the check-in shows in Up Next starting 2 days before its due date, not earlier — open the app on day 3-before and confirm it's absent, then again on day 2-before and confirm it now appears.
+3. Let it go unanswered past its due window and past the 7-day mark from its scheduled date (or, faster: in the SQL Editor, backdate a test row's `scheduled_date` to more than 7 days ago while `status='pending'`), then reopen the client's Home tab (which is what actually runs the archive sweep) — confirm the check-in is now gone from both Up Next and the Calendar.
+4. In the SQL Editor, run `select id, scheduled_date, status, archived from form_check_ins where id = '<that id>';` — confirm the row is still there, `status = 'missed'`, `archived = true` — not deleted, not blanked out.
+5. As the coach, open that client's page — confirm the same check-in no longer appears under "Individual check-ins" either (it's excluded from the coach's active list the same way), while the SQL row from step 4 still proves it exists.
+6. For the coach-initiated side of the same rule: as the coach, remove a check-in that's still `pending` — confirm in SQL that the row is gone entirely (`select … where id = '<id>'` returns nothing). Then remove one that's already `completed` — confirm in SQL the row is still there with `archived = true`, submitted answers in `form_responses` still intact.
+
 ## Project structure reference
 
 ```
@@ -1254,7 +1278,7 @@ src/
       clients/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of every client account
-        [id].tsx          # one client's detail page — Programme section + Check-in Schedule section (recurring form assignments) + Nutrition section (target + 14-day food log history, delete)
+        [id].tsx          # one client's detail page — Programme section + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete)
       forms/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's check-in form templates, with Assign
@@ -1263,9 +1287,11 @@ src/
         assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
+      checkins/
+        [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
-        index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next, Today's Habits checklist
+        index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next (merges pending workouts + due check-ins), Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
@@ -1278,13 +1304,14 @@ src/
     measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
     photo-compare-slider.tsx  # generic, reusable before/after image slider — drag to reveal, pinch either photo to resize it
     photos-panel.tsx            # Progress → Photos sub-tab content (front/side/back upload, gallery, compare tool)
-    session-calendar.tsx          # <SessionCalendar clientId role> — the real Week/Month calendar, shared by client/calendar.tsx and Programme Builder
+    session-calendar.tsx          # <SessionCalendar clientId role> — the real Week/Month calendar, shared by client/calendar.tsx and Programme Builder; also renders due/completed check-ins (own status marker, tappable only for role="client")
     time-range-toggle.tsx     # shared 1W/1M/6M/1Y/All Time chip row, used by both MetricsPanel and MeasurePanel
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)
     measure-panel.tsx           # Progress → Measure sub-tab content (waist/chest/arms/thighs/hips/neck logging, per-type graph + history)
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
     confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt used by all three archive actions
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
+    question-answer-input.tsx    # <AnswerInput> — one render branch per answer kind (short_text/numeric/single_choice/multi_choice/scale), same reasoning; used by the check-in fill-out screen
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
   context/
@@ -1307,9 +1334,10 @@ src/
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
-    question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig per type); adding a type is an entry here, not a UI rebuild
+    question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
-    form-assignments.ts            # createFormAssignment() / listClientFormAssignments() database calls + listUpcomingCheckInDates() — pure, computes future dates from a recurrence rule, nothing stored per-occurrence
+    form-assignments.ts            # createFormAssignment() / listClientFormAssignments() / archiveFormAssignment() database calls + listUpcomingCheckInDates() — pure, computes future dates from a recurrence rule, nothing stored per-occurrence
+    form-check-ins.ts              # ensureCheckInsUpToDate() (lazy materialize + archive-as-missed sweep, run on client app open) / listUpNextCheckIns() / listVisibleCheckIns() / getCheckInDetail() / submitCheckIn() / listClientCheckInInstances() / archiveOrDeleteCheckIn() database calls
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once

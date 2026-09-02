@@ -14,6 +14,21 @@ export type QuestionType = 'short_text' | 'number' | 'single_select' | 'multi_se
 
 export type QuestionConfig = Record<string, unknown>;
 
+/** Whatever an answer-in-progress looks like while the client is filling
+ * a check-in out — before `toStoredAnswer` converts it to the shape
+ * actually saved to `form_responses.answer`. */
+export type AnswerValue = string | string[] | number | null;
+
+/**
+ * The small, fixed set of *shapes* an answer INPUT can take — same
+ * reasoning as ConfigFieldDefinition's `kind`, one per input control,
+ * not one per question type. `number` and `measurement` both use
+ * 'numeric' (measurement just also shows config.unit as a suffix, read
+ * generically, not because it's "the measurement type") — that's the
+ * whole six-types-five-kinds saving.
+ */
+export type AnswerKind = 'short_text' | 'numeric' | 'single_choice' | 'multi_choice' | 'scale';
+
 /**
  * The small, fixed set of *shapes* a question type's extra configuration
  * can take — not one per question type, one per kind of input control.
@@ -41,6 +56,18 @@ export type QuestionTypeDefinition = {
    * "" rather than silently becoming 0) into the shape actually saved to
    * the database. Identity for every type that doesn't need it. */
   toStoredConfig: (config: QuestionConfig) => QuestionConfig;
+  /** Which input control the check-in fill-out screen renders for this
+   * type — see AnswerKind. */
+  answerKind: AnswerKind;
+  /** Returns an error message if this answer isn't ready to submit yet
+   * (blank, not one of the offered options, outside the scale range),
+   * or null if it's fine. Operates on the answer as the input holds it
+   * mid-edit, same reasoning as validateConfig. */
+  validateAnswer: (config: QuestionConfig, answer: AnswerValue) => string | null;
+  /** Converts the in-progress answer into the plain value actually
+   * saved to form_responses.answer (a real number for numeric/scale
+   * answers, not a string still holding "3"). */
+  toStoredAnswer: (config: QuestionConfig, answer: AnswerValue) => unknown;
 };
 
 function optionsFrom(config: QuestionConfig): string[] {
@@ -52,6 +79,11 @@ function validateOptions(config: QuestionConfig): string | null {
   return nonEmpty.length >= 2 ? null : 'Add at least 2 options.';
 }
 
+function validateNumericAnswer(answer: AnswerValue): string | null {
+  if (typeof answer !== 'string' || answer.trim() === '') return 'Enter a number.';
+  return Number.isNaN(Number(answer)) ? 'Enter a valid number.' : null;
+}
+
 export const QUESTION_TYPES: QuestionTypeDefinition[] = [
   {
     key: 'short_text',
@@ -61,6 +93,9 @@ export const QUESTION_TYPES: QuestionTypeDefinition[] = [
     defaultConfig: () => ({}),
     validateConfig: () => null,
     toStoredConfig: (config) => config,
+    answerKind: 'short_text',
+    validateAnswer: (_config, answer) => (typeof answer === 'string' && answer.trim() ? null : 'Enter an answer.'),
+    toStoredAnswer: (_config, answer) => (typeof answer === 'string' ? answer.trim() : ''),
   },
   {
     key: 'number',
@@ -70,6 +105,9 @@ export const QUESTION_TYPES: QuestionTypeDefinition[] = [
     defaultConfig: () => ({}),
     validateConfig: () => null,
     toStoredConfig: (config) => config,
+    answerKind: 'numeric',
+    validateAnswer: (_config, answer) => validateNumericAnswer(answer),
+    toStoredAnswer: (_config, answer) => Number(answer),
   },
   {
     key: 'single_select',
@@ -79,6 +117,10 @@ export const QUESTION_TYPES: QuestionTypeDefinition[] = [
     defaultConfig: () => ({ options: ['', ''] }),
     validateConfig: validateOptions,
     toStoredConfig: (config) => ({ options: optionsFrom(config).map((o) => o.trim()).filter((o) => o.length > 0) }),
+    answerKind: 'single_choice',
+    validateAnswer: (config, answer) =>
+      typeof answer === 'string' && optionsFrom(config).includes(answer) ? null : 'Pick one option.',
+    toStoredAnswer: (_config, answer) => answer,
   },
   {
     key: 'multi_select',
@@ -88,6 +130,13 @@ export const QUESTION_TYPES: QuestionTypeDefinition[] = [
     defaultConfig: () => ({ options: ['', ''] }),
     validateConfig: validateOptions,
     toStoredConfig: (config) => ({ options: optionsFrom(config).map((o) => o.trim()).filter((o) => o.length > 0) }),
+    answerKind: 'multi_choice',
+    validateAnswer: (config, answer) => {
+      const options = optionsFrom(config);
+      const picked = Array.isArray(answer) ? answer : [];
+      return picked.length > 0 && picked.every((p) => options.includes(p)) ? null : 'Pick at least one option.';
+    },
+    toStoredAnswer: (_config, answer) => (Array.isArray(answer) ? answer : []),
   },
   {
     key: 'scale',
@@ -109,6 +158,14 @@ export const QUESTION_TYPES: QuestionTypeDefinition[] = [
       return null;
     },
     toStoredConfig: (config) => ({ min: Number(config.min), max: Number(config.max) }),
+    answerKind: 'scale',
+    validateAnswer: (config, answer) => {
+      if (typeof answer !== 'number') return 'Pick a value on the scale.';
+      const min = Number(config.min);
+      const max = Number(config.max);
+      return answer >= min && answer <= max ? null : 'Pick a value within the scale range.';
+    },
+    toStoredAnswer: (_config, answer) => answer,
   },
   {
     key: 'measurement',
@@ -118,6 +175,9 @@ export const QUESTION_TYPES: QuestionTypeDefinition[] = [
     defaultConfig: () => ({ unit: '' }),
     validateConfig: () => null,
     toStoredConfig: (config) => ({ unit: typeof config.unit === 'string' ? config.unit.trim() : '' }),
+    answerKind: 'numeric',
+    validateAnswer: (_config, answer) => validateNumericAnswer(answer),
+    toStoredAnswer: (_config, answer) => Number(answer),
   },
 ];
 

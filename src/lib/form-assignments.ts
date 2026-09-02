@@ -35,14 +35,18 @@ export async function createFormAssignment(coachId: string, draft: FormAssignmen
 }
 
 /** Used by the Clients detail page's Check-in Schedule section — every
- * recurring form this client has assigned, regardless of which coach
- * created it (matches this app's existing "any coach sees any client"
- * shape everywhere else). */
+ * ACTIVE recurring form this client has assigned, regardless of which
+ * coach created it (matches this app's existing "any coach sees any
+ * client" shape everywhere else). A cancelled (archived) schedule drops
+ * out of this list, same "disappears from active lists" rule as
+ * habits/workouts/programmes — the row itself isn't deleted, since any
+ * check-ins it already generated still reference it. */
 export async function listClientFormAssignments(clientId: string): Promise<ClientFormAssignment[]> {
   const { data, error } = await supabase
     .from('form_assignments')
     .select('id, recurrence_day, due_window_hours, created_at, form_templates(name)')
     .eq('client_id', clientId)
+    .eq('archived', false)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -54,6 +58,16 @@ export async function listClientFormAssignments(clientId: string): Promise<Clien
     dueWindowHours: row.due_window_hours as number,
     createdAt: row.created_at as string,
   }));
+}
+
+/** "Cancel a client's recurring check-in schedule" — an archive, not a
+ * delete: form_check_ins rows already generated from this assignment
+ * (completed or missed) keep their FK pointing at a real row. This only
+ * stops ensureCheckInsUpToDate() from generating any NEW occurrences;
+ * it doesn't touch check-ins already generated. */
+export async function archiveFormAssignment(assignmentId: string) {
+  const { error } = await supabase.from('form_assignments').update({ archived: true }).eq('id', assignmentId);
+  if (error) throw error;
 }
 
 export type UpcomingCheckIn = {
