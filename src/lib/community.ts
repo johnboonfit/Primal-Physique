@@ -207,12 +207,18 @@ export type ModerationReport = {
 /** Every still-open report, coach-only (see community_reports' select
  * policy) — this is what feeds the moderation screen. If the same post
  * has two open reports, it appears twice, once per report, since
- * dismissing one shouldn't silently dismiss the other. */
+ * dismissing one shouldn't silently dismiss the other.
+ *
+ * `profiles` is embedded twice here — once for the reported post's
+ * author, once for the reporter — and PostgREST needs each occurrence
+ * of the SAME target table in one query aliased distinctly
+ * (`alias:table!fk_hint`), not just the FK hint alone, or it can fail
+ * to resolve the query at all rather than silently picking one. */
 export async function getOpenReports(): Promise<ModerationReport[]> {
   const { data, error } = await supabase
     .from('community_reports')
     .select(
-      'id, post_id, reason, created_at, community_posts(id, body, tag, author_id, profiles!author_id(full_name, email)), profiles!reporter_id(full_name, email)'
+      'id, post_id, reason, created_at, community_posts(id, body, tag, author_id, post_author:profiles!author_id(full_name, email)), reporter:profiles!reporter_id(full_name, email)'
     )
     .eq('status', 'open')
     .order('created_at', { ascending: false });
@@ -225,9 +231,9 @@ export async function getOpenReports(): Promise<ModerationReport[]> {
       body: string;
       tag: CommunityTag;
       author_id: string;
-      profiles: { full_name: string | null; email: string } | null;
+      post_author: { full_name: string | null; email: string } | null;
     } | null;
-    const reporter = row.profiles as unknown as { full_name: string | null; email: string } | null;
+    const reporter = row.reporter as unknown as { full_name: string | null; email: string } | null;
 
     return {
       id: row.id as string,
@@ -235,7 +241,7 @@ export async function getOpenReports(): Promise<ModerationReport[]> {
       postBody: post?.body ?? '(post no longer exists)',
       postTag: (post?.tag ?? 'question') as CommunityTag,
       postAuthorId: post?.author_id ?? '',
-      postAuthorName: post?.profiles?.full_name || post?.profiles?.email?.split('@')[0] || 'Unknown',
+      postAuthorName: post?.post_author?.full_name || post?.post_author?.email?.split('@')[0] || 'Unknown',
       reporterName: reporter?.full_name || reporter?.email?.split('@')[0] || 'Unknown',
       reason: row.reason as string | null,
       createdAt: row.created_at as string,

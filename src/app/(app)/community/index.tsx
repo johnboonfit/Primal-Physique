@@ -61,18 +61,26 @@ export default function CommunityFeedScreen() {
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([
-      listCommunityPosts(),
-      getCommunityEnabled(),
-      profile?.role === 'coach' ? getOpenReports() : Promise.resolve([]),
-    ])
-      .then(([postData, enabled, reports]) => {
+    Promise.all([listCommunityPosts(), getCommunityEnabled()])
+      .then(([postData, enabled]) => {
         setPosts(postData);
         setCommunityEnabledState(enabled);
-        setOpenReportCount(reports.length);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load Community.'))
+      .catch((err) => {
+        console.error('Failed to load Community:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load Community.');
+      })
       .finally(() => setLoading(false));
+
+    // Kept separate from the feed itself on purpose — the open-report
+    // badge is a bonus for the coach, not core to the feed loading at
+    // all. A failure here should never block a client (or the coach)
+    // from seeing posts; it should just leave the badge showing 0.
+    if (profile?.role === 'coach') {
+      getOpenReports()
+        .then((reports) => setOpenReportCount(reports.length))
+        .catch((err) => console.error('Failed to load open report count:', err));
+    }
   }, [profile]);
 
   useFocusEffect(
