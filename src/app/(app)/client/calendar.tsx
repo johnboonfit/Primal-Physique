@@ -1,13 +1,15 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
+import { listMyAssignments, rescheduleAssignment, type ClientAssignmentSummary } from '@/lib/assignments';
 
 type ViewMode = 'week' | 'month';
 
@@ -66,6 +68,101 @@ const STATUS_LABEL: Record<ClientAssignmentSummary['status'], string> = {
   completed: 'Completed',
 };
 
+function SessionLabel({ session }: { session: ClientAssignmentSummary }) {
+  return (
+    <>
+      <ThemedText type="small">{session.workoutName}</ThemedText>
+      <ThemedText
+        type="small"
+        themeColor={session.status === 'completed' ? undefined : 'textSecondary'}
+        style={session.status === 'completed' ? styles.statusCompleted : undefined}>
+        {STATUS_LABEL[session.status]}
+      </ThemedText>
+    </>
+  );
+}
+
+type DraggableSessionRowProps = {
+  session: ClientAssignmentSummary;
+  originIndex: number;
+  weekDays: Date[];
+  dayRowRefs: React.RefObject<(View | null)[]>;
+  onDragStateChange: (dayIndex: number | null) => void;
+  onReschedule: (assignmentId: string, newDate: string) => void;
+};
+
+/** Long-press-then-drag, not a plain drag from touch-down — this is what
+ * lets a normal vertical scroll of the week list coexist with dragging a
+ * card, rather than every scroll attempt accidentally picking one up. */
+function DraggableSessionRow({
+  session,
+  originIndex,
+  weekDays,
+  dayRowRefs,
+  onDragStateChange,
+  onReschedule,
+}: DraggableSessionRowProps) {
+  const translateY = useSharedValue(0);
+
+  const handleDragStart = useCallback(() => {
+    onDragStateChange(originIndex);
+  }, [onDragStateChange, originIndex]);
+
+  const handleDragEnd = useCallback(
+    (absoluteY: number) => {
+      const refs = dayRowRefs.current;
+      Promise.all(
+        refs.map(
+          (node) =>
+            new Promise<{ top: number; bottom: number } | null>((resolve) => {
+              if (!node) {
+                resolve(null);
+                return;
+              }
+              node.measureInWindow((_x, y, _width, height) => resolve({ top: y, bottom: y + height }));
+            })
+        )
+      ).then((bounds) => {
+        const targetIndex = bounds.findIndex((b) => b !== null && absoluteY >= b.top && absoluteY < b.bottom);
+        if (targetIndex !== -1 && targetIndex !== originIndex) {
+          onReschedule(session.id, toISODate(weekDays[targetIndex]));
+        }
+        onDragStateChange(null);
+      });
+    },
+    [dayRowRefs, originIndex, onReschedule, session.id, weekDays, onDragStateChange]
+  );
+
+  const pan = Gesture.Pan()
+    .activateAfterLongPress(350)
+    .onStart(() => {
+      runOnJS(handleDragStart)();
+    })
+    .onUpdate((event) => {
+      translateY.value = event.translationY;
+    })
+    .onEnd((event) => {
+      runOnJS(handleDragEnd)(event.absoluteY);
+    })
+    .onFinalize(() => {
+      translateY.value = withTiming(0, { duration: 200 });
+    });
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+    zIndex: translateY.value !== 0 ? 10 : 0,
+    shadowOpacity: translateY.value !== 0 ? 0.35 : 0,
+  }));
+
+  return (
+    <GestureDetector gesture={pan}>
+      <Animated.View style={[styles.sessionRow, styles.draggableSessionRow, animatedStyle]}>
+        <SessionLabel session={session} />
+      </Animated.View>
+    </GestureDetector>
+  );
+}
+
 export default function CalendarScreen() {
   const { session } = useAuth();
 
@@ -76,6 +173,12 @@ export default function CalendarScreen() {
   const [viewMode, setViewMode] = useState<ViewMode>('week');
   const [referenceDate, setReferenceDate] = useState<Date>(todayUTC());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [activeDragDayIndex, setActiveDragDayIndex] = useState<number | null>(null);
+  const [movingSession, setMovingSession] = useState<{ id: string; workoutName: string; fromDate: string } | null>(
+    null
+  );
+
+  const dayRowRefs = useRef<(View | null)[]>([null, null, null, null, null, null, null]);
 
   const load = useCallback(() => {
     if (!session) return;
@@ -107,6 +210,27 @@ export default function CalendarScreen() {
 
   const todayISO = toISODate(todayUTC());
 
+  /**
+   * Updates local state immediately so the calendar reflects the move
+   * without waiting on the network, then persists it — this is the same
+   * function both week-view drag and month-view tap-to-move call, so
+   * there's exactly one place that decides what "moving a session"
+   * means. If the save fails, reloads from the server so the screen
+   * never keeps showing a move that didn't actually stick.
+   */
+  const handleReschedule = useCallback(
+    (assignmentId: string, newDate: string) => {
+      setAssignments((current) =>
+        current.map((a) => (a.id === assignmentId ? { ...a, assignedDate: newDate } : a))
+      );
+      rescheduleAssignment(assignmentId, newDate).catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to move that session — reloading.');
+        load();
+      });
+    },
+    [load]
+  );
+
   const handlePrev = () => {
     setReferenceDate((current) => (viewMode === 'week' ? addDays(current, -7) : addMonths(current, -1)));
   };
@@ -120,6 +244,7 @@ export default function CalendarScreen() {
   const handleSetViewMode = (mode: ViewMode) => {
     setViewMode(mode);
     setSelectedDate(null);
+    setMovingSession(null);
   };
 
   const weekStart = useMemo(() => startOfWeek(referenceDate), [referenceDate]);
@@ -143,6 +268,18 @@ export default function CalendarScreen() {
     viewMode === 'week'
       ? `${weekDays[0].toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric' })} – ${weekDays[6].toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })}`
       : referenceDate.toLocaleDateString(undefined, { timeZone: 'UTC', month: 'long', year: 'numeric' });
+
+  const handleMonthCellPress = (dateISO: string) => {
+    if (movingSession) {
+      if (dateISO !== movingSession.fromDate) {
+        handleReschedule(movingSession.id, dateISO);
+        setSelectedDate(dateISO);
+      }
+      setMovingSession(null);
+      return;
+    }
+    setSelectedDate((current) => (current === dateISO ? null : dateISO));
+  };
 
   return (
     <ThemedView style={styles.container}>
@@ -189,44 +326,68 @@ export default function CalendarScreen() {
           {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
           {!loading && !error && viewMode === 'week' && (
-            <View style={styles.weekList}>
-              {weekDays.map((day) => {
-                const dateISO = toISODate(day);
-                const daySessions = sessionsByDate.get(dateISO) ?? [];
-                const isToday = dateISO === todayISO;
-                return (
-                  <ThemedView key={dateISO} type="backgroundElement" style={styles.weekDayCard}>
-                    <View style={styles.weekDayHeader}>
-                      <ThemedText type="smallBold" style={isToday ? styles.todayText : undefined}>
-                        {weekdayShortLabel(day)} {dayNumberLabel(day)}
-                        {isToday ? ' · Today' : ''}
-                      </ThemedText>
-                    </View>
-                    {daySessions.length === 0 ? (
-                      <ThemedText type="small" themeColor="textSecondary">
-                        Nothing scheduled.
-                      </ThemedText>
-                    ) : (
-                      daySessions.map((session) => (
-                        <View key={session.id} style={styles.sessionRow}>
-                          <ThemedText type="small">{session.workoutName}</ThemedText>
-                          <ThemedText
-                            type="small"
-                            themeColor={session.status === 'completed' ? undefined : 'textSecondary'}
-                            style={session.status === 'completed' ? styles.statusCompleted : undefined}>
-                            {STATUS_LABEL[session.status]}
-                          </ThemedText>
-                        </View>
-                      ))
-                    )}
-                  </ThemedView>
-                );
-              })}
-            </View>
+            <>
+              <ThemedText type="small" themeColor="textSecondary" style={styles.dragHint}>
+                Press and hold a session, then drag it to a different day.
+              </ThemedText>
+              <View style={styles.weekList}>
+                {weekDays.map((day, dayIndex) => {
+                  const dateISO = toISODate(day);
+                  const daySessions = sessionsByDate.get(dateISO) ?? [];
+                  const isToday = dateISO === todayISO;
+                  return (
+                    <ThemedView
+                      key={dateISO}
+                      ref={(node) => {
+                        dayRowRefs.current[dayIndex] = node;
+                      }}
+                      type="backgroundElement"
+                      style={[styles.weekDayCard, activeDragDayIndex === dayIndex && styles.weekDayCardElevated]}>
+                      <View style={styles.weekDayHeader}>
+                        <ThemedText type="smallBold" style={isToday ? styles.todayText : undefined}>
+                          {weekdayShortLabel(day)} {dayNumberLabel(day)}
+                          {isToday ? ' · Today' : ''}
+                        </ThemedText>
+                      </View>
+                      {daySessions.length === 0 ? (
+                        <ThemedText type="small" themeColor="textSecondary">
+                          Nothing scheduled.
+                        </ThemedText>
+                      ) : (
+                        daySessions.map((sessionItem) => (
+                          <DraggableSessionRow
+                            key={sessionItem.id}
+                            session={sessionItem}
+                            originIndex={dayIndex}
+                            weekDays={weekDays}
+                            dayRowRefs={dayRowRefs}
+                            onDragStateChange={setActiveDragDayIndex}
+                            onReschedule={handleReschedule}
+                          />
+                        ))
+                      )}
+                    </ThemedView>
+                  );
+                })}
+              </View>
+            </>
           )}
 
           {!loading && !error && viewMode === 'month' && (
             <>
+              {movingSession && (
+                <View style={styles.movingBanner}>
+                  <ThemedText type="small" style={styles.movingBannerText}>
+                    Moving "{movingSession.workoutName}" — tap a day to move it there.
+                  </ThemedText>
+                  <Pressable onPress={() => setMovingSession(null)}>
+                    <ThemedText type="smallBold" style={styles.movingBannerCancel}>
+                      Cancel
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              )}
+
               <View style={styles.monthWeekdayRow}>
                 {weekDays.map((day) => (
                   <ThemedText key={day.getUTCDay()} type="small" themeColor="textSecondary" style={styles.monthWeekdayLabel}>
@@ -243,10 +404,7 @@ export default function CalendarScreen() {
                   const isToday = dateISO === todayISO;
                   const isSelected = dateISO === selectedDate;
                   return (
-                    <Pressable
-                      key={dateISO}
-                      style={styles.monthCellWrap}
-                      onPress={() => setSelectedDate(isSelected ? null : dateISO)}>
+                    <Pressable key={dateISO} style={styles.monthCellWrap} onPress={() => handleMonthCellPress(dateISO)}>
                       <View
                         style={[
                           styles.monthCell,
@@ -283,15 +441,22 @@ export default function CalendarScreen() {
                       Nothing scheduled.
                     </ThemedText>
                   ) : (
-                    (sessionsByDate.get(selectedDate) ?? []).map((session) => (
-                      <View key={session.id} style={styles.sessionRow}>
-                        <ThemedText type="small">{session.workoutName}</ThemedText>
-                        <ThemedText
-                          type="small"
-                          themeColor={session.status === 'completed' ? undefined : 'textSecondary'}
-                          style={session.status === 'completed' ? styles.statusCompleted : undefined}>
-                          {STATUS_LABEL[session.status]}
-                        </ThemedText>
+                    (sessionsByDate.get(selectedDate) ?? []).map((sessionItem) => (
+                      <View key={sessionItem.id} style={styles.sessionRow}>
+                        <SessionLabel session={sessionItem} />
+                        <Pressable
+                          onPress={() =>
+                            setMovingSession({
+                              id: sessionItem.id,
+                              workoutName: sessionItem.workoutName,
+                              fromDate: selectedDate,
+                            })
+                          }
+                          style={styles.moveLink}>
+                          <ThemedText type="small" style={styles.moveLinkText}>
+                            Move
+                          </ThemedText>
+                        </Pressable>
                       </View>
                     ))
                   )}
@@ -366,14 +531,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: Spacing.four,
   },
+  dragHint: {
+    textAlign: 'center',
+    marginTop: Spacing.two,
+  },
   weekList: {
     gap: Spacing.two,
-    marginTop: Spacing.two,
+    marginTop: Spacing.one,
   },
   weekDayCard: {
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.one,
+  },
+  weekDayCardElevated: {
+    zIndex: 20,
+    elevation: 20,
   },
   weekDayHeader: {
     marginBottom: Spacing.half,
@@ -385,6 +558,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  draggableSessionRow: {
+    backgroundColor: Colors.backgroundElement,
+    borderRadius: Spacing.one,
+    paddingHorizontal: Spacing.one,
+    paddingVertical: 2,
+    shadowColor: Colors.oxblood,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
   },
   statusCompleted: {
     color: Colors.tealBright,
@@ -443,5 +625,27 @@ const styles = StyleSheet.create({
     padding: Spacing.three,
     gap: Spacing.one,
     marginTop: Spacing.two,
+  },
+  moveLink: {
+    paddingLeft: Spacing.two,
+  },
+  moveLinkText: {
+    color: Accent,
+  },
+  movingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: Colors.backgroundSelected,
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    marginTop: Spacing.two,
+    gap: Spacing.two,
+  },
+  movingBannerText: {
+    flex: 1,
+  },
+  movingBannerCancel: {
+    color: Accent,
   },
 });

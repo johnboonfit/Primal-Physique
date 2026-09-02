@@ -1017,6 +1017,30 @@ No new SQL this chunk — the Calendar tab reads the exact same `assignments` da
 
 Also removed `src/components/coming-soon.tsx` this chunk — Calendar was its last remaining user, so it's now dead code rather than a component kept around "just in case."
 
+## Calendar drag-and-drop rescheduling
+
+No new SQL — `rescheduleAssignment(assignmentId, newDate)` already existed (built for the missed-workout auto-reschedule) and a client updating their own `assigned_date` was already permitted (`reschedule.sql`'s column-level grant). This chunk is entirely UI: two different interactions depending on the view, both calling that same function.
+
+**Before building, you asked me to check on Month view rather than guess — here's why it needed a different answer:** Month grid cells are roughly 50×50dp and only show a small dot, not a full session card. Dragging something that small onto a target that small is a genuine mobile-UX failure mode (your fingertip is about the size of the whole cell), and it gets worse on a day with 2+ sessions, where there'd be no way to tell which one you'd even grabbed. You confirmed the recommended fix: tap-to-move instead of physical drag.
+
+**Week view — real drag-and-drop.** Press and hold a session card (long-press, not an instant grab — a plain scroll swipe never accidentally picks one up), then drag it up or down onto a different day. On release, the app measures each day-row's actual on-screen position and checks which one the drop point landed in — this is the part that's easy to get wrong with approximations, so it's checked against real measured positions, not assumed row heights. The moved day-row briefly rises above the others while a card is being dragged over it, so the floating card doesn't look like it's sliding underneath a neighboring day.
+
+**Month view — tap-to-move.** Tap a day to open its detail card (from last chunk), tap **Move** next to a session, then tap the day you want to move it to (including a dimmed adjacent-month cell, if that's genuinely where it should go) — a banner confirms what's being moved and how to cancel.
+
+**Instant reflection, not a manual refresh.** Both paths update the local list the moment a drop/tap lands, then save to the database in the background — so "the calendar immediately reflects the new date" is true even before the network round-trip finishes. If the save fails, it reloads from the server so the screen never keeps showing a move that didn't actually stick.
+
+**One shared component change:** `ThemedView` now forwards its ref (`React.forwardRef`) — needed so the drag logic can measure a day-row's real on-screen bounds. Existing usages that don't pass a ref are completely unaffected.
+
+**Verified beyond typecheck and static export, since neither one exercises a real gesture:** ran a live dev server in an actual headless browser and simulated a real press-hold-drag-release with mouse events through the real gesture-handler pipeline — a card dragged from day-row 0 down to day-row 3 correctly resolved to exactly that day's date, with zero console errors, confirming the on-screen-measurement logic (not just the visual animation) actually works.
+
+**Verify a dragged session's new date actually persists — the specific thing you asked about:**
+
+1. In Week view, press-and-hold a session card, drag it to a different day, and release. Confirm it visually appears under the new day immediately.
+2. **Without touching the app again**, check the database directly: `select assigned_date from assignments where id = 'PASTE_ASSIGNMENT_ID';` in the SQL Editor — confirm it shows the new date, not the old one. This is the real test: a bug that only updates the on-screen list (and not the database) would still look correct in step 1.
+3. Force-close and reopen the app (or just navigate away from Calendar and back) — confirm the moved session still shows on its new day, proving the move survived a fresh load from the server, not just the optimistic local update.
+4. Repeat steps 1-3 for Month view using **Move** instead of drag.
+5. To specifically confirm the failure-handling path: temporarily turn off your device's network mid-drag (or mid-tap-to-move), attempt a move, and confirm the app shows an error and reloads back to the real (unmoved) state rather than silently pretending the move worked.
+
 ## Project structure reference
 
 ```
@@ -1063,7 +1087,7 @@ src/
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher
-        calendar.tsx        # Calendar tab — Week/Month toggle, real assigned sessions plotted by date (no drag-and-drop yet)
+        calendar.tsx        # Calendar tab — Week/Month toggle; drag-and-drop reschedule (week) and tap-to-move (month)
   components/
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
