@@ -11,7 +11,14 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import { addFoodLog, listFoodLogsForDate, type FoodLogEntry, type FoodSource, type Meal } from '@/lib/food-logs';
+import {
+  addFoodLog,
+  deleteFoodLog,
+  listFoodLogsForDate,
+  type FoodLogEntry,
+  type FoodSource,
+  type Meal,
+} from '@/lib/food-logs';
 import { getProductByBarcode, type FoodSearchResult } from '@/lib/open-food-facts';
 import { GOAL_TYPES } from '@/lib/programmes';
 import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
@@ -93,6 +100,8 @@ export default function NutritionScreen() {
 
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [scanning, setScanning] = useState(false);
   const [barcodeLoading, setBarcodeLoading] = useState(false);
@@ -280,6 +289,18 @@ export default function NutritionScreen() {
     }
   };
 
+  const handleDeleteEntry = async (logId: string) => {
+    setDeletingId(logId);
+    try {
+      await deleteFoodLog(logId);
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete that entry.');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -357,10 +378,21 @@ export default function NutritionScreen() {
                   ) : (
                     mealEntries.map((entry) => (
                       <ThemedView key={entry.id} type="backgroundElement" style={styles.entryRow}>
-                        <ThemedText type="small">{entry.foodName}</ThemedText>
-                        <ThemedText type="small" themeColor="textSecondary">
-                          {macroSummary(entry)}
-                        </ThemedText>
+                        <View style={styles.entryInfo}>
+                          <ThemedText type="small">{entry.foodName}</ThemedText>
+                          <ThemedText type="small" themeColor="textSecondary">
+                            {macroSummary(entry)}
+                          </ThemedText>
+                        </View>
+                        <Pressable onPress={() => handleDeleteEntry(entry.id)} disabled={deletingId === entry.id}>
+                          {deletingId === entry.id ? (
+                            <ActivityIndicator size="small" color={Accent} />
+                          ) : (
+                            <ThemedText type="small" style={styles.deleteText}>
+                              Delete
+                            </ThemedText>
+                          )}
+                        </Pressable>
                       </ThemedView>
                     ))
                   )}
@@ -567,6 +599,13 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     paddingHorizontal: Spacing.three,
     gap: Spacing.two,
+  },
+  entryInfo: {
+    flex: 1,
+    gap: Spacing.half,
+  },
+  deleteText: {
+    color: Colors.textSecondary,
   },
   modalOverlay: {
     flex: 1,

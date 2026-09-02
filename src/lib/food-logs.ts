@@ -4,6 +4,7 @@ export type Meal = 'breakfast' | 'lunch' | 'dinner' | 'snacks';
 
 export type FoodLogEntry = {
   id: string;
+  logDate: string;
   meal: Meal;
   foodName: string;
   quantityGrams: number;
@@ -29,18 +30,10 @@ export type FoodLogDraft = {
   sourceId: string | null;
 };
 
-export async function listFoodLogsForDate(clientId: string, logDate: string): Promise<FoodLogEntry[]> {
-  const { data, error } = await supabase
-    .from('food_logs')
-    .select('id, meal, food_name, quantity_grams, calories, protein, carbs, fat')
-    .eq('client_id', clientId)
-    .eq('log_date', logDate)
-    .order('created_at', { ascending: true });
-
-  if (error) throw error;
-
-  return (data ?? []).map((row) => ({
+function mapFoodLogRow(row: Record<string, unknown>): FoodLogEntry {
+  return {
     id: row.id as string,
+    logDate: row.log_date as string,
     meal: row.meal as Meal,
     foodName: row.food_name as string,
     quantityGrams: row.quantity_grams as number,
@@ -48,7 +41,78 @@ export async function listFoodLogsForDate(clientId: string, logDate: string): Pr
     protein: row.protein as number | null,
     carbs: row.carbs as number | null,
     fat: row.fat as number | null,
-  }));
+  };
+}
+
+const FOOD_LOG_COLUMNS = 'id, log_date, meal, food_name, quantity_grams, calories, protein, carbs, fat';
+
+export async function listFoodLogsForDate(clientId: string, logDate: string): Promise<FoodLogEntry[]> {
+  const { data, error } = await supabase
+    .from('food_logs')
+    .select(FOOD_LOG_COLUMNS)
+    .eq('client_id', clientId)
+    .eq('log_date', logDate)
+    .order('created_at', { ascending: true });
+
+  if (error) throw error;
+
+  return (data ?? []).map(mapFoodLogRow);
+}
+
+export type DailyFoodLog = {
+  logDate: string;
+  entries: FoodLogEntry[];
+  totalCalories: number;
+  totalProtein: number;
+  totalCarbs: number;
+  totalFat: number;
+};
+
+/** A client's food log history over the trailing `days` calendar days
+ * (most recent day first), grouped and totaled per day — used by the
+ * coach's Nutrition panel to review actual eating against the client's
+ * calorie target. Works identically whether called for the signed-in
+ * client themselves or, under RLS, a coach viewing one of their clients. */
+export async function listFoodLogHistory(clientId: string, days: number): Promise<DailyFoodLog[]> {
+  const startDate = new Date();
+  startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
+  const startDateISO = startDate.toISOString().slice(0, 10);
+
+  const { data, error } = await supabase
+    .from('food_logs')
+    .select(FOOD_LOG_COLUMNS)
+    .eq('client_id', clientId)
+    .gte('log_date', startDateISO)
+    .order('created_at', { ascending: true });
+
+  if (error) throw error;
+
+  const byDate = new Map<string, FoodLogEntry[]>();
+  for (const row of data ?? []) {
+    const entry = mapFoodLogRow(row);
+    const existing = byDate.get(entry.logDate);
+    if (existing) existing.push(entry);
+    else byDate.set(entry.logDate, [entry]);
+  }
+
+  return [...byDate.entries()]
+    .sort(([a], [b]) => (a < b ? 1 : -1))
+    .map(([logDate, entries]) => ({
+      logDate,
+      entries,
+      totalCalories: entries.reduce((sum, entry) => sum + entry.calories, 0),
+      totalProtein: entries.reduce((sum, entry) => sum + (entry.protein ?? 0), 0),
+      totalCarbs: entries.reduce((sum, entry) => sum + (entry.carbs ?? 0), 0),
+      totalFat: entries.reduce((sum, entry) => sum + (entry.fat ?? 0), 0),
+    }));
+}
+
+/** Removes one logged food entry. RLS decides who's actually allowed —
+ * the client who logged it, or any coach — so this same call works from
+ * both the client's own Nutrition tab and the coach's Nutrition panel. */
+export async function deleteFoodLog(logId: string) {
+  const { error } = await supabase.from('food_logs').delete().eq('id', logId);
+  if (error) throw error;
 }
 
 /**

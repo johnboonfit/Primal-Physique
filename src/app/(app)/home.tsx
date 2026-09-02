@@ -44,6 +44,10 @@ export default function HomeScreen() {
             {session?.user.email}
           </ThemedText>
 
+          <Link href="/clients" style={styles.linkSpacing}>
+            <ThemedText type="linkPrimary">Clients</ThemedText>
+          </Link>
+
           <Link href="/workouts" style={styles.linkSpacing}>
             <ThemedText type="linkPrimary">My Workouts</ThemedText>
           </Link>

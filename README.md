@@ -889,6 +889,33 @@ This is the exact same simplification the missed-workout auto-reschedule already
 3. **Weekly cadence** — check `select calculated_date from tdee_estimates where client_id = 'PASTE_CLIENT_ID';`, note the date. Open the app as that client (Home tab) the same day — confirm the date is unchanged (fewer than 7 days have passed). Manually backdate it to force the check: `update tdee_estimates set calculated_date = current_date - 8 where client_id = 'PASTE_CLIENT_ID';`, then reopen the Home tab (a fresh app load, not just switching tabs — the check runs once per app open) — confirm `calculated_date` is now today's date (assuming the data-quality gate still passes; if you've also let that client's logging go thin, confirm it correctly does NOT update instead).
 4. **Progress bar** — on the Nutrition tab, log enough food to exceed the target and confirm the progress bar caps out at a full bar rather than erroring or overflowing its container (HeroStat clamps the fill to 100% — going over target is a real, expected state, just not one the bar can show as "more than full").
 
+## Coach Nutrition panel, and deleting logged food
+
+Run `supabase/coach-nutrition-and-delete.sql` in the SQL Editor after `calorie-target.sql`.
+
+**The gap this closes:** up to now, a coach had literally zero visibility into what a client actually ate — `food_logs` and `tdee_estimates` only had policies letting a client see their own rows, nobody else's, not even their coach. And nobody — client or coach — could delete a logged entry once saved; a mis-scanned barcode or a duplicate tap was permanent. Both are plain gaps, not intentional design, so this chunk just fills them in.
+
+**What changed at the database level** (this app has one coach, and any coach can already see/assign to any client — see `assignments.sql`'s `is_coach()`-based "Coaches can view client profiles" policy — so these follow the same "any coach, any client" shape rather than inventing a coach-client pairing that doesn't exist anywhere else):
+
+- `food_logs` gets a **coach SELECT** policy (previously none at all), plus **DELETE** for both the client who logged an entry and any coach.
+- `tdee_estimates` gets a **coach SELECT** policy, needed so the coach panel can show the same "actual vs. target" comparison the client's own Nutrition tab already shows.
+
+**1. Coach's Clients section (new).** Coach's home now has a **Clients** link → a list of every client account → tapping one opens their detail page. For now that page has one section, **Nutrition**: the client's current calorie target (same number their own Nutrition tab shows, with the goal type and modifier spelled out), and their last 14 days of food logs grouped by day — each day's total calories, macro totals, and how that day compares to the *current* target (e.g. "312 over target"). That comparison is against today's target, not a historically-accurate one for that specific past day, since this app only ever stores the latest target, not a day-by-day history of what the target used to be — worth knowing so a coach doesn't read more precision into it than it has.
+
+**2. Deleting a logged food entry.** Both the client's own Nutrition tab and the coach's new Nutrition panel now show a **Delete** link next to every logged entry. One shared function (`deleteFoodLog()` in `src/lib/food-logs.ts`) handles both — it doesn't check who's asking itself; the database's RLS policies above decide that, so the exact same function call is safe to expose from either screen.
+
+**Verify the coach panel:**
+
+1. As the coach, open Home → **Clients** — confirm every client account shows up (name if set, otherwise email).
+2. Tap a client who has some food logged and (from the previous chunks' testing) a stored TDEE estimate — confirm the Nutrition section shows their current target line matching exactly what that client's own Nutrition tab shows, and that recent days list with correct totals and a sensible over/under-target comparison.
+3. Tap a client with no food logged in the last 14 days — confirm it says so plainly instead of showing an empty broken-looking list.
+
+**Verify delete, and that it's properly locked down:**
+
+1. As a client, log a test food entry, then tap **Delete** next to it on the Nutrition tab — confirm it disappears and the day's calorie/macro totals update immediately.
+2. As the coach, open that same client's Clients detail page, log another test entry as the client first, then delete it from the **coach's** side — confirm it's gone from both the coach panel and the client's own Nutrition tab on next load.
+3. This is enforced at the database level, not just hidden in the UI — already confirmed against a real local Postgres instance running the exact policies above: an unrelated client's delete attempt on someone else's `food_logs` row affects 0 rows (blocked), while the owning client and any coach both succeed. The Supabase SQL Editor runs as an admin role that bypasses RLS entirely, so it can't usefully re-test this itself — the real guarantee is that no client-facing screen in this app ever shows another client's `food_logs` row in the first place (every client-side list is scoped to `client_id = auth.uid()`; the coach's view is gated behind the coach-only `/clients` route).
+
 ## Project structure reference
 
 ```
@@ -923,6 +950,10 @@ src/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of habits the coach has created
         new.tsx          # pick client + habit name, save
+      clients/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # list of every client account
+        [id].tsx          # one client's detail page — Nutrition section (target + 14-day food log history, delete)
       assigned/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
@@ -948,7 +979,8 @@ src/
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / getActiveGoalModifier() / setGoalModifierPercent()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
-    food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a quantity-scaled macro snapshot, not a live link
+    clients.ts               # listClients() / getClient() — coach-facing client roster, single-coach app so any coach sees any client
+    food-logs.ts            # addFoodLog() / listFoodLogsForDate() / listFoodLogHistory() / deleteFoodLog() — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
     weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend) / listWeightLogs() / hasWeightLogForDate() database calls
@@ -981,4 +1013,5 @@ supabase/
   weight-trend.sql                                        # adds weight_logs.weight_trend + one-time backfill of existing rows
   tdee-estimates.sql                                        # paste in after weight-trend.sql, adds tdee_estimates
   calorie-target.sql                                          # paste in after tdee-estimates.sql, adds programme_blocks.calorie_target_percent
+  coach-nutrition-and-delete.sql                                # paste in after calorie-target.sql — coach read access to food_logs/tdee_estimates, delete on food_logs
 ```
