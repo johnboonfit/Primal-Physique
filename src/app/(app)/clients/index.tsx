@@ -8,6 +8,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { getComplianceScore } from '@/lib/compliance';
 import { listClients, type ClientSummary } from '@/lib/clients';
+import { CLIENT_TIERS, listClientTiers, setClientTier, type ClientTier } from '@/lib/leaderboard';
 
 function complianceColor(score: number) {
   if (score >= 80) return Colors.tealBright;
@@ -20,6 +21,9 @@ export default function ClientsListScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [complianceByClient, setComplianceByClient] = useState<Record<string, number>>({});
+  const [tiersByClient, setTiersByClient] = useState<Record<string, ClientTier>>({});
+  const [savingTierId, setSavingTierId] = useState<string | null>(null);
+  const [tierError, setTierError] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -52,6 +56,12 @@ export default function ClientsListScreen() {
             });
             setComplianceByClient(next);
           });
+
+          listClientTiers()
+            .then((map) => {
+              if (!cancelled) setTiersByClient(map);
+            })
+            .catch((err) => console.error('Failed to load client tiers:', err));
         })
         .catch((err) => {
           if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load clients.');
@@ -66,6 +76,19 @@ export default function ClientsListScreen() {
     }, [])
   );
 
+  const handleSetTier = async (clientId: string, tier: ClientTier) => {
+    setTierError(null);
+    setSavingTierId(clientId);
+    try {
+      await setClientTier(clientId, tier);
+      setTiersByClient((current) => ({ ...current, [clientId]: tier }));
+    } catch (err) {
+      setTierError(err instanceof Error ? err.message : "Failed to update that client's tier.");
+    } finally {
+      setSavingTierId(null);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -76,6 +99,8 @@ export default function ClientsListScreen() {
         {loading && <ActivityIndicator style={styles.loader} />}
 
         {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
+
+        {tierError && <ThemedText style={styles.error}>{tierError}</ThemedText>}
 
         {!loading && !error && clients.length === 0 && (
           <ThemedText themeColor="textSecondary" style={styles.empty}>
@@ -90,9 +115,10 @@ export default function ClientsListScreen() {
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => {
               const score = complianceByClient[item.id];
+              const tier = tiersByClient[item.id] ?? 'club';
               return (
-                <Pressable onPress={() => router.push(`/clients/${item.id}`)}>
-                  <ThemedView type="backgroundElement" style={styles.card}>
+                <ThemedView type="backgroundElement" style={styles.card}>
+                  <Pressable style={styles.cardTouchable} onPress={() => router.push(`/clients/${item.id}`)}>
                     <View style={styles.cardInfo}>
                       <ThemedText type="smallBold">{item.fullName || item.email}</ThemedText>
                       {item.fullName && (
@@ -106,8 +132,26 @@ export default function ClientsListScreen() {
                         {score}%
                       </ThemedText>
                     )}
-                  </ThemedView>
-                </Pressable>
+                  </Pressable>
+                  <View style={styles.tierRow}>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Tier:
+                    </ThemedText>
+                    {CLIENT_TIERS.map((option) => {
+                      const selected = option.key === tier;
+                      return (
+                        <Pressable
+                          key={option.key}
+                          onPress={() => handleSetTier(item.id, option.key)}
+                          disabled={savingTierId === item.id}>
+                          <ThemedText type={selected ? 'smallBold' : 'small'} style={selected ? styles.tierActive : styles.tierInactive}>
+                            {option.label}
+                          </ThemedText>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </ThemedView>
               );
             }}
           />
@@ -144,16 +188,30 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.four,
   },
   card: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  cardTouchable: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    borderRadius: Spacing.two,
-    padding: Spacing.three,
     gap: Spacing.two,
   },
   cardInfo: {
     flex: 1,
     gap: Spacing.half,
+  },
+  tierRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  tierActive: {
+    color: Accent,
+  },
+  tierInactive: {
+    color: Colors.textSecondary,
   },
   backButton: {
     alignItems: 'center',

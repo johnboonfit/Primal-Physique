@@ -1376,6 +1376,34 @@ Run `supabase/community-moderation.sql` in the SQL Editor after `community.sql`.
 4. The real proof it's a database rule: in Supabase's SQL Editor, use **Impersonate user** to run as that blocked client, then try `insert into community_posts (author_id, tag, body) values ('<that client's id>', 'win', 'test');` directly — confirm it's rejected, exactly the same way the impersonation test for the Announcement restriction works.
 5. As the coach, unblock that client from the Moderation screen's "Blocked clients" list — confirm they can post again, both through the app and via the same impersonated insert now succeeding.
 
+## Community Leaderboards, and a real membership tier for the first time
+
+Run `supabase/community-leaderboards.sql` in the SQL Editor after `community-moderation.sql`. Adds a second sub-tab to Community — **Posts** (everything above) and **Leaderboards** — ranking clients by XP, gated by a real membership tier for the first time in this app.
+
+**Where the tiers actually came from.** Rather than invent a meaningless "Tier 1/Tier 2," I checked your live Stripe account — you have three real products: **Club** (£29.99/mo, the base membership, whose own Stripe listing already promises "Community access"), **Accelerator** (£99/mo), and **Precision** (£250/mo, full weekly-accountability tier). Leaderboards is gated to Accelerator and Precision — Club members see Posts normally but get the locked/upsell state on Leaderboards. **There's no live Stripe → Supabase sync** — that's a real webhook-plus-customer-mapping project of its own, well beyond this chunk. For now, the coach sets each client's tier by hand from a new "Tier: Club / Accelerator / Precision" row on the Clients list, to match whatever they actually pay for. A client with no tier set yet defaults to Club (the most restricted option) — never accidentally the most permissive one.
+
+**The ranking itself reuses real data, not a second scoring system:**
+- **This week** (the default view) sums the `xp_events` ledger — the exact same table `profiles.total_xp` is itself kept in sync from by the trigger `xp.sql` set up — filtered to the current Monday–Sunday week. That's the same week boundary Momentum Score already uses (`getCurrentWeekRange()`, now exported from `momentum.ts` specifically so this doesn't become a second copy of that date math).
+- **Lifetime** (a secondary toggle underneath) reads `profiles.total_xp` directly — the exact same number the Home dashboard's Level/XP card already shows for one client, just for every client at once here.
+- Both run as a single SQL query per view, computed by a `SECURITY DEFINER` Postgres function (`get_weekly_xp_leaderboard` / `get_lifetime_xp_leaderboard`) rather than a client-side loop calling `getMomentumScore`-style functions once per client. This also sidesteps a real gap: there's still no "clients can view other clients' profiles" policy (on purpose — the same reason a client can't just query `community_reports`), so a plain client-side query couldn't see everyone's names or XP anyway. The function returns only `{client_id, full_name, email, xp}` — nothing else from `profiles` leaks through it.
+
+**Avatar is a placeholder, not a real feature.** There's no photo-upload avatar system anywhere in this app yet — the leaderboard shows a colored circle with the person's first initial. Worth a real chunk of its own if you want actual profile pictures later; wasn't worth inventing here just to fill a column.
+
+**Why tier lives in its own `client_tiers` table, not a `profiles` column — same trap as `community_blocks`, avoided the same way:** granting `authenticated` a column-level UPDATE on `profiles.tier` (needed so the coach can set it) would ALSO let a client set their own tier via the existing "Users can update their own profile" row policy — there's no way to grant a column to "coaches acting on someone else's row" only. A dedicated table sidesteps that: only `is_coach()` can insert or update a row in it, full stop.
+
+**Verify the ranking is actually correct:**
+1. In Supabase, find two client ids and note today's Monday–Sunday range (same query as the Momentum Score section above: `select (current_date - ((extract(dow from current_date)::int + 6) % 7)) as week_monday, (current_date - ((extract(dow from current_date)::int + 6) % 7) + 6) as week_sunday;`).
+2. For each client, run `select coalesce(sum(amount), 0) from xp_events where client_id = '<id>' and event_date between '<monday>' and '<sunday>';` — write down both totals.
+3. Open Community → Leaderboards → This week as either client (with Accelerator/Precision tier) — confirm both clients appear in the right order with the exact totals from step 2.
+4. Switch to Lifetime — confirm it matches `select total_xp from profiles where id = '<id>';` for each client, and that the order can differ from the weekly view (a client who's been around longer but did less this week should rank lower on This week than on Lifetime).
+5. Log a new workout completion, meal, or habit for one client (any of the ways that already award XP), refresh Leaderboards — confirm This week's total for that client goes up by the right amount immediately, since it's reading the ledger live, not a cached number.
+
+**Verify the tier gate actually works, both directions:**
+1. As the coach, open Clients — confirm every client shows a Tier row defaulting to Club, and tapping Accelerator or Precision updates it (check `select tier from client_tiers where client_id = '<id>';` in Supabase to confirm it saved).
+2. As a Club-tier client, open Community → Leaderboards — confirm you see the locked "🔒 Leaderboards... Accelerator and Precision perk" message, not the real ranking, while Posts on the other sub-tab works completely normally.
+3. As the coach, set that same client to Accelerator. As that client, reopen Leaderboards — confirm the real ranking now shows.
+4. As the coach, open Leaderboards yourself — confirm you always see the real ranking regardless of any tier, since tiers are a client-only concept.
+
 ## Project structure reference
 
 ```
@@ -1388,7 +1416,7 @@ src/
     (app)/
       home.tsx          # coach's home screen only; redirects clients to /client — includes a Community link
       community/
-        index.tsx        # shared feed, both roles read it; coach-only app-wide on/off switch + Moderation link at the top; Report/Delete actions per post
+        index.tsx        # Posts/Leaderboards sub-tabs; Posts = shared feed + coach-only app-wide on/off switch + Moderation link + Report/Delete actions per post
         new.tsx           # compose a post — tag picker excludes Announcement entirely for a client account; shows a plain message instead of the form if this client is blocked
         moderation.tsx      # coach-only (inline role check, no folder _layout.tsx): open reports with Dismiss/Delete post/Block author, plus a Blocked clients list with Unblock
       workouts/
@@ -1416,7 +1444,7 @@ src/
         new.tsx          # pick client + habit name, save
       clients/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge (getComplianceScore, fetched non-blockingly per client after the list itself loads)
+        index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge and a Tier: Club/Accelerator/Precision picker (coach-set, gates that client's Leaderboards access)
         [id].tsx          # one client's detail page — Programme section + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete)
       forms/
         _layout.tsx      # coach-only guard for everything below
@@ -1451,6 +1479,7 @@ src/
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
     confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt — archive actions, Community's Delete/Block
     report-post-modal.tsx    # <ReportPostModal> — same Modal shape as ConfirmDialog plus a free-text optional reason field, kept separate since ConfirmDialog's callers all expect its fixed message-only shape
+    leaderboard-panel.tsx     # Community → Leaderboards sub-tab content — This week/Lifetime toggle, ranked rows with a placeholder initials avatar, self-highlight; shows the locked/upsell state instead when the viewing client's tier doesn't have access
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
     question-answer-input.tsx    # <AnswerInput> — one render branch per answer kind (short_text/numeric/single_choice/multi_choice/scale), same reasoning; used by the check-in fill-out screen
   constants/
@@ -1473,9 +1502,10 @@ src/
     progress-photos.ts            # uploadProgressPhoto() / listProgressPhotos() — private Storage bucket + signed URLs
     tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
-    momentum.ts                # getMomentumScore() — pure calculation, no new tables
+    momentum.ts                # getMomentumScore() — pure calculation, no new tables; getCurrentWeekRange() exported so other "this week" features (the Leaderboard's weekly XP ranking) share the exact same Monday, not a second copy of the date math
     compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
     community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file
+    leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
@@ -1513,4 +1543,5 @@ supabase/
   progress-photos.sql                                                   # paste in after body-measurements-inches.sql — private Storage bucket + progress_photos table
   community.sql                                                           # paste in after progress-photos.sql — app_settings singleton, profiles.community_hidden, community_posts, community-images bucket
   community-moderation.sql                                                 # paste in after community.sql — community_reports, community_posts delete policies, community_blocks + the blocked-can't-post insert check
+  community-leaderboards.sql                                                 # paste in after community-moderation.sql — client_tiers (Club/Accelerator/Precision) + get_weekly_xp_leaderboard()/get_lifetime_xp_leaderboard() SECURITY DEFINER functions
 ```

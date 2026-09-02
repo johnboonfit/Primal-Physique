@@ -5,6 +5,7 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import { LeaderboardPanel } from '@/components/leaderboard-panel';
 import { ReportPostModal } from '@/components/report-post-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -20,6 +21,13 @@ import {
   setCommunityEnabled,
   type CommunityPost,
 } from '@/lib/community';
+
+type SubTab = 'posts' | 'leaderboards';
+
+const SUB_TABS: { key: SubTab; label: string }[] = [
+  { key: 'posts', label: 'Posts' },
+  { key: 'leaderboards', label: 'Leaderboards' },
+];
 
 function tagInfo(tag: CommunityPost['tag']) {
   return COMMUNITY_TAGS.find((t) => t.key === tag) ?? COMMUNITY_TAGS[1];
@@ -39,6 +47,8 @@ function formatPostTime(iso: string) {
 export default function CommunityFeedScreen() {
   const { session, profile } = useAuth();
   const isCoach = profile?.role === 'coach';
+
+  const [activeTab, setActiveTab] = useState<SubTab>('posts');
 
   const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -145,7 +155,7 @@ export default function CommunityFeedScreen() {
       <SafeAreaView style={styles.safeArea}>
         <ThemedView style={styles.header}>
           <ThemedText type="title">Community</ThemedText>
-          {!blockedForClient && (
+          {activeTab === 'posts' && !blockedForClient && (
             <Pressable style={styles.newButton} onPress={() => router.push('/community/new')}>
               <ThemedText type="smallBold" style={styles.newButtonText}>
                 + New
@@ -154,99 +164,119 @@ export default function CommunityFeedScreen() {
           )}
         </ThemedView>
 
-        {isCoach && communityEnabled !== null && (
-          <View style={styles.toggleRow}>
-            <ThemedText type="small" themeColor="textSecondary">
-              Community is {communityEnabled ? 'on' : 'off'} for clients
-            </ThemedText>
-            <Pressable onPress={handleToggleEnabled} disabled={togglingEnabled}>
-              {togglingEnabled ? (
-                <ActivityIndicator size="small" />
-              ) : (
-                <ThemedText type="smallBold" style={styles.toggleLink}>
-                  {communityEnabled ? 'Turn off' : 'Turn on'}
+        <View style={styles.subTabRow}>
+          {SUB_TABS.map((tab) => (
+            <Pressable key={tab.key} onPress={() => setActiveTab(tab.key)}>
+              <View style={[styles.subTab, activeTab === tab.key && styles.subTabActive]}>
+                <ThemedText
+                  type="smallBold"
+                  style={activeTab === tab.key ? styles.subTabActiveText : styles.subTabText}>
+                  {tab.label}
                 </ThemedText>
-              )}
+              </View>
             </Pressable>
-          </View>
-        )}
+          ))}
+        </View>
 
-        {isCoach && (
-          <Pressable onPress={() => router.push('/community/moderation')} style={styles.moderationLink}>
-            <ThemedText type="smallBold" style={styles.toggleLink}>
-              🚩 Moderation{openReportCount > 0 ? ` (${openReportCount})` : ''}
-            </ThemedText>
-          </Pressable>
-        )}
-
-        {toggleError && <ThemedText style={styles.error}>{toggleError}</ThemedText>}
-
-        {deleteError && <ThemedText style={styles.error}>{deleteError}</ThemedText>}
-
-        {loading && <ActivityIndicator style={styles.loader} />}
-
-        {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
-
-        {!loading && !error && blockedForClient && (
-          <ThemedText themeColor="textSecondary" style={styles.empty}>
-            Your coach has turned Community off for now.
-          </ThemedText>
-        )}
-
-        {!loading && !error && !blockedForClient && posts.length === 0 && (
-          <ThemedText themeColor="textSecondary" style={styles.empty}>
-            No posts yet. Tap + New to start the conversation.
-          </ThemedText>
-        )}
-
-        {!loading && !error && !blockedForClient && posts.length > 0 && (
-          <FlatList
-            data={posts}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            renderItem={({ item }) => {
-              const tag = tagInfo(item.tag);
-              const isOwnPost = item.authorId === session?.user.id;
-              const canDelete = isOwnPost || isCoach;
-              return (
-                <ThemedView type="backgroundElement" style={[styles.card, tag.key === 'announcement' && styles.announcementCard]}>
-                  <View style={styles.cardHeader}>
-                    <ThemedText type="small" style={styles.tagLabel}>
-                      {tag.emoji} {tag.label}
+        {activeTab === 'posts' && (
+          <>
+            {isCoach && communityEnabled !== null && (
+              <View style={styles.toggleRow}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Community is {communityEnabled ? 'on' : 'off'} for clients
+                </ThemedText>
+                <Pressable onPress={handleToggleEnabled} disabled={togglingEnabled}>
+                  {togglingEnabled ? (
+                    <ActivityIndicator size="small" />
+                  ) : (
+                    <ThemedText type="smallBold" style={styles.toggleLink}>
+                      {communityEnabled ? 'Turn off' : 'Turn on'}
                     </ThemedText>
-                    <ThemedText type="small" themeColor="textSecondary">
-                      {formatPostTime(item.createdAt)}
-                    </ThemedText>
-                  </View>
-                  <ThemedText type="smallBold">{item.authorName}</ThemedText>
-                  <ThemedText>{item.body}</ThemedText>
-                  {item.imageUrl && <Image source={{ uri: item.imageUrl }} style={styles.postImage} contentFit="cover" />}
-                  <View style={styles.cardFooter}>
-                    <ThemedText type="small" themeColor="textSecondary">
-                      {item.reactionCount} reactions · {item.commentCount} comments
-                    </ThemedText>
-                    <View style={styles.cardActions}>
-                      {!isOwnPost && (
-                        <Pressable onPress={() => setReportTarget(item)}>
-                          <ThemedText type="small" themeColor="textSecondary">
-                            Report
-                          </ThemedText>
-                        </Pressable>
-                      )}
-                      {canDelete && (
-                        <Pressable onPress={() => setDeleteTarget(item)}>
-                          <ThemedText type="small" style={styles.deleteText}>
-                            Delete
-                          </ThemedText>
-                        </Pressable>
-                      )}
-                    </View>
-                  </View>
-                </ThemedView>
-              );
-            }}
-          />
+                  )}
+                </Pressable>
+              </View>
+            )}
+
+            {isCoach && (
+              <Pressable onPress={() => router.push('/community/moderation')} style={styles.moderationLink}>
+                <ThemedText type="smallBold" style={styles.toggleLink}>
+                  🚩 Moderation{openReportCount > 0 ? ` (${openReportCount})` : ''}
+                </ThemedText>
+              </Pressable>
+            )}
+
+            {toggleError && <ThemedText style={styles.error}>{toggleError}</ThemedText>}
+
+            {deleteError && <ThemedText style={styles.error}>{deleteError}</ThemedText>}
+
+            {loading && <ActivityIndicator style={styles.loader} />}
+
+            {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
+
+            {!loading && !error && blockedForClient && (
+              <ThemedText themeColor="textSecondary" style={styles.empty}>
+                Your coach has turned Community off for now.
+              </ThemedText>
+            )}
+
+            {!loading && !error && !blockedForClient && posts.length === 0 && (
+              <ThemedText themeColor="textSecondary" style={styles.empty}>
+                No posts yet. Tap + New to start the conversation.
+              </ThemedText>
+            )}
+
+            {!loading && !error && !blockedForClient && posts.length > 0 && (
+              <FlatList
+                data={posts}
+                keyExtractor={(item) => item.id}
+                contentContainerStyle={styles.listContent}
+                renderItem={({ item }) => {
+                  const tag = tagInfo(item.tag);
+                  const isOwnPost = item.authorId === session?.user.id;
+                  const canDelete = isOwnPost || isCoach;
+                  return (
+                    <ThemedView type="backgroundElement" style={[styles.card, tag.key === 'announcement' && styles.announcementCard]}>
+                      <View style={styles.cardHeader}>
+                        <ThemedText type="small" style={styles.tagLabel}>
+                          {tag.emoji} {tag.label}
+                        </ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {formatPostTime(item.createdAt)}
+                        </ThemedText>
+                      </View>
+                      <ThemedText type="smallBold">{item.authorName}</ThemedText>
+                      <ThemedText>{item.body}</ThemedText>
+                      {item.imageUrl && <Image source={{ uri: item.imageUrl }} style={styles.postImage} contentFit="cover" />}
+                      <View style={styles.cardFooter}>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {item.reactionCount} reactions · {item.commentCount} comments
+                        </ThemedText>
+                        <View style={styles.cardActions}>
+                          {!isOwnPost && (
+                            <Pressable onPress={() => setReportTarget(item)}>
+                              <ThemedText type="small" themeColor="textSecondary">
+                                Report
+                              </ThemedText>
+                            </Pressable>
+                          )}
+                          {canDelete && (
+                            <Pressable onPress={() => setDeleteTarget(item)}>
+                              <ThemedText type="small" style={styles.deleteText}>
+                                Delete
+                              </ThemedText>
+                            </Pressable>
+                          )}
+                        </View>
+                      </View>
+                    </ThemedView>
+                  );
+                }}
+              />
+            )}
+          </>
         )}
+
+        {activeTab === 'leaderboards' && <LeaderboardPanel />}
 
         <Pressable style={styles.backButton} onPress={() => router.replace('/home')}>
           <ThemedText type="linkPrimary">Back to home</ThemedText>
@@ -303,6 +333,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
   },
   newButtonText: {
+    color: Colors.text,
+  },
+  subTabRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+    marginBottom: Spacing.two,
+  },
+  subTab: {
+    borderRadius: 999,
+    paddingVertical: Spacing.one,
+    paddingHorizontal: Spacing.three,
+    backgroundColor: Colors.backgroundElement,
+  },
+  subTabActive: {
+    backgroundColor: Accent,
+  },
+  subTabText: {
+    color: Colors.textSecondary,
+  },
+  subTabActiveText: {
     color: Colors.text,
   },
   toggleRow: {

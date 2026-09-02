@@ -13,8 +13,11 @@ export type MomentumBreakdown = {
 
 /** Monday–Sunday for the current week, in the same UTC-based date
  * convention every other logging feature already uses (toISOString
- * slice), so week boundaries line up with how "today" is saved elsewhere. */
-function getCurrentWeekRange() {
+ * slice), so week boundaries line up with how "today" is saved elsewhere.
+ * Exported so other "this week" features (the Leaderboard's weekly XP
+ * ranking) read the exact same Monday, not a second copy of this math
+ * that could quietly drift out of sync. */
+export function getCurrentWeekRange() {
   const now = new Date();
   const day = now.getUTCDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
   const diffToMonday = day === 0 ? 6 : day - 1;
