@@ -381,6 +381,44 @@ The database — not just the app — refuses to award XP that doesn't check out
 10. On the client's Home tab, confirm the Level/XP display shows that same total, and the level shown equals `floor(total_xp ÷ 500) + 1`.
 11. Log a third meal, same day — confirm `total_xp` does **not** change again, proving the duplicate-prevention holds even after everything else already fired.
 
+## Streak, and missed-workout auto-reschedule
+
+No new database table for either of these — both are built on data the app already has.
+
+**Streak.** Uses the exact same "active day" definition as the Momentum Score: a day counts if the client completed a workout, logged a meal, or completed a habit on it. The streak is just how many of those days in a row, counting backwards from today, have no gap. If today has nothing logged yet, that's not treated as a broken streak — the day isn't over — but if *yesterday* also has nothing, it resets to 0. It shows as "🔥 N — day streak" right under the greeting on the Home tab.
+
+**Missed-workout auto-reschedule.** Every time the client opens the app (not on every tab switch — just once, when the Home screen first mounts), it checks for any assignment still marked "pending" with a scheduled date already in the past. For each one it finds, it looks at the rest of this week (today through Sunday) and moves it to the earliest day that doesn't already have something else scheduled. If it moved anything, a dismissible banner lists what got moved and where. If every remaining day this week is already booked, it doesn't guess — that workout is left alone and shows up in a "Pick a new date" card instead, with a date field the client fills in themselves.
+
+**Why "on app open" instead of a background job:** a real background job (something like a nightly Supabase Edge Function on a schedule) would mean actual infrastructure to write, deploy, and monitor — a moving part that can silently fail with nobody watching it. Checking when the client opens the app costs nothing to run or maintain, and it catches a missed workout at exactly the moment the client would want to know about it anyway — the point they're looking at the app. It's a reasonable simplification for where the app is right now (one coach, a handful of clients); it's worth revisiting once reminders need to go out even on days the client never opens the app at all.
+
+**One security fix bundled in:** moving `assigned_date` around is the first legitimate reason a client's account has ever needed to update that column, and checking made clear the existing rule allowing "Clients can update their own assignment status" never actually restricted *which* columns — only which row. That meant a client calling Supabase's API directly (skipping the app) could already have changed `workout_id` or `coach_id` on their own assignment, not just `status`. `supabase/reschedule.sql` closes that the same way the profiles and XP fixes did: a client can now only ever change `status` and `assigned_date` on their own assignment rows.
+
+**Verify the streak:**
+
+1. In Supabase's SQL Editor, check what days you already have logged for a test client — the app can only show a multi-day streak if there's multi-day history, and everything logged through the app today is dated today.
+2. Backdate some history so there's an actual streak to check. For example, to simulate 3 days in a row ending yesterday:
+   ```sql
+   insert into habit_logs (client_id, habit_id, log_date)
+   values
+     ('PASTE_CLIENT_ID', 'PASTE_HABIT_ID', current_date - 1),
+     ('PASTE_CLIENT_ID', 'PASTE_HABIT_ID', current_date - 2),
+     ('PASTE_CLIENT_ID', 'PASTE_HABIT_ID', current_date - 3);
+   ```
+3. Open the Home tab as that client with nothing logged yet today — it should show "🔥 3" (today doesn't break it yet, since the day isn't over).
+4. Complete a habit, log a meal, or complete a workout today — refresh the Home tab — it should now show "🔥 4".
+5. Now test the reset: insert a row for `current_date - 5` only (skip `-4` entirely) and reload — the gap at `-4` should cut the streak down to whatever's continuous after it, proving a single empty day actually breaks it rather than just counting total active days.
+
+**Verify the auto-reschedule:**
+
+1. Pick a client with at least one other workout already assigned for later this week (so there's something to collide with), and one you'll deliberately make overdue.
+2. In the SQL Editor, backdate that second one:
+   ```sql
+   update assignments set assigned_date = current_date - 2
+   where id = 'PASTE_ASSIGNMENT_ID' and status = 'pending';
+   ```
+3. Open the Home tab as that client. You should see the "Rescheduled for you" banner naming the workout and its old → new date, and the assignment should now appear in "Up Next" on its new date instead of the old one.
+4. To test the fallback: first assign that same client a workout for *every remaining day this week* (today through Sunday), then backdate one more pending assignment the same way as step 2, and reload the Home tab. This time there's nowhere open to move it to, so instead of the banner you should see the "Pick a new date" card with that workout listed. Type a date (`YYYY-MM-DD`) and hit Save — it should disappear from that card and show up in "Up Next" on the date you chose.
+
 ## Project structure reference
 
 ```
@@ -409,7 +447,7 @@ src/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar
-        index.tsx        # Home tab — greeting, Level/XP, Momentum Score, Up Next, Today's Habits checklist
+        index.tsx        # Home tab — greeting, streak, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, add-entry popup, calorie total
         progress.tsx       # Progress tab — log/update today's weight, chronological history
@@ -431,6 +469,7 @@ src/
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
+    streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises
@@ -444,4 +483,5 @@ supabase/
   lock-coach-role.sql                # paste in after weight-logs.sql — security fix, read it first
   habits.sql                           # paste in after lock-coach-role.sql, adds habits + habit_logs
   xp.sql                                 # paste in after habits.sql — adds XP, also a security fix; read it first
+  reschedule.sql                          # paste in after xp.sql — column-level security fix; read it first
 ```

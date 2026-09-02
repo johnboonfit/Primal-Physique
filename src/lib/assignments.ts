@@ -62,6 +62,36 @@ export type ExerciseLogEntry = {
   reps: number | null;
 };
 
+export type OverdueAssignment = {
+  id: string;
+  workoutName: string;
+  oldDate: string;
+};
+
+export type AutoRescheduleResult = {
+  moved: { id: string; workoutName: string; oldDate: string; newDate: string }[];
+  needsManual: OverdueAssignment[];
+};
+
+function toISODate(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(date: Date, days: number) {
+  const copy = new Date(date);
+  copy.setUTCDate(copy.getUTCDate() + days);
+  return copy;
+}
+
+/** Sunday that ends the current Monday–Sunday week, using the same
+ * UTC-based week the Momentum Score already uses — so "this week"
+ * means the same thing everywhere in the app. */
+function endOfWeek(today: Date) {
+  const day = today.getUTCDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+  const diffToSunday = day === 0 ? 0 : 7 - day;
+  return addDays(today, diffToSunday);
+}
+
 export async function listCoachWorkoutOptions(coachId: string): Promise<WorkoutOption[]> {
   const { data, error } = await supabase
     .from('workouts')
@@ -260,4 +290,80 @@ export async function getCoachAssignmentDetail(assignmentId: string): Promise<Co
     status: data.status as AssignmentStatus,
     exercises,
   };
+}
+
+/**
+ * Finds assignments that are still 'pending' with a scheduled date
+ * already in the past, and moves each one to the earliest day between
+ * today and the end of this week (Sunday) that doesn't already have
+ * something scheduled. An assignment that can't find an open day this
+ * week is left untouched and reported back so the client can be asked
+ * to pick a date themselves.
+ */
+export async function autoRescheduleOverdueAssignments(clientId: string): Promise<AutoRescheduleResult> {
+  const today = new Date();
+  const todayStr = toISODate(today);
+  const weekEndStr = toISODate(endOfWeek(today));
+
+  const { data: overdue, error: overdueError } = await supabase
+    .from('assignments')
+    .select('id, assigned_date, workouts(name)')
+    .eq('client_id', clientId)
+    .eq('status', 'pending')
+    .lt('assigned_date', todayStr);
+
+  if (overdueError) throw overdueError;
+  if (!overdue || overdue.length === 0) return { moved: [], needsManual: [] };
+
+  const { data: thisWeek, error: weekError } = await supabase
+    .from('assignments')
+    .select('assigned_date')
+    .eq('client_id', clientId)
+    .gte('assigned_date', todayStr)
+    .lte('assigned_date', weekEndStr);
+
+  if (weekError) throw weekError;
+
+  const occupied = new Set((thisWeek ?? []).map((row) => row.assigned_date as string));
+
+  const moved: AutoRescheduleResult['moved'] = [];
+  const needsManual: AutoRescheduleResult['needsManual'] = [];
+
+  for (const row of overdue) {
+    const workoutName = (row.workouts as unknown as { name: string } | null)?.name ?? 'Unknown workout';
+    const oldDate = row.assigned_date as string;
+
+    let candidate: string | null = null;
+    let cursor = today;
+    while (toISODate(cursor) <= weekEndStr) {
+      const candidateStr = toISODate(cursor);
+      if (!occupied.has(candidateStr)) {
+        candidate = candidateStr;
+        break;
+      }
+      cursor = addDays(cursor, 1);
+    }
+
+    if (candidate) {
+      const { error: updateError } = await supabase
+        .from('assignments')
+        .update({ assigned_date: candidate })
+        .eq('id', row.id);
+      if (updateError) throw updateError;
+
+      occupied.add(candidate);
+      moved.push({ id: row.id as string, workoutName, oldDate, newDate: candidate });
+    } else {
+      needsManual.push({ id: row.id as string, workoutName, oldDate });
+    }
+  }
+
+  return { moved, needsManual };
+}
+
+/** Lets a client pick their own new date for an assignment the
+ * auto-reschedule couldn't place (every day this week was full). */
+export async function rescheduleAssignment(assignmentId: string, newDate: string) {
+  const { error } = await supabase.from('assignments').update({ assigned_date: newDate }).eq('id', assignmentId);
+  if (error) throw error;
 }

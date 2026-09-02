@@ -1,6 +1,6 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HeroStat } from '@/components/hero-stat';
@@ -8,9 +8,18 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
+import { useTheme } from '@/hooks/use-theme';
+import {
+  autoRescheduleOverdueAssignments,
+  listMyAssignments,
+  rescheduleAssignment,
+  type AutoRescheduleResult,
+  type ClientAssignmentSummary,
+  type OverdueAssignment,
+} from '@/lib/assignments';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
 import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
+import { getCurrentStreak } from '@/lib/streak';
 import { awardHabitXp, getXpSummary, type XpSummary } from '@/lib/xp';
 
 function getGreeting() {
@@ -26,6 +35,7 @@ function todayISODate() {
 
 export default function ClientHomeScreen() {
   const { session, profile, signOut } = useAuth();
+  const theme = useTheme();
 
   const [assignments, setAssignments] = useState<ClientAssignmentSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,32 +54,67 @@ export default function ClientHomeScreen() {
   const [xp, setXp] = useState<XpSummary | null>(null);
   const [xpLoading, setXpLoading] = useState(true);
 
+  const [streak, setStreak] = useState<number | null>(null);
+
+  // One-time banner for workouts the app moved on its own this session.
+  const [movedNotice, setMovedNotice] = useState<AutoRescheduleResult['moved']>([]);
+  // Persists until the client picks a date for each — every day this
+  // week was already full, so the app won't guess.
+  const [needsManual, setNeedsManual] = useState<OverdueAssignment[]>([]);
+  const [manualDates, setManualDates] = useState<Record<string, string>>({});
+  const [manualSavingId, setManualSavingId] = useState<string | null>(null);
+  const [manualError, setManualError] = useState<string | null>(null);
+
   const logDate = todayISODate();
 
   // Reuses the same query the Training tab uses — "Up Next" is just the
   // pending ones, filtered client-side rather than a second database call.
+  const loadAssignments = useCallback(() => {
+    if (!session) return;
+    setLoading(true);
+    listMyAssignments(session.user.id)
+      .then((data) => setAssignments(data))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load your workouts.'))
+      .finally(() => setLoading(false));
+  }, [session]);
+
   useFocusEffect(
     useCallback(() => {
-      if (!session) return;
-      let cancelled = false;
-
-      setLoading(true);
-      listMyAssignments(session.user.id)
-        .then((data) => {
-          if (!cancelled) setAssignments(data);
-        })
-        .catch((err) => {
-          if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load your workouts.');
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-
-      return () => {
-        cancelled = true;
-      };
-    }, [session])
+      loadAssignments();
+    }, [loadAssignments])
   );
+
+  // Runs once when the app opens (not on every tab visit) rather than as
+  // a background job — with one coach and a handful of clients, checking
+  // at open time is simple, has no server infrastructure to run or
+  // monitor, and catches a missed workout the moment the client would
+  // actually see it. A nightly job would only be worth the extra moving
+  // parts once reminders need to go out even when the client doesn't
+  // open the app.
+  useEffect(() => {
+    if (!session) return;
+    autoRescheduleOverdueAssignments(session.user.id)
+      .then(({ moved, needsManual: manual }) => {
+        if (moved.length > 0) {
+          setMovedNotice(moved);
+          loadAssignments();
+        }
+        if (manual.length > 0) {
+          setNeedsManual(manual);
+          setManualDates((current) => {
+            const next = { ...current };
+            manual.forEach((item) => {
+              if (!next[item.id]) next[item.id] = todayISODate();
+            });
+            return next;
+          });
+        }
+      })
+      .catch((err) => console.error('Failed to check for overdue workouts:', err));
+    // Deliberately only re-runs if the signed-in user changes — this is
+    // an "on app open" check, not a "keep re-checking" one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
 
   const loadHabits = useCallback(() => {
     if (!session) return;
@@ -127,6 +172,43 @@ export default function ClientHomeScreen() {
     }, [loadXp])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+
+      getCurrentStreak(session.user.id)
+        .then((value) => {
+          if (!cancelled) setStreak(value);
+        })
+        .catch((err) => console.error('Failed to calculate streak:', err));
+
+      return () => {
+        cancelled = true;
+      };
+    }, [session])
+  );
+
+  const handleManualReschedule = async (assignmentId: string) => {
+    setManualError(null);
+    const newDate = manualDates[assignmentId] ?? '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+      setManualError('Enter the date as YYYY-MM-DD.');
+      return;
+    }
+
+    setManualSavingId(assignmentId);
+    try {
+      await rescheduleAssignment(assignmentId, newDate);
+      setNeedsManual((current) => current.filter((item) => item.id !== assignmentId));
+      loadAssignments();
+    } catch (err) {
+      setManualError(err instanceof Error ? err.message : 'Something went wrong saving that date.');
+    } finally {
+      setManualSavingId(null);
+    }
+  };
+
   const handleCompleteHabit = async (habitId: string) => {
     if (!session || completedIds.has(habitId)) return;
     setCompletingId(habitId);
@@ -164,6 +246,71 @@ export default function ClientHomeScreen() {
               <ThemedText type="linkPrimary">Sign out</ThemedText>
             </Pressable>
           </View>
+
+          {streak !== null && (
+            <View style={styles.streakRow}>
+              <ThemedText type="smallBold" style={styles.streakText}>
+                🔥 {streak}
+              </ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                day streak
+              </ThemedText>
+            </View>
+          )}
+
+          {movedNotice.length > 0 && (
+            <ThemedView type="backgroundElement" style={styles.noticeCard}>
+              <View style={styles.noticeHeader}>
+                <ThemedText type="smallBold">Rescheduled for you</ThemedText>
+                <Pressable onPress={() => setMovedNotice([])}>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Dismiss
+                  </ThemedText>
+                </Pressable>
+              </View>
+              {movedNotice.map((item) => (
+                <ThemedText key={item.id} type="small" themeColor="textSecondary">
+                  {item.workoutName}: {item.oldDate} → {item.newDate}
+                </ThemedText>
+              ))}
+            </ThemedView>
+          )}
+
+          {needsManual.length > 0 && (
+            <ThemedView type="backgroundElement" style={styles.noticeCard}>
+              <ThemedText type="smallBold">Pick a new date</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                Every day this week is already booked, so these need your call.
+              </ThemedText>
+              {needsManual.map((item) => (
+                <View key={item.id} style={styles.manualRow}>
+                  <ThemedText type="small" style={styles.manualLabel}>
+                    {item.workoutName} (was {item.oldDate})
+                  </ThemedText>
+                  <TextInput
+                    value={manualDates[item.id] ?? ''}
+                    onChangeText={(value) => setManualDates((current) => ({ ...current, [item.id]: value }))}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor={theme.textSecondary}
+                    style={[styles.manualInput, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                  />
+                  <Pressable
+                    style={({ pressed }) => [styles.manualSaveButton, pressed && styles.pressed]}
+                    onPress={() => handleManualReschedule(item.id)}
+                    disabled={manualSavingId === item.id}>
+                    {manualSavingId === item.id ? (
+                      <ActivityIndicator size="small" color={Colors.text} />
+                    ) : (
+                      <ThemedText type="smallBold" style={styles.manualSaveText}>
+                        Save
+                      </ThemedText>
+                    )}
+                  </Pressable>
+                </View>
+              ))}
+              {manualError && <ThemedText style={styles.error}>{manualError}</ThemedText>}
+            </ThemedView>
+          )}
 
           {!xpLoading && xp && (
             <ThemedView type="backgroundElement" style={styles.xpCard}>
@@ -373,5 +520,47 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 999,
     backgroundColor: Colors.tealBright,
+  },
+  streakRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: Spacing.half,
+  },
+  streakText: {
+    color: Colors.tealBright,
+  },
+  noticeCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  noticeHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  manualRow: {
+    gap: Spacing.two,
+  },
+  manualLabel: {
+    marginBottom: Spacing.half,
+  },
+  manualInput: {
+    borderWidth: 1,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    fontSize: 14,
+  },
+  manualSaveButton: {
+    ...Glow.oxblood,
+    backgroundColor: Accent,
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.two,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manualSaveText: {
+    color: Colors.text,
   },
 });
