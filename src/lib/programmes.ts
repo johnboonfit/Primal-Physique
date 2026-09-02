@@ -206,7 +206,7 @@ type CopiedWeek = {
 async function copyProgrammeStructure(
   coachId: string,
   programmeId: string,
-  overrides: { name: string; clientId: string | null }
+  overrides: { name: string; clientId: string | null; startDate?: string | null }
 ): Promise<{ programmeId: string; weeks: CopiedWeek[] }> {
   const { data: source, error: sourceError } = await supabase
     .from('programme_blocks')
@@ -221,6 +221,7 @@ async function copyProgrammeStructure(
     .insert({
       coach_id: coachId,
       client_id: overrides.clientId,
+      start_date: overrides.startDate ?? null,
       name: overrides.name,
       description: source.description,
       cover_image_url: source.cover_image_url,
@@ -429,6 +430,7 @@ export async function assignProgrammeToClient(
   const { programmeId: newProgrammeId, weeks: copiedWeeks } = await copyProgrammeStructure(coachId, templateId, {
     name: template.name as string,
     clientId,
+    startDate,
   });
 
   try {
@@ -471,5 +473,140 @@ export async function getProgrammeWeekContext(weekId: string): Promise<Programme
     programmeId: data.programme_id as string,
     programmeName: (data.programme_blocks as unknown as { name: string } | null)?.name ?? 'Unknown programme',
     weekNumber: data.week_number as number,
+  };
+}
+
+export type ClientProgrammeDay = {
+  date: string;
+  completed: boolean;
+};
+
+export type ClientProgrammeView = {
+  id: string;
+  name: string;
+  description: string | null;
+  coverImageUrl: string | null;
+  goalType: GoalType;
+  durationWeeks: number;
+  startDate: string;
+  hasStarted: boolean;
+  currentWeekNumber: number;
+  weekProgress: ClientProgrammeDay[];
+  sessionsCompletedThisWeek: number;
+  sessionsScheduledThisWeek: number;
+  mostRecentCompleted: { workoutName: string; date: string } | null;
+  nextUpcoming: { assignmentId: string; workoutName: string; date: string } | null;
+};
+
+/**
+ * Everything the client's Training tab needs for the "Your Programme"
+ * card, built entirely from tables that already exist for other
+ * reasons: programme_blocks/programme_weeks for the framing (name, week
+ * count, start date), and `assignments` — the exact same table Up Next,
+ * the reschedule check, Momentum Score, and streaks all already read —
+ * for which sessions are scheduled, completed, or next. Nothing here is
+ * a second source of truth for "what's scheduled and when"; it's a
+ * different view onto the same rows.
+ *
+ * If the client has more than one assigned programme (e.g. a past one
+ * plus a current one), the one with the most recent start date wins.
+ * Returns null if nothing has been assigned yet.
+ */
+export async function getClientProgramme(clientId: string): Promise<ClientProgrammeView | null> {
+  const { data: programme, error: programmeError } = await supabase
+    .from('programme_blocks')
+    .select('id, name, description, cover_image_url, goal_type, duration_weeks, start_date')
+    .eq('client_id', clientId)
+    .order('start_date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (programmeError) throw programmeError;
+  if (!programme || !programme.start_date) return null;
+
+  const { data: weeks, error: weeksError } = await supabase
+    .from('programme_weeks')
+    .select('id, week_number')
+    .eq('programme_id', programme.id)
+    .order('week_number');
+
+  if (weeksError) throw weeksError;
+
+  const weekIds = new Set((weeks ?? []).map((week) => week.id as string));
+  const maxWeekNumber = (weeks ?? []).reduce((max, week) => Math.max(max, week.week_number as number), 1);
+
+  const startDate = new Date(`${programme.start_date}T00:00:00.000Z`);
+  const today = new Date();
+  const hasStarted = today.getTime() >= startDate.getTime();
+  const daysElapsed = Math.floor((today.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
+  const currentWeekNumber = Math.min(Math.max(daysElapsed + 1, 1), maxWeekNumber);
+
+  // All of this client's assignments, filtered down to just the ones
+  // whose workout belongs to a week of THIS programme — an assignment
+  // from a standalone workout, or from a different programme, is left
+  // out of this card (it still shows up in Up Next and the full
+  // Training history exactly as before).
+  const { data: assignmentRows, error: assignmentsError } = await supabase
+    .from('assignments')
+    .select('id, assigned_date, status, workouts(name, programme_week_id)')
+    .eq('client_id', clientId)
+    .order('assigned_date', { ascending: true });
+
+  if (assignmentsError) throw assignmentsError;
+
+  const programmeAssignments = (assignmentRows ?? [])
+    .map((row) => {
+      const workout = row.workouts as unknown as { name: string; programme_week_id: string | null } | null;
+      return {
+        id: row.id as string,
+        assignedDate: row.assigned_date as string,
+        status: row.status as 'pending' | 'completed',
+        workoutName: workout?.name ?? 'Unknown workout',
+        programmeWeekId: workout?.programme_week_id ?? null,
+      };
+    })
+    .filter((row) => row.programmeWeekId !== null && weekIds.has(row.programmeWeekId));
+
+  const weekStart = addDays(startDate, (currentWeekNumber - 1) * 7);
+  const weekProgress: ClientProgrammeDay[] = Array.from({ length: 7 }, (_, index) => {
+    const date = toISODate(addDays(weekStart, index));
+    const completed = programmeAssignments.some((a) => a.assignedDate === date && a.status === 'completed');
+    return { date, completed };
+  });
+
+  const weekDates = new Set(weekProgress.map((day) => day.date));
+  const thisWeekSessions = programmeAssignments.filter((a) => weekDates.has(a.assignedDate));
+
+  const completedDescending = programmeAssignments
+    .filter((a) => a.status === 'completed')
+    .sort((a, b) => (a.assignedDate < b.assignedDate ? 1 : -1));
+
+  const pendingAscending = programmeAssignments
+    .filter((a) => a.status === 'pending')
+    .sort((a, b) => (a.assignedDate < b.assignedDate ? -1 : 1));
+
+  return {
+    id: programme.id as string,
+    name: programme.name as string,
+    description: programme.description as string | null,
+    coverImageUrl: programme.cover_image_url as string | null,
+    goalType: programme.goal_type as GoalType,
+    durationWeeks: programme.duration_weeks as number,
+    startDate: programme.start_date as string,
+    hasStarted,
+    currentWeekNumber,
+    weekProgress,
+    sessionsCompletedThisWeek: thisWeekSessions.filter((a) => a.status === 'completed').length,
+    sessionsScheduledThisWeek: thisWeekSessions.length,
+    mostRecentCompleted: completedDescending[0]
+      ? { workoutName: completedDescending[0].workoutName, date: completedDescending[0].assignedDate }
+      : null,
+    nextUpcoming: pendingAscending[0]
+      ? {
+          assignmentId: pendingAscending[0].id,
+          workoutName: pendingAscending[0].workoutName,
+          date: pendingAscending[0].assignedDate,
+        }
+      : null,
   };
 }

@@ -515,6 +515,44 @@ This is the payoff for the last two chunks: a coach can now take a template and 
 2. Backdate one of the assigned sessions via SQL (same technique as the auto-reschedule verification) and reopen Home — confirm it gets picked up and moved by the missed-workout reschedule exactly like before.
 3. Complete one of the assigned sessions and check Momentum Score and the streak both move — proving neither needed to know the workout came from a programme.
 
+## Client's Training tab: Your Programme
+
+Run `supabase/client-programme-view.sql` in the SQL Editor after `assign-programme.sql`.
+
+**The Home dashboard needed no changes at all — and that's the point.** Up Next, the missed-workout auto-reschedule, Momentum Score's workout rate, and streaks were all built, from the very first chunk that touched them, to read from the `assignments` table without caring where a `workouts` row came from. A programme-assigned session is just another row in `assignments` with a `workout_id`, a date, and a status — indistinguishable to any of those four from a standalone one. So "pull from programme-based session data" already happened automatically, the moment last chunk started inserting real `assignments` rows for programme sessions. There is nothing to regress, because there's no second code path that could have drifted out of sync with the first. The verification steps below prove this rather than just asserting it.
+
+**What's actually new this chunk** is a read-only view of that same data, framed as a programme: a "Your Programme" card at the top of the client's Training tab, built from `programme_blocks` + `programme_weeks` (which a client couldn't read at all before this — this chunk adds that access, read-only) plus the exact same `assignments` rows Home already uses.
+
+**The week counter** works out how many whole 7-day periods have passed since the programme's start date and adds 1 — the same "Week 1 starts exactly on the start date" math used to calculate the session dates when assigning. It's clamped between 1 and the programme's declared duration, so it never reads "Week 9/6" once a plan runs long, and it shows "Starts `<date>`" instead of a week number if the start date hasn't arrived yet.
+
+**A real interaction worth knowing about, not a bug:** if a programme session's date passes while it's still pending, the missed-workout auto-reschedule (from several chunks ago) will move it forward the next time the client opens the app — exactly like a standalone assignment, because as far as that feature is concerned, it *is* a standalone assignment. That's correct, but it does mean a programme session you leave incomplete past its date won't sit there forever for you to inspect — it'll relocate. Keep that in mind when setting up the verification below: use a start date that doesn't leave anything overdue if you want the programme card's numbers to hold still while you check them.
+
+**Verify the card's current-week display, cleanly (no overdue interactions):**
+
+1. Build a template: 6-week duration, training days Mon + Thu, with one session in Week 1, two sessions in Week 2 (one for Monday, one for Thursday), and one session in Week 3.
+2. Assign it to a test client with **today's date** as the start date. Since nothing is dated before today yet, nothing can go overdue during this check.
+3. Log in as that client, open the Training tab. Confirm: the card shows "Week 1/6", the goal type and description match the template, and the 7-day row shows 7 dots (no checkmarks yet).
+4. Confirm "Next Workout" shows the Week 1 session, and tapping Start opens the same logging screen used everywhere else (`/assigned/[id]`).
+5. Mark that session complete. Reload Training — confirm its day in the row now shows a checkmark, "0/1" became "1/1 sessions completed this week" (Week 1 only has one session), and "Last completed" now shows that session's name and today's date.
+6. In Supabase, check `assignments` for this client — confirm the row you just completed has `status = 'completed'` and its `assigned_date` is unchanged (completing a session never moves its date).
+
+**Verify the week counter's math specifically** (isolated from the rest of the card, since genuinely waiting a week isn't practical):
+
+1. Using the same assigned programme, find its `programme_blocks` row in Supabase and note its `id`.
+2. Run: `update programme_blocks set start_date = start_date - interval '7 days' where id = 'PASTE_ID';` — this only moves the display's reference point, not any session's actual `assigned_date`, so the day-progress row will look temporarily out of step with reality. That's expected for this one check.
+3. Reload Training — confirm the badge now reads "Week 2/6" (one full week further along than before).
+4. Run it again (`- interval '7 days'` a second time) — confirm it advances to "Week 3/6".
+5. Set it forward by 42+ days total (`interval '50 days'`, say) — confirm it clamps at "Week 6/6" rather than reading "Week 8/6" or similar.
+6. Restore it: `update programme_blocks set start_date = start_date + interval '<however many days you subtracted>' where id = 'PASTE_ID';` so the card goes back to matching its real session dates before you continue testing anything else with it.
+
+**Verify Home's numbers are still correct with programme data flowing through them:**
+
+1. Using the client from the steps above (who's already completed one programme session today), open their Home tab.
+2. Up Next: confirm the session you completed is gone from the pending list, and the Week 2 sessions (still pending) appear there instead.
+3. Momentum Score: by hand, using the same recipe as the "Real Momentum Score" section above — count this week's scheduled assignments and completed ones (the one you just finished counts), and confirm the score matches your hand calculation. It should, because Momentum Score has never distinguished a programme session from a standalone one.
+4. Streak: confirm today shows as an active day (🔥 shows at least 1), since a completed assignment is a completed assignment regardless of source.
+5. As a final cross-check, add one unrelated **standalone** assignment (via the coach's old Assignments → New flow, not a programme) for the same client, dated today, and mark it complete too — confirm Momentum Score and the streak both still read correctly with a mix of standalone and programme-sourced completions in the same day. That's the real proof there's no separate, parallel accounting happening anywhere.
+
 ## Project structure reference
 
 ```
@@ -551,7 +589,7 @@ src/
       client/
         _layout.tsx      # client-only guard + the 5-tab bar
         index.tsx        # Home tab — greeting, streak, Level/XP, Momentum Score, Up Next, Today's Habits checklist
-        training.tsx      # Training tab — full assignment history
+        training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, add-entry popup, calorie total
         progress.tsx       # Progress tab — log/update today's weight, chronological history
         calendar.tsx        # placeholder
@@ -566,7 +604,7 @@ src/
   lib/
     supabase.ts          # Supabase client, reads from .env
     workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() database calls
-    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / updateProgrammeName()
+    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName()
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
@@ -590,4 +628,5 @@ supabase/
   reschedule.sql                          # paste in after xp.sql — column-level security fix; read it first
   programmes.sql                            # paste in after reschedule.sql, adds programme_blocks + programme_weeks
   assign-programme.sql                        # paste in after programmes.sql, adds programme_blocks.client_id
+  client-programme-view.sql                     # paste in after assign-programme.sql, adds start_date + client read access
 ```
