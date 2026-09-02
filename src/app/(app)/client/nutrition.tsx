@@ -5,6 +5,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput,
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HeroStat } from '@/components/hero-stat';
+import { MacroRing } from '@/components/macro-ring';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
@@ -148,6 +149,14 @@ export default function NutritionScreen() {
   const totalCarbs = entries.reduce((sum, entry) => sum + (entry.carbs ?? 0), 0);
   const totalFat = entries.reduce((sum, entry) => sum + (entry.fat ?? 0), 0);
 
+  // This app has no macro targets to track progress against, so each
+  // ring instead fills to show that macro's share of today's total
+  // calories (grams × its kcal/g, over total calories) — a real number
+  // from what's actually logged, not a fabricated goal.
+  const proteinShare = totalCalories > 0 ? (totalProtein * 4) / totalCalories : 0;
+  const carbsShare = totalCalories > 0 ? (totalCarbs * 4) / totalCalories : 0;
+  const fatShare = totalCalories > 0 ? (totalFat * 9) / totalCalories : 0;
+
   const parsedQuantity = Number(quantityInput);
   const hasValidQuantity = quantityInput.trim().length > 0 && !Number.isNaN(parsedQuantity) && parsedQuantity > 0;
 
@@ -276,24 +285,9 @@ export default function NutritionScreen() {
 
           {!loading && !error && entries.length > 0 && (
             <View style={styles.macroRow}>
-              <View style={styles.macroCell}>
-                <ThemedText type="smallBold">{round(totalProtein)}g</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Protein
-                </ThemedText>
-              </View>
-              <View style={styles.macroCell}>
-                <ThemedText type="smallBold">{round(totalCarbs)}g</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Carbs
-                </ThemedText>
-              </View>
-              <View style={styles.macroCell}>
-                <ThemedText type="smallBold">{round(totalFat)}g</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  Fat
-                </ThemedText>
-              </View>
+              <MacroRing value={round(totalProtein)} label="Protein" progress={proteinShare} />
+              <MacroRing value={round(totalCarbs)} label="Carbs" progress={carbsShare} />
+              <MacroRing value={round(totalFat)} label="Fat" progress={fatShare} />
             </View>
           )}
 
@@ -506,11 +500,8 @@ const styles = StyleSheet.create({
   macroRow: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    marginTop: Spacing.two,
-  },
-  macroCell: {
-    alignItems: 'center',
-    gap: Spacing.half,
+    marginTop: Spacing.three,
+    marginBottom: Spacing.two,
   },
   mealSection: {
     gap: Spacing.two,

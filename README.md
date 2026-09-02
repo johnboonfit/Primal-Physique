@@ -705,6 +705,24 @@ Up to now, every logged food was silently treated as exactly 100g, because that'
 6. In the app, confirm that entry's line under its meal now reads like "150g · 248 cal · 46.5g protein · ...", and that the day's calorie/macro totals reflect the scaled amount, not 100g's worth.
 7. Check an entry logged before this chunk — confirm it now shows "100g" in front of its existing numbers, and that nothing about those numbers changed.
 
+## Macro rings on the Nutrition tab
+
+Adds `react-native-svg` as a dependency. No SQL, no schema change — purely a display change on top of the same daily totals that were already being computed.
+
+**What changed:** the plain "127g / Protein" text row under the Calories Today hero is now three small ring/donut graphics — one each for Protein, Carbs, and Fat — matching a reference design the user shared. The calorie hero itself is untouched, still the same big teal card with a plain number.
+
+**What the rings actually represent — a deliberate reinterpretation, not a literal copy of the reference.** The reference image's rings show progress toward a personal macro *target* (e.g. "229/230g protein," "+29g over"). This app has no macro-target feature — there's nowhere a client or coach sets a daily protein/carb/fat goal. Rather than fabricate a fake target just to make the ring fill to something, each ring instead fills to show that macro's **share of today's total calories**: its grams converted to calories (protein and carbs at 4 cal/g, fat at 9 cal/g) divided by the day's actual total calories. A protein ring at roughly a third full means protein accounted for about a third of today's calories — a real, honest number from what's actually logged, just a different question than "vs. your goal." Worth a real follow-up if you want true target-based rings — that would mean building an actual macro-goals feature first (something to set and store a daily target), which is a bigger, separate piece of work.
+
+**Why one accent color for all three rings, not the reference image's yellow/red/cyan.** The brand rules for this app reserve oxblood for buttons and active states only, and teal-bright for small accents only, never a large fill — a rainbow of arbitrary ring colors would break both rules at once. All three rings use the same thin teal-bright arc on a dark track — the exact same color pairing `HeroStat`'s own linear progress bar already uses elsewhere in the app — so this reads as the same visual language, not a new one. The three macros are told apart by their label and number, not by color.
+
+**Verify it renders correctly:**
+
+1. Open the Nutrition tab as a client with at least one food entry logged today. Confirm the Calories Today hero card still looks exactly as it did before (big number, teal card, no ring around it).
+2. Below it, confirm three small rings appear side by side, each showing a gram number in the center and a label (Protein/Carbs/Fat) underneath.
+3. Hand-check one ring's fill: note the day's total calories and one macro's grams, compute `(grams × 4, or × 9 for fat) ÷ total calories`, and confirm that ring's arc is filled to roughly that fraction of the full circle (e.g. ~33% filled ≈ a third of the way around).
+4. Log a food that's almost pure fat (e.g. plain oil or butter, if available in a search) and confirm the Fat ring visibly fills up more than before, while Protein/Carbs shrink proportionally — the three rings should visibly respond to real changes in what's logged.
+5. With zero entries logged today, confirm the ring row doesn't render at all (same "nothing to show yet" behavior the old text row had), rather than showing three empty or broken rings.
+
 ## Project structure reference
 
 ```
@@ -751,6 +769,7 @@ src/
   components/
     coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
+    macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
