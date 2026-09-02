@@ -48,6 +48,10 @@ export default function HomeScreen() {
             <ThemedText type="linkPrimary">My Workouts</ThemedText>
           </Link>
 
+          <Link href="/programmes" style={styles.linkSpacing}>
+            <ThemedText type="linkPrimary">My Programmes</ThemedText>
+          </Link>
+
           <Link href="/assignments" style={styles.linkSpacing}>
             <ThemedText type="linkPrimary">Assignments</ThemedText>
           </Link>

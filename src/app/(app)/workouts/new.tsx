@@ -1,5 +1,5 @@
-import { router } from 'expo-router';
-import { useState } from 'react';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -8,6 +8,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
+import { getProgrammeWeekContext, type ProgrammeWeekContext } from '@/lib/programmes';
 import { createWorkout } from '@/lib/workouts';
 
 type ExerciseRow = {
@@ -25,10 +26,28 @@ function makeExerciseRow(): ExerciseRow {
 export default function NewWorkoutScreen() {
   const theme = useTheme();
   const { session } = useAuth();
+  const { weekId } = useLocalSearchParams<{ weekId?: string }>();
   const [workoutName, setWorkoutName] = useState('');
   const [exercises, setExercises] = useState<ExerciseRow[]>([makeExerciseRow()]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [weekContext, setWeekContext] = useState<ProgrammeWeekContext | null>(null);
+
+  // Only fetched when this screen is opened from a programme week, to show
+  // "Week N of <programme>" instead of a bare id — purely informational,
+  // doesn't affect saving.
+  useEffect(() => {
+    if (!weekId) return;
+    let cancelled = false;
+    getProgrammeWeekContext(weekId)
+      .then((context) => {
+        if (!cancelled) setWeekContext(context);
+      })
+      .catch((err) => console.error('Failed to load week context:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [weekId]);
 
   const updateExercise = (key: string, field: 'name' | 'setsReps', value: string) => {
     setExercises((current) => current.map((row) => (row.key === key ? { ...row, [field]: value } : row)));
@@ -61,8 +80,12 @@ export default function NewWorkoutScreen() {
 
     setSaving(true);
     try {
-      await createWorkout(session.user.id, name, cleaned);
-      router.replace('/workouts');
+      await createWorkout(session.user.id, name, cleaned, weekId);
+      if (weekId) {
+        router.replace(`/programmes/week/${weekId}`);
+      } else {
+        router.replace('/workouts');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong saving the workout.');
     } finally {
@@ -75,8 +98,13 @@ export default function NewWorkoutScreen() {
       <SafeAreaView style={styles.safeArea}>
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
           <ThemedText type="title" style={styles.title}>
-            New workout
+            {weekId ? 'New session' : 'New workout'}
           </ThemedText>
+          {weekId && weekContext && (
+            <ThemedText themeColor="textSecondary" style={styles.weekContext}>
+              Week {weekContext.weekNumber} · {weekContext.programmeName}
+            </ThemedText>
+          )}
 
           <TextInput
             value={workoutName}
@@ -155,6 +183,9 @@ const styles = StyleSheet.create({
     gap: Spacing.three,
   },
   title: {
+    marginBottom: Spacing.half,
+  },
+  weekContext: {
     marginBottom: Spacing.two,
   },
   input: {

@@ -419,6 +419,34 @@ No new database table for either of these — both are built on data the app alr
 3. Open the Home tab as that client. You should see the "Rescheduled for you" banner naming the workout and its old → new date, and the assignment should now appear in "Up Next" on its new date instead of the old one.
 4. To test the fallback: first assign that same client a workout for *every remaining day this week* (today through Sunday), then backdate one more pending assignment the same way as step 2, and reload the Home tab. This time there's nowhere open to move it to, so instead of the banner you should see the "Pick a new date" card with that workout listed. Type a date (`YYYY-MM-DD`) and hit Save — it should disappear from that card and show up in "Up Next" on the date you chose.
 
+## Multi-week programmes
+
+Run `supabase/programmes.sql` in the SQL Editor after `reschedule.sql`.
+
+Up to now a coach could only assign one standalone workout at a time. This chunk adds a layer on top for building a whole multi-week programme — a cut, a bulk, a strength block — without touching how standalone workouts already work.
+
+**The structure:** a **programme** (name, description, cover image, goal type — Cutting/Bulking/Recomp/Strength — how many weeks it runs, and which days of the week it's meant to train, e.g. Mon/Wed/Fri) contains **weeks** (just a week number), and each week contains **sessions** — which are exactly the same `workouts` you've always been able to build, just now optionally linked to a specific week. That link is the only change to the existing `workouts` table, and it's optional: the standalone "My Workouts" flow from before is completely untouched and still works exactly as it did.
+
+**One deliberate shortcut:** since the coach already states the programme's duration up front, the app creates all of that programme's weeks automatically the moment the programme is saved — Week 1 through Week N — rather than making the coach add each week by hand. They can still tap "+ Add week" on the programme screen afterwards (e.g. to tack on an extra deload week beyond the original duration).
+
+**Cover image is a URL, not an upload.** Adding real photo uploads means Supabase Storage — a new bucket, its own access policies, and an in-app image picker — which is real infrastructure this app doesn't have yet for anything else either (the brand logo is a bundled file, not something uploaded through the app). For now, paste a link to an already-hosted image (e.g. from Canva's share/export, or any image URL) into the "Cover image URL" field and it displays the same way. Worth revisiting once there's an actual need to upload images from a phone.
+
+**How to build one, as the coach:** Home → My Programmes → + New. Fill in name, goal type, duration, and (optionally) description, cover image URL, and training days, then Create. You land on the programme screen showing Week 1 through N as cards. Tap a week to open it, then "+ New session" to build a workout inside that week — this opens the exact same workout builder used for standalone workouts, just labeled with which week it's for and saving into that week instead of your general workout list.
+
+**One security tightening bundled in, following the same standard as every other table:** the "Coaches can create workouts" and "Coaches can update their own workouts" rules now also confirm that, if a workout does point at a programme week, that week's programme actually belongs to the same coach — otherwise a coach could, via a direct API call, link a workout they own into another coach's programme structure.
+
+**This chunk is creation only** — a coach can build out a full programme, but nothing here assigns it to a client yet. That's next.
+
+**Verify the structure saved correctly:**
+
+1. In the app, create a programme: name it, pick a goal type, set duration to something small like 3 weeks, tick a couple of training days, and save.
+2. In Supabase's Table Editor, open `programme_blocks` — confirm one new row with your name, goal type, and `duration_weeks = 3`, and `scheduled_days` holding the days you ticked (e.g. `{mon,wed,fri}`).
+3. Open `programme_weeks`, filtered to that programme's id — confirm exactly 3 rows exist already, with `week_number` 1, 2, and 3, even though you never manually added a single one.
+4. Back in the app, open the programme and tap "+ Add week" once — confirm a 4th row now exists in `programme_weeks` with `week_number = 4`.
+5. Open Week 2 and add a session (e.g. "Upper Body", one exercise). In `workouts`, find that row and confirm its `programme_week_id` matches Week 2's id from `programme_weeks` — not null, and pointing at the right week.
+6. Go to My Workouts (the original standalone list) and create an unrelated workout there as before — in `workouts`, confirm that row's `programme_week_id` is `null`, proving the two flows coexist without interfering.
+7. Back on the programme screen, confirm Week 2's card now reads "1 session" and the others still read "0 sessions."
+
 ## Project structure reference
 
 ```
@@ -433,7 +461,13 @@ src/
       workouts/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's workouts
-        new.tsx          # create-workout form
+        new.tsx          # create-workout form; also reused for sessions inside a programme week (?weekId=)
+      programmes/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # list of the coach's programmes
+        new.tsx          # create-programme form — name, goal type, duration, cover image, training days
+        [id].tsx          # one programme — cover image, weeks list, + Add week
+        week/[weekId].tsx  # one week of a programme — its sessions, + New session
       assignments/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of assignments, with status
@@ -462,7 +496,8 @@ src/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
     supabase.ts          # Supabase client, reads from .env
-    workouts.ts           # createWorkout() / listWorkouts() database calls
+    workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() database calls
+    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek()
     assignments.ts         # coach + client assignment + workout-log database calls
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
@@ -484,4 +519,5 @@ supabase/
   habits.sql                           # paste in after lock-coach-role.sql, adds habits + habit_logs
   xp.sql                                 # paste in after habits.sql — adds XP, also a security fix; read it first
   reschedule.sql                          # paste in after xp.sql — column-level security fix; read it first
+  programmes.sql                            # paste in after reschedule.sql, adds programme_blocks + programme_weeks
 ```
