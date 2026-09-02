@@ -7,8 +7,6 @@ import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanima
 import { ThemedText } from '@/components/themed-text';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 
-const AnimatedImage = Animated.createAnimatedComponent(Image);
-
 // Never below 1x: contentFit="cover" already fills the frame at 1x, so
 // zooming out further would just reveal empty space at the edges.
 // Zooming in past 3x is more than enough to line up a specific feature
@@ -103,21 +101,23 @@ export function PhotoCompareSlider({ beforeUri, afterUri, beforeLabel, afterLabe
 
   return (
     <View style={styles.container} onLayout={handleLayout}>
+      {/* GestureDetector needs a plain View as its direct child — on web
+       * especially, wrapping expo-image's Image directly (even via
+       * createAnimatedComponent) fails with "received child that is not
+       * a valid HTML element." So the pinch/scale transform lives on a
+       * wrapping Animated.View, and the Image inside it stays a plain,
+       * un-animated child that just fills that View. */}
       <GestureDetector gesture={afterPinch}>
-        <AnimatedImage
-          source={{ uri: afterUri }}
-          style={[StyleSheet.absoluteFill, afterImageStyle]}
-          contentFit="cover"
-        />
+        <Animated.View style={[StyleSheet.absoluteFill, afterImageStyle]}>
+          <Image source={{ uri: afterUri }} style={styles.fill} contentFit="cover" />
+        </Animated.View>
       </GestureDetector>
 
       <Animated.View style={[styles.beforeClip, clipStyle]}>
         <GestureDetector gesture={beforePinch}>
-          <AnimatedImage
-            source={{ uri: beforeUri }}
-            style={[styles.beforeImage, beforeImageStyle]}
-            contentFit="cover"
-          />
+          <Animated.View style={[styles.beforeImageWrap, beforeImageStyle]}>
+            <Image source={{ uri: beforeUri }} style={styles.fill} contentFit="cover" />
+          </Animated.View>
         </GestureDetector>
       </Animated.View>
 
@@ -166,7 +166,11 @@ const styles = StyleSheet.create({
     left: 0,
     overflow: 'hidden',
   },
-  beforeImage: {
+  beforeImageWrap: {
+    height: '100%',
+  },
+  fill: {
+    width: '100%',
     height: '100%',
   },
   divider: {
