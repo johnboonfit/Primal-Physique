@@ -17,9 +17,11 @@ import {
   type ClientAssignmentSummary,
   type OverdueAssignment,
 } from '@/lib/assignments';
+import { listFoodLogsForDate } from '@/lib/food-logs';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
 import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
 import { getCurrentStreak } from '@/lib/streak';
+import { hasWeightLogForDate } from '@/lib/weight-logs';
 import { awardHabitXp, getXpSummary, type XpSummary } from '@/lib/xp';
 
 function getGreeting() {
@@ -55,6 +57,9 @@ export default function ClientHomeScreen() {
   const [xpLoading, setXpLoading] = useState(true);
 
   const [streak, setStreak] = useState<number | null>(null);
+
+  const [weightLoggedToday, setWeightLoggedToday] = useState<boolean | null>(null);
+  const [foodLoggedToday, setFoodLoggedToday] = useState<boolean | null>(null);
 
   // One-time banner for workouts the app moved on its own this session.
   const [movedNotice, setMovedNotice] = useState<AutoRescheduleResult['moved']>([]);
@@ -189,6 +194,25 @@ export default function ClientHomeScreen() {
     }, [session])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+
+      Promise.all([hasWeightLogForDate(session.user.id, logDate), listFoodLogsForDate(session.user.id, logDate)])
+        .then(([weightLogged, foodLogs]) => {
+          if (cancelled) return;
+          setWeightLoggedToday(weightLogged);
+          setFoodLoggedToday(foodLogs.length > 0);
+        })
+        .catch((err) => console.error("Failed to check today's logging status:", err));
+
+      return () => {
+        cancelled = true;
+      };
+    }, [session, logDate])
+  );
+
   const handleManualReschedule = async (assignmentId: string) => {
     setManualError(null);
     const newDate = manualDates[assignmentId] ?? '';
@@ -234,6 +258,20 @@ export default function ClientHomeScreen() {
   const displayName = profile?.full_name || profile?.email.split('@')[0] || '';
   const completedCount = habits.filter((habit) => completedIds.has(habit.id)).length;
 
+  const missingWeight = weightLoggedToday === false;
+  const missingFood = foodLoggedToday === false;
+  let loggingNudge: { message: string; href: '/client/progress' | '/client/nutrition' } | null = null;
+  if (missingWeight && missingFood) {
+    loggingNudge = {
+      message: "Log today's weight and meals for more accurate calorie targets.",
+      href: '/client/progress',
+    };
+  } else if (missingWeight) {
+    loggingNudge = { message: "Log today's weight for more accurate calorie targets.", href: '/client/progress' };
+  } else if (missingFood) {
+    loggingNudge = { message: "Log today's meals for more accurate calorie targets.", href: '/client/nutrition' };
+  }
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -256,6 +294,16 @@ export default function ClientHomeScreen() {
                 day streak
               </ThemedText>
             </View>
+          )}
+
+          {loggingNudge && (
+            <Pressable onPress={() => router.push(loggingNudge!.href)}>
+              <ThemedView type="backgroundElement" style={styles.nudgeCard}>
+                <ThemedText type="smallBold" style={styles.nudgeText}>
+                  {loggingNudge.message}
+                </ThemedText>
+              </ThemedView>
+            </Pressable>
           )}
 
           {movedNotice.length > 0 && (
@@ -533,6 +581,15 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.two,
+  },
+  nudgeCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    borderLeftWidth: 3,
+    borderLeftColor: Accent,
+  },
+  nudgeText: {
+    color: Colors.text,
   },
   noticeHeader: {
     flexDirection: 'row',

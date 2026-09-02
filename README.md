@@ -765,7 +765,7 @@ Run `supabase/weight-trend.sql` in the SQL Editor after `food-log-quantity.sql` 
 
 Run `supabase/tdee-estimates.sql` in the SQL Editor after `weight-trend.sql`.
 
-**The problem this solves:** "how many calories does this client actually burn a day?" can't be looked up — it has to be inferred from what actually happened to their weight while eating a known amount. This chunk calculates that inference (Adaptive TDEE) and stores it. It does **not** yet check whether there's enough logged data in a given window to trust the number — that check is a deliberate follow-up chunk. For now, it always calculates and stores an estimate.
+**The problem this solves:** "how many calories does this client actually burn a day?" can't be looked up — it has to be inferred from what actually happened to their weight while eating a known amount. This chunk calculates that inference (Adaptive TDEE) and stores it. (A later chunk — see "Data quality gate, confidence, and daily logging nudges" below — added the check for whether there's enough logged data to trust a given calculation.)
 
 **Units:** `weight_logs`/`weight_trend` are tracked in **kilograms**. The formula's `7700` constant is the kcal-per-kg-of-bodyweight figure, so no conversion is needed — `weight_change_kg` is read directly from the stored trend values.
 
@@ -828,6 +828,39 @@ That passes the sanity check the formula has to pass: losing weight on ~2000 kca
 4. In the SQL Editor: `select * from tdee_estimates where client_id = 'PASTE_CLIENT_ID' order by calculated_date desc limit 1;`
 5. Confirm `avg_daily_intake` = **2000**, `weight_change_kg` ≈ **-1.35**, `implied_daily_balance` ≈ **-742.5**, and `estimated_tdee` ≈ **2742.5** — matching the hand-worked numbers above.
 
+## Data quality gate, confidence, and daily logging nudges
+
+No new SQL this chunk — `src/lib/tdee.ts` and two screens changed. Three pieces, all reading the same underlying "how many days out of the last 14 actually got logged" count:
+
+**1. Data quality gate.** `calculateAndSaveTdee()` now counts, before doing anything else, how many distinct days in the trailing 14-day window have a food log and how many have a weight log. If either count is below **7**, it stops immediately — no query, no math, no write. Whatever `estimated_tdee` was last successfully calculated (however many days ago that was) stays exactly as it was. This matters because the alternative — recalculating on 2 or 3 real data points and quietly presenting the result as if it were as reliable as a full window — would actively mislead a client into eating at the wrong number.
+
+**2. Confidence indicator.** `getTdeeConfidence()` runs the same 14-day count independently of the gate (so it's always reporting on *right now*, not on whatever day the currently-shown number happened to be calculated) and classifies it:
+   - **Low** — the limiting count (whichever of food/weight is worse) is below 7. This is deliberately the exact same threshold as the gate: if it's too thin to trust a fresh calculation, it's too thin to call the number you're looking at trustworthy either, fresh or not.
+   - **Medium** — 7 to 11 days logged.
+   - **High** — 12 or more days logged.
+
+   When confidence is Low, the reason names exactly what's missing — "3 missed weigh-ins in the last 14 days", "5 missed food logs in the last 14 days", or both if both are short — rather than a bare "Low confidence" badge with no explanation. This shows on the Progress tab directly under the Estimated TDEE number, along with "As of [date]" so it's obvious when a number is stale versus fresh.
+
+**3. Daily logging nudge.** The Home tab now checks, every time it's opened, whether *today's* weight and food have been logged yet (two lightweight queries — not the 14-day window). If either is missing, a card appears near the top naming exactly what's missing and why: "Log today's weight for more accurate calorie targets," "Log today's meals for more accurate calorie targets," or both at once if neither is logged yet. Tapping it jumps straight to the Progress or Nutrition tab. Once both are logged for the day, the card disappears on the next visit.
+
+**Verify all three — specifically, force a low-data scenario and confirm the gate holds the old number:**
+
+1. Pick a test client with an existing `tdee_estimates` row (e.g. from the previous chunk's verification, or insert one manually first — see the previous section). Note its `estimated_tdee` and `calculated_date`.
+2. Now simulate the client going quiet on weigh-ins: insert **only 3** backdated `weight_logs` rows scattered across the last 14 days (any 3 dates), but keep food logging normal (8+ days), e.g.:
+   ```sql
+   insert into weight_logs (client_id, log_date, weight) values
+     ('PASTE_CLIENT_ID', current_date - 12, 93.5),
+     ('PASTE_CLIENT_ID', current_date - 6, 93.2),
+     ('PASTE_CLIENT_ID', current_date, 93.0)
+   on conflict (client_id, log_date) do update set weight = excluded.weight;
+   ```
+   (If this client already has 14 days of weight logged from the previous chunk's test, delete the rest first: `delete from weight_logs where client_id = 'PASTE_CLIENT_ID' and log_date not in (current_date - 12, current_date - 6, current_date);` — then re-run `weight-trend.sql` so `weight_trend` recomputes for what's left.)
+3. Log in as that client, open the Progress tab, and save today's weight again (this re-triggers `calculateAndSaveTdee`).
+4. Query `select calculated_date, estimated_tdee from tdee_estimates where client_id = 'PASTE_CLIENT_ID';` — confirm `calculated_date` and `estimated_tdee` are **unchanged from step 1**. Only 3 of 14 weight days are logged (below the threshold of 7), so the gate held even though you just logged today's weight through the app.
+5. On the Progress tab itself, confirm it now shows **"Low confidence — 11 missed weigh-ins in the last 14 days"** under the TDEE number (14 − 3 = 11), and that the TDEE number and "As of" date shown are the same stale ones from step 1, not today's.
+6. Open the Home tab as a client who hasn't logged weight or food yet today — confirm the nudge card appears with the correct specific wording (both missing / weight only / food only), and that it disappears once both are logged and you revisit the tab.
+7. As a sanity check on the "recovers cleanly" side: log at least 4 more backdated weight days (bringing the trailing-14 count back to 7+) and re-save today's weight — confirm `tdee_estimates` now updates to a fresh `calculated_date` and a recalculated `estimated_tdee`, and the Progress tab's confidence badge moves out of Low.
+
 ## Project structure reference
 
 ```
@@ -866,10 +899,10 @@ src/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar
-        index.tsx        # Home tab — greeting, streak, Level/XP, Momentum Score, Up Next, Today's Habits checklist
+        index.tsx        # Home tab — greeting, streak, daily logging nudge, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calorie + macro totals
-        progress.tsx       # Progress tab — log/update today's weight, weight+trend chart, chronological history
+        progress.tsx       # Progress tab — log/update today's weight, weight+trend chart, Estimated TDEE + confidence, chronological history
         calendar.tsx        # placeholder
   components/
     coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
@@ -890,8 +923,8 @@ src/
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
-    weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend) / listWeightLogs() database calls
-    tdee.ts                   # calculateAndSaveTdee() — 14-day rolling Adaptive TDEE estimate, stored, not yet displayed
+    weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend) / listWeightLogs() / hasWeightLogForDate() database calls
+    tdee.ts                   # calculateAndSaveTdee() (gated on 7+/14 logged days) / getLatestTdeeEstimate() / getTdeeConfidence()
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()

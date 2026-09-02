@@ -3,13 +3,20 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { WeightTrendChart } from '@/components/weight-trend-chart';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import { calculateAndSaveTdee } from '@/lib/tdee';
+import {
+  calculateAndSaveTdee,
+  getLatestTdeeEstimate,
+  getTdeeConfidence,
+  type TdeeConfidence,
+  type TdeeEstimate,
+} from '@/lib/tdee';
 import { listWeightLogs, saveWeightLog, type WeightLogEntry } from '@/lib/weight-logs';
 
 function round(value: number) {
@@ -19,6 +26,18 @@ function round(value: number) {
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
 }
+
+const CONFIDENCE_LABEL: Record<TdeeConfidence['level'], string> = {
+  low: 'Low confidence',
+  medium: 'Medium confidence',
+  high: 'High confidence',
+};
+
+const CONFIDENCE_COLOR: Record<TdeeConfidence['level'], string> = {
+  low: Accent,
+  medium: Colors.textSecondary,
+  high: Colors.tealBright,
+};
 
 export default function ProgressScreen() {
   const theme = useTheme();
@@ -33,6 +52,9 @@ export default function ProgressScreen() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const [tdee, setTdee] = useState<TdeeEstimate | null>(null);
+  const [confidence, setConfidence] = useState<TdeeConfidence | null>(null);
+
   const load = useCallback(() => {
     if (!session) return;
     setLoading(true);
@@ -44,6 +66,13 @@ export default function ProgressScreen() {
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load your weight history.'))
       .finally(() => setLoading(false));
+
+    Promise.all([getLatestTdeeEstimate(session.user.id), getTdeeConfidence(session.user.id, logDate)])
+      .then(([estimate, conf]) => {
+        setTdee(estimate);
+        setConfidence(conf);
+      })
+      .catch((err) => console.error('Failed to load TDEE estimate:', err));
   }, [session, logDate]);
 
   useFocusEffect(
@@ -111,6 +140,29 @@ export default function ProgressScreen() {
               </ThemedText>
             )}
           </Pressable>
+
+          {tdee && (
+            <>
+              <HeroStat value={Math.round(tdee.estimatedTdee)} label="Estimated TDEE (kcal/day)" />
+              {confidence && (
+                <ThemedText type="small" style={[styles.confidenceLine, { color: CONFIDENCE_COLOR[confidence.level] }]}>
+                  {CONFIDENCE_LABEL[confidence.level]}
+                  {confidence.reason ? ` — ${confidence.reason}` : ''}
+                </ThemedText>
+              )}
+              <ThemedText type="small" themeColor="textSecondary" style={styles.tdeeAsOf}>
+                As of {tdee.calculatedDate}
+                {tdee.calculatedDate !== logDate ? ' — not enough recent data to recalculate today' : ''}
+              </ThemedText>
+            </>
+          )}
+
+          {!tdee && confidence && (
+            <ThemedText themeColor="textSecondary" style={styles.tdeeAsOf}>
+              Not enough logged data yet to estimate your maintenance calories — keep logging your weight and meals
+              daily.
+            </ThemedText>
+          )}
 
           {!loading && !error && logs.length >= 2 && (
             <ThemedView type="backgroundElement" style={styles.chartCard}>
@@ -192,6 +244,13 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     padding: Spacing.three,
     marginTop: Spacing.three,
+  },
+  confidenceLine: {
+    textAlign: 'center',
+    marginTop: -Spacing.two,
+  },
+  tdeeAsOf: {
+    textAlign: 'center',
   },
   historyLabel: {
     marginTop: Spacing.three,

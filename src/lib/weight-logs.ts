@@ -13,6 +13,18 @@ export type WeightLogEntry = {
 // scale noise.
 const ALPHA = 0.15;
 
+export async function hasWeightLogForDate(clientId: string, logDate: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('weight_logs')
+    .select('id')
+    .eq('client_id', clientId)
+    .eq('log_date', logDate)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data !== null;
+}
+
 export async function listWeightLogs(clientId: string): Promise<WeightLogEntry[]> {
   const { data, error } = await supabase
     .from('weight_logs')
