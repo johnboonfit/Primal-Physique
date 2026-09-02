@@ -5,6 +5,8 @@ export type WeightLogEntry = {
   logDate: string;
   weight: number;
   weightTrend: number;
+  bodyFatPercent: number | null;
+  musclePercent: number | null;
 };
 
 // trend_today = (ALPHA x raw_weight_today) + ((1 - ALPHA) x trend_yesterday).
@@ -28,7 +30,7 @@ export async function hasWeightLogForDate(clientId: string, logDate: string): Pr
 export async function listWeightLogs(clientId: string): Promise<WeightLogEntry[]> {
   const { data, error } = await supabase
     .from('weight_logs')
-    .select('id, log_date, weight, weight_trend')
+    .select('id, log_date, weight, weight_trend, body_fat_percent, muscle_percent')
     .eq('client_id', clientId)
     .order('log_date', { ascending: false });
 
@@ -39,6 +41,8 @@ export async function listWeightLogs(clientId: string): Promise<WeightLogEntry[]
     logDate: row.log_date as string,
     weight: row.weight as number,
     weightTrend: row.weight_trend as number,
+    bodyFatPercent: row.body_fat_percent as number | null,
+    musclePercent: row.muscle_percent as number | null,
   }));
 }
 
@@ -56,7 +60,13 @@ export async function listWeightLogs(clientId: string): Promise<WeightLogEntry[]
  * a row to begin with. If this is the client's very first-ever
  * weigh-in, the trend is seeded to equal the raw weight.
  */
-export async function saveWeightLog(clientId: string, logDate: string, weight: number) {
+export async function saveWeightLog(
+  clientId: string,
+  logDate: string,
+  weight: number,
+  bodyFatPercent: number | null = null,
+  musclePercent: number | null = null
+) {
   const { data: previous, error: previousError } = await supabase
     .from('weight_logs')
     .select('weight_trend')
@@ -71,12 +81,17 @@ export async function saveWeightLog(clientId: string, logDate: string, weight: n
   const previousTrend = previous?.weight_trend as number | undefined;
   const weightTrend = previousTrend === undefined ? weight : ALPHA * weight + (1 - ALPHA) * previousTrend;
 
-  const { error } = await supabase
-    .from('weight_logs')
-    .upsert(
-      { client_id: clientId, log_date: logDate, weight, weight_trend: weightTrend },
-      { onConflict: 'client_id,log_date' }
-    );
+  const { error } = await supabase.from('weight_logs').upsert(
+    {
+      client_id: clientId,
+      log_date: logDate,
+      weight,
+      weight_trend: weightTrend,
+      body_fat_percent: bodyFatPercent,
+      muscle_percent: musclePercent,
+    },
+    { onConflict: 'client_id,log_date' }
+  );
 
   if (error) throw error;
 }

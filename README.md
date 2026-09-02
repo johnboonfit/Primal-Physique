@@ -916,6 +916,35 @@ Run `supabase/coach-nutrition-and-delete.sql` in the SQL Editor after `calorie-t
 2. As the coach, open that same client's Clients detail page, log another test entry as the client first, then delete it from the **coach's** side — confirm it's gone from both the coach panel and the client's own Nutrition tab on next load.
 3. This is enforced at the database level, not just hidden in the UI — already confirmed against a real local Postgres instance running the exact policies above: an unrelated client's delete attempt on someone else's `food_logs` row affects 0 rows (blocked), while the owning client and any coach both succeed. The Supabase SQL Editor runs as an admin role that bypasses RLS entirely, so it can't usefully re-test this itself — the real guarantee is that no client-facing screen in this app ever shows another client's `food_logs` row in the first place (every client-side list is scoped to `client_id = auth.uid()`; the coach's view is gated behind the coach-only `/clients` route).
 
+## Metrics sub-tab on Progress
+
+Run `supabase/body-metrics.sql` in the SQL Editor after `coach-nutrition-and-delete.sql`.
+
+**What's new:** Progress now has a **Metrics** sub-tab header at the top (the first of what can grow into several — right now it's the only one, so it's shown as a fixed label rather than a switcher with nothing else to switch to). Under it:
+
+- **Body fat % and muscle %** — two new optional fields alongside the existing weight input, logged the same way (same daily check-in, same Save/Update button). Both are plain manual entries on the same `weight_logs` row as that day's weight — nothing is calculated or smoothed for them the way `weight_trend` is; leaving one blank just stores null for that day.
+- **A time-range toggle** (1W / 1M / 6M / 1Y / All Time) above the weight chart, defaulting to 1M. Picking a range filters the *same* weight history the chart and list always used — it doesn't run a new query or recompute anything, it just narrows which already-loaded rows get drawn and listed.
+- **The weight graph is unchanged under the hood.** It's still the exact `WeightTrendChart` component from the Adaptive TDEE work, fed whichever rows survive the time-range filter — the smoothed trend line it draws is still reading `weight_logs.weight_trend` straight out of the database, the same column `calculateAndSaveTdee()` reads for the TDEE formula. This chunk didn't touch the EWMA calculation at all.
+- **The chronological history list** below the graph now reflects the same filtered range too, and each row shows body fat %/muscle % under the weight+trend line whenever they were logged.
+
+**Verify the new fields:**
+
+1. Log today's weight along with a body fat % and muscle % — confirm they save and reappear pre-filled if you reopen the app.
+2. Try entering `150` for body fat % — confirm it's rejected before saving (client-side check) and that the database itself would also reject it (the migration adds a `check (... between 0 and 100)` constraint — try inserting an out-of-range value directly in the SQL Editor and confirm it errors).
+3. Leave body fat/muscle blank on a day and confirm the history row for that day just shows weight + trend, no stray "0%" or blank line.
+
+**Verify the time-range toggle actually filters, not just visually truncates:**
+
+1. With more than a month of weight history logged, tap **1W** — confirm both the chart and the history list below it show only the last 7 days' entries, and tap **All Time** to confirm the rest reappear.
+
+**Verify the graph is reading the real stored trend, not recalculating it — the specific thing you asked to confirm:**
+
+1. Pick any existing weight_logs row and note its `weight_trend` value.
+2. In the SQL Editor, deliberately overwrite it to an obviously wrong number that the EWMA formula would never actually produce: `update weight_logs set weight_trend = 999 where id = 'PASTE_ROW_ID';`
+3. Reload the Progress tab (pull the app to a fresh load, or re-open it) and look at that point on the chart's trend (oxblood) line, and at that row in the history list below.
+4. If the app were recalculating the trend itself from raw weights, your manual `999` would be silently overwritten back to a real number the next time anything recomputed it — but nothing here does that. The history list should show `trend 999` in plain text, and the chart's oxblood line should visibly spike to that point, proving both are reading whatever is actually stored in `weight_trend`, not redoing the math.
+5. Put the value back afterward: `update weight_logs set weight_trend = <the number you noted> where id = 'PASTE_ROW_ID';` (or just re-run `weight-trend.sql`'s backfill, which recomputes it correctly from scratch).
+
 ## Project structure reference
 
 ```
@@ -961,7 +990,7 @@ src/
         index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
-        progress.tsx       # Progress tab — log/update today's weight, weight+trend chart, Estimated TDEE + confidence, chronological history
+        progress.tsx       # Progress tab — Metrics sub-tab: weight/body fat %/muscle % check-in, Estimated TDEE + confidence, time-ranged trend chart + history
         calendar.tsx        # placeholder
   components/
     coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
@@ -983,7 +1012,7 @@ src/
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() / listFoodLogHistory() / deleteFoodLog() — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
-    weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend) / listWeightLogs() / hasWeightLogForDate() database calls
+    weight-logs.ts           # saveWeightLog() (upsert, computes weight_trend, optional body fat %/muscle %) / listWeightLogs() / hasWeightLogForDate() database calls
     tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
     habits.ts                 # coach + client habit + habit-log database calls
     momentum.ts                # getMomentumScore() — pure calculation, no new tables
@@ -1014,4 +1043,5 @@ supabase/
   tdee-estimates.sql                                        # paste in after weight-trend.sql, adds tdee_estimates
   calorie-target.sql                                          # paste in after tdee-estimates.sql, adds programme_blocks.calorie_target_percent
   coach-nutrition-and-delete.sql                                # paste in after calorie-target.sql — coach read access to food_logs/tdee_estimates, delete on food_logs
+  body-metrics.sql                                                # paste in after coach-nutrition-and-delete.sql, adds weight_logs.body_fat_percent + muscle_percent
 ```
