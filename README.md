@@ -1306,6 +1306,8 @@ This runs against whoever is really signed in, checked at the database, every ti
 1. **The coach's app-wide switch** (`app_settings.community_enabled`, a singleton table — it can only ever hold exactly one row). Turned off, Community disappears from *every* client's Home tab, full stop, regardless of anyone's personal preference. The control for it lives at the top of the Community screen itself, visible only to the coach — a client account never sees it, and the update policy backs that up the same way the Announcement restriction does (`using (public.is_coach())`).
 2. **A client's own "hide Community for me" toggle** (`profiles.community_hidden`, the eye icon on their Home card) — personal, independent of switch #1, and only ever readable/settable for that client's own account. Tapping the eye icon doesn't remove the card outright; it collapses to a small "👁 Community (hidden) — tap to show" row, so there's always a way back rather than a setting that's easy to lose track of.
 
+   This one needs its own explicit column grant, not just an RLS policy — `xp.sql` already tightened `profiles` updates down to `full_name` only (`revoke update on public.profiles from authenticated; grant update (full_name) ...`), specifically so a client can't touch anything else on their own row via the API. `community.sql` adds `community_hidden` to that allowed list (`grant update (community_hidden) on public.profiles to authenticated;` — additive, doesn't reopen anything `xp.sql` closed). Without it, the row-level policy still says "yes, this is your row," but Postgres rejects the column itself before that's even consulted — which looks exactly like the eye icon doing nothing.
+
 If the coach's switch is off, a client's personal preference doesn't matter — there's nothing to show either way. If it's on, each client's own eye-icon choice is theirs alone; it has no effect on any other client or on the coach.
 
 **Images** use the same private-bucket-plus-signed-URL shape as progress photos (`community-images`, signed at read time via `createSignedUrls`), except the read policy is deliberately open to *any* signed-in user rather than folder-owner-only — it's a shared feed, so everyone needs to be able to see everyone else's post images, not just their own.
@@ -1331,10 +1333,15 @@ If the coach's switch is off, a client's personal preference doesn't matter — 
 4. Turn it back on as the coach — confirm the client's Home card reappears.
 
 **Verify the client's personal eye-icon toggle is separate from the coach's switch:**
-1. With Community turned on, as a client, tap the eye icon on the Community card — confirm it collapses to "👁 Community (hidden) — tap to show."
+1. With Community turned on, as a client, tap the eye icon on the Community card — confirm it collapses to "👁 Community (hidden) — tap to show." If it instead flickers and snaps right back, the column grant below hasn't been run yet.
 2. Log in as a *different* client — confirm Community still shows normally for them; one client hiding it never affects another.
 3. In Supabase, confirm `profiles.community_hidden` is `true` only for the client who tapped it.
 4. Tap the hidden row again — confirm Community reappears for that client.
+
+**If the eye icon looks like it's doing nothing:** you likely ran an earlier version of `community.sql` before it included the column grant. Just run this one line again in the SQL Editor (safe to run on its own, and safe to re-run):
+```sql
+grant update (community_hidden) on public.profiles to authenticated;
+```
 
 ## Project structure reference
 

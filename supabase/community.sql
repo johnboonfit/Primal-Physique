@@ -44,12 +44,24 @@ create policy "Coaches can update app settings"
   using (public.is_coach());
 
 -- 2. Per-client "hide Community for me" preference — separate from the
---    coach's app-wide switch above. Rides the existing "Users can
---    update their own profile" policy from schema.sql, the same way
---    full_name did in client-name.sql — no new policy needed for
---    someone to flip their own preference.
+--    coach's app-wide switch above.
+--
+--    NOT just a matter of the row-level "Users can update their own
+--    profile" policy from schema.sql, the way client-name.sql's
+--    full_name got away with it — xp.sql later tightened profiles
+--    updates at the COLUMN level too (`revoke update on
+--    public.profiles from authenticated; grant update (full_name) ...`),
+--    specifically so a client could never touch anything on their own
+--    row except full_name. That grant is additive across multiple
+--    statements, not a replace, so this just adds community_hidden to
+--    the allowed list rather than reopening everything xp.sql closed.
+--    Skipping this line is exactly why the eye icon looked like it did
+--    nothing: RLS passed (it's the client's own row), but Postgres
+--    rejected the column itself before RLS was even consulted for it.
 alter table public.profiles
   add column if not exists community_hidden boolean not null default false;
+
+grant update (community_hidden) on public.profiles to authenticated;
 
 -- 3. The feed itself.
 create table if not exists public.community_posts (
