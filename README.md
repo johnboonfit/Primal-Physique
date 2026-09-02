@@ -297,6 +297,61 @@ Two deliberate limits, same spirit as earlier chunks: there's **no un-checking**
 7. In Supabase's Table Editor, open `habit_logs` — confirm one row for "10k steps" with today's date and the right `client_id`.
 8. Log in as a different client account (one with no habits assigned) and confirm their Today's Habits section says "No habits set yet."
 
+## Real Momentum Score
+
+No new database tables for this one — it's pure calculation over data that already exists (`assignments`, `food_logs`, `habit_logs`), computed fresh every time the Home tab loads. The Home tab's hero card is now the **Momentum Score** (was "Workouts Up Next" before) — the score itself, plus a progress bar showing it against the 1–10 scale. The old Up Next count moved to a small "**X pending**" label next to the Up Next heading instead.
+
+**The formula**, for the current Monday–Sunday week:
+
+- Workout rate = workouts completed ÷ workouts scheduled that week (if none scheduled, this counts as 1 — nothing to miss)
+- Nutrition rate = distinct days with at least one meal logged ÷ 7
+- Habit rate = distinct days with at least one habit checked off ÷ 7
+- Active-days rate = distinct days with *any* of the above ÷ 7
+- Average the four rates, then **Score = 1 + (9 × average)**
+
+Because every rate divides by the full 7-day week (not days-elapsed-so-far), the score reads low early in the week even with a perfect record so far — that's expected, not a bug.
+
+**Verify the number is actually correct** — not just that something displays. This means computing it by hand from the raw data and comparing, since a wrong formula can still "look" like it's working.
+
+1. In Supabase, find your test client's id: **Table Editor** → `profiles` → their row → copy the `id` (a long UUID).
+2. Find this week's boundaries — **SQL Editor**, run:
+   ```sql
+   select
+     (current_date - ((extract(dow from current_date)::int + 6) % 7)) as week_monday,
+     (current_date - ((extract(dow from current_date)::int + 6) % 7) + 6) as week_sunday;
+   ```
+   Note both dates.
+3. Run these four queries one at a time, swapping in that client's id and the two dates from step 2 each time, and write down each result:
+   ```sql
+   -- scheduled vs completed
+   select status, count(*) from assignments
+   where client_id = 'PASTE_CLIENT_ID' and assigned_date between 'WEEK_MONDAY' and 'WEEK_SUNDAY'
+   group by status;
+
+   -- nutrition days
+   select count(distinct log_date) from food_logs
+   where client_id = 'PASTE_CLIENT_ID' and log_date between 'WEEK_MONDAY' and 'WEEK_SUNDAY';
+
+   -- habit days
+   select count(distinct log_date) from habit_logs
+   where client_id = 'PASTE_CLIENT_ID' and log_date between 'WEEK_MONDAY' and 'WEEK_SUNDAY';
+
+   -- active days (union of completed-workout days, food days, habit days)
+   select count(distinct log_date) from (
+     select assigned_date as log_date from assignments
+       where client_id = 'PASTE_CLIENT_ID' and status = 'completed' and assigned_date between 'WEEK_MONDAY' and 'WEEK_SUNDAY'
+     union
+     select log_date from food_logs
+       where client_id = 'PASTE_CLIENT_ID' and log_date between 'WEEK_MONDAY' and 'WEEK_SUNDAY'
+     union
+     select log_date from habit_logs
+       where client_id = 'PASTE_CLIENT_ID' and log_date between 'WEEK_MONDAY' and 'WEEK_SUNDAY'
+   ) all_active_days;
+   ```
+4. Do the arithmetic by hand using the numbers you just wrote down (same formula as the worked example earlier in this project): workout rate = completed ÷ scheduled (or 1 if scheduled is 0), nutrition rate = nutrition days ÷ 7, habit rate = habit days ÷ 7, active rate = active days ÷ 7. Average the four, then `1 + 9 × average`.
+5. Log in as that client on the app, look at the Momentum Score card, and confirm it matches your hand-calculated number (to two decimal places).
+6. Log a new workout completion, meal, or habit for that client, refresh the Home tab, and confirm the score changes in the direction you'd expect (up, generally) — then re-run the queries and re-check the math to confirm it still matches exactly.
+
 ## Project structure reference
 
 ```
@@ -325,14 +380,14 @@ src/
         [id].tsx          # client's workout view — logs performance, or shows it once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar
-        index.tsx        # Home tab — greeting, Up Next, Today's Habits checklist
+        index.tsx        # Home tab — greeting, Momentum Score, Up Next, Today's Habits checklist
         training.tsx      # Training tab — full assignment history
         nutrition.tsx      # Nutrition tab — 4 meal sections, add-entry popup, calorie total
         progress.tsx       # Progress tab — log/update today's weight, chronological history
         calendar.tsx        # placeholder
   components/
     coming-soon.tsx     # shared "X — Coming soon." screen for the 1 remaining placeholder tab (Calendar)
-    hero-stat.tsx        # the glowing teal oversized-number card used on every list screen
+    hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
@@ -345,6 +400,7 @@ src/
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() database calls
     weight-logs.ts           # saveWeightLog() (upsert) / listWeightLogs() database calls
     habits.ts                 # coach + client habit + habit-log database calls
+    momentum.ts                # getMomentumScore() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
   workouts.sql             # paste in after schema.sql, adds workouts + workout_exercises

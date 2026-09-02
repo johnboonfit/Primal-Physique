@@ -10,6 +10,7 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
+import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -34,6 +35,10 @@ export default function ClientHomeScreen() {
   const [habitsLoading, setHabitsLoading] = useState(true);
   const [habitsError, setHabitsError] = useState<string | null>(null);
   const [completingId, setCompletingId] = useState<string | null>(null);
+
+  const [momentum, setMomentum] = useState<MomentumBreakdown | null>(null);
+  const [momentumLoading, setMomentumLoading] = useState(true);
+  const [momentumError, setMomentumError] = useState<string | null>(null);
 
   const logDate = todayISODate();
 
@@ -80,6 +85,29 @@ export default function ClientHomeScreen() {
     }, [loadHabits])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+
+      setMomentumLoading(true);
+      getMomentumScore(session.user.id)
+        .then((data) => {
+          if (!cancelled) setMomentum(data);
+        })
+        .catch((err) => {
+          if (!cancelled) setMomentumError(err instanceof Error ? err.message : 'Failed to calculate your score.');
+        })
+        .finally(() => {
+          if (!cancelled) setMomentumLoading(false);
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [session])
+  );
+
   const handleCompleteHabit = async (habitId: string) => {
     if (!session || completedIds.has(habitId)) return;
     setCompletingId(habitId);
@@ -110,11 +138,28 @@ export default function ClientHomeScreen() {
             </Pressable>
           </View>
 
-          {!loading && !error && <HeroStat value={upNext.length} label="Workouts Up Next" />}
+          {momentumLoading && <ActivityIndicator style={styles.loader} />}
 
-          <ThemedText type="smallBold" style={styles.sectionLabel}>
-            Up Next
-          </ThemedText>
+          {!momentumLoading && momentumError && <ThemedText style={styles.error}>{momentumError}</ThemedText>}
+
+          {!momentumLoading && !momentumError && momentum && (
+            <HeroStat
+              value={momentum.score.toFixed(2)}
+              label="Momentum Score"
+              progress={(momentum.score - 1) / 9}
+            />
+          )}
+
+          <View style={styles.sectionHeaderRow}>
+            <ThemedText type="smallBold" style={styles.sectionLabel}>
+              Up Next
+            </ThemedText>
+            {!loading && !error && upNext.length > 0 && (
+              <ThemedText type="smallBold" themeColor="textSecondary">
+                {upNext.length} pending
+              </ThemedText>
+            )}
+          </View>
 
           {loading && <ActivityIndicator style={styles.loader} />}
 
@@ -144,7 +189,7 @@ export default function ClientHomeScreen() {
               </ThemedView>
             ))}
 
-          <View style={styles.habitsHeader}>
+          <View style={styles.sectionHeaderRow}>
             <ThemedText type="smallBold">Today's Habits</ThemedText>
             {!habitsLoading && !habitsError && habits.length > 0 && (
               <ThemedText type="smallBold" style={styles.habitsCount}>
@@ -238,7 +283,7 @@ const styles = StyleSheet.create({
   startButtonText: {
     color: Colors.text,
   },
-  habitsHeader: {
+  sectionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
