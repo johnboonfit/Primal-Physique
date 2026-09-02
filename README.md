@@ -1103,6 +1103,25 @@ No new SQL. Both pieces of this chunk lean entirely on data and permissions that
 3. Switch to Month view and page into a month that falls entirely within one phase — confirm the same label appears and matches. Page into a month before the client's very first assigned programme (or after their last one ends) — confirm the label disappears rather than showing something misleading.
 4. Repeat step 1 from the coach's side, in Programme Builder's embedded calendar for that same client — confirm it shows the identical phase/week label, since it's reading the same `listClientPhases()`/`getPhaseForDate()` logic against the same data.
 
+## Fixing the "app resets to Home after backgrounding" bug
+
+No new SQL, no navigation-library upgrade, and — this is the part worth understanding — it turned out not to be about navigation state at all. Backgrounding the app (switching apps, locking the screen) and returning was snapping the client's 5-tab view back to the Home tab, and doing the equivalent to a coach mid-way through a section (Clients, Programmes, etc.) — dropping them back to that section's own list screen.
+
+**The real cause:** every screen in the app that needs to know the signed-in user's role (every coach-only section, plus the client's tab bar) reads `profile` from `AuthProvider`, and each one had a guard that read `if (loadingProfile) return null`. That line was written for one specific moment — the split second right after login, before the app has ever fetched the `profiles` row — so it doesn't render anything role-gated before it actually knows the role.
+
+The problem is `loadingProfile` didn't only turn on for that first fetch. `AuthProvider` re-fetches the profile every time Supabase hands it a new `session` object, and Supabase creates a **brand-new session object on every `TOKEN_REFRESHED` event** — including the routine, automatic token refresh that fires almost every time the app comes back from the background (its refresh timer is paused while backgrounded, so the moment you resume, it checks whether the token's due for a refresh and, almost always, refreshes it). Same user, same role, nothing meaningful changed — but the effect treated it exactly like a fresh login, flipping `loadingProfile` back on while it re-fetched a profile row that hadn't changed.
+
+Every one of those `if (loadingProfile) return null` guards took that as its cue to unmount: the client's whole `<Tabs>` navigator, or a coach section's whole `<Stack>`, for the half-second the re-fetch was in flight. When it flipped back off and the navigator remounted, it had no memory of where it had been — a freshly created `<Tabs>` opens on its first tab (Home), and a freshly created `<Stack>` opens on its first screen (that section's index). That's the entire bug: not a lost navigation state, not the root navigator remounting, but seven separate, identically-written guards each discarding and rebuilding their own corner of the app on a routine, harmless token refresh.
+
+**The fix, two parts:**
+1. `AuthProvider`'s profile-fetching effect now keys off `session?.user.id`, not the `session` object itself. A token refresh changes the object but not the user id, so it's a no-op now — the effect (and `loadingProfile`) only fires again when the signed-in user actually changes (sign-in, sign-out, switching accounts).
+2. Every one of those seven guards (`programmes`, `clients`, `assignments`, `habits`, `workouts`, `exercise-library`, and the client's `<Tabs>` layout) now reads `if (loadingProfile && !profile) return null` — so even if a re-fetch ever does happen while a profile is already cached, it no longer unmounts a navigator that's already rendering. It only blocks rendering during the one moment that guard was actually meant for: before the very first profile fetch resolves.
+
+**Verify it:**
+1. Log in as a client, navigate a few tabs deep (e.g. Training or Progress, not Home), then background the app (switch to another app or lock the screen) and wait at least 10–15 seconds before returning — confirm you land back on the same tab, not Home.
+2. Log in as a coach, drill into something nested (e.g. Clients → a specific client, or Programme Builder for one client's assigned programme), background and return the same way — confirm you're still on that exact screen, not bounced back to the Clients or Programme Builder list.
+3. To see the actual mechanism rather than just the symptom: temporarily add a `console.log('profile fetch', userId)` inside `AuthProvider`'s effect, background/resume a few times, and confirm it does **not** log again on resume (only once, at login) — proving the fetch that used to repeat on every resume no longer does.
+
 ## Project structure reference
 
 ```

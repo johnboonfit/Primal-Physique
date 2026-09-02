@@ -11,7 +11,12 @@ import { useAuth } from '@/context/auth-context';
 export default function ClientTabsLayout() {
   const { profile, loadingProfile } = useAuth();
 
-  if (loadingProfile) return null;
+  // Only block on a profile we don't have yet — not on a later re-fetch
+  // (e.g. after a token refresh on app resume) of a profile we already
+  // have. Unmounting <Tabs> here on every re-fetch was exactly what reset
+  // the active tab back to Home every time the app came back from the
+  // background.
+  if (loadingProfile && !profile) return null;
   if (profile?.role !== 'client') return <Redirect href="/home" />;
 
   return (

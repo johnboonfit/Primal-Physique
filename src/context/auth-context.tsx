@@ -43,8 +43,18 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return () => listener.subscription.unsubscribe();
   }, []);
 
+  const userId = session?.user.id ?? null;
+
   useEffect(() => {
-    if (!session) {
+    // Keyed on the user id, not the `session` object itself: Supabase hands
+    // back a brand-new session object on every `TOKEN_REFRESHED` event too
+    // (routinely fired the moment the app returns from the background), even
+    // though it's still the same signed-in user. Re-running this fetch on
+    // every one of those — and flipping `loadingProfile` while it's in
+    // flight — is what used to make every role-guarded screen below think
+    // the profile was loading from scratch and unmount itself, snapping
+    // navigation back to that section's starting screen on every resume.
+    if (!userId) {
       setProfile(null);
       return;
     }
@@ -55,7 +65,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     supabase
       .from('profiles')
       .select('id, email, role, full_name')
-      .eq('id', session.user.id)
+      .eq('id', userId)
       .single()
       .then(({ data, error }) => {
         if (cancelled) return;
@@ -71,7 +81,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return () => {
       cancelled = true;
     };
-  }, [session]);
+  }, [userId]);
 
   const signOut = async () => {
     await supabase.auth.signOut();
