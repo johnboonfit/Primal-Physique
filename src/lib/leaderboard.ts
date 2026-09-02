@@ -1,16 +1,18 @@
 import { getCurrentWeekRange } from '@/lib/momentum';
 import { supabase } from '@/lib/supabase';
 
+// The stored value stays 'club' (matches client_tiers' check constraint
+// and any rows already set) — only the label shown in the app changes.
 export type ClientTier = 'club' | 'accelerator' | 'precision';
 
 export const CLIENT_TIERS: { key: ClientTier; label: string }[] = [
-  { key: 'club', label: 'Club' },
+  { key: 'club', label: 'Base' },
   { key: 'accelerator', label: 'Accelerator' },
   { key: 'precision', label: 'Precision' },
 ];
 
-/** Club (the base membership) doesn't unlock Leaderboards — it's a
- * premium perk on top of the two higher tiers. */
+/** Base (the base membership, stored as 'club') doesn't unlock
+ * Leaderboards — it's a premium perk on top of the two higher tiers. */
 const TIERS_WITH_LEADERBOARD_ACCESS: ClientTier[] = ['accelerator', 'precision'];
 
 export function tierHasLeaderboardAccess(tier: ClientTier): boolean {

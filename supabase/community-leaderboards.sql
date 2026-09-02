@@ -1,9 +1,12 @@
 -- Run this in the Supabase SQL Editor after community-moderation.sql.
 --
 -- Two things: a client_tiers table (which real membership tier each
--- client is on — Club, Accelerator, or Precision, matching your actual
--- Stripe products) and two SECURITY DEFINER functions that compute the
--- Leaderboard's weekly and lifetime XP rankings.
+-- client is on — matching your actual Stripe products: Club (shown in
+-- the app as "Base"), Accelerator, or Precision) and two SECURITY
+-- DEFINER functions that compute the Leaderboard's weekly and lifetime
+-- XP rankings. The stored value stays 'club' throughout (matches the
+-- Stripe product and the check constraint below) — only the label
+-- shown in the app changed.
 --
 -- There's no live Stripe -> Supabase sync yet — that's real
 -- infrastructure (a webhook, a customer-id mapping) well beyond this

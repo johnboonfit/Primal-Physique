@@ -1380,7 +1380,7 @@ Run `supabase/community-moderation.sql` in the SQL Editor after `community.sql`.
 
 Run `supabase/community-leaderboards.sql` in the SQL Editor after `community-moderation.sql`. Adds a second sub-tab to Community — **Posts** (everything above) and **Leaderboards** — ranking clients by XP, gated by a real membership tier for the first time in this app.
 
-**Where the tiers actually came from.** Rather than invent a meaningless "Tier 1/Tier 2," I checked your live Stripe account — you have three real products: **Club** (£29.99/mo, the base membership, whose own Stripe listing already promises "Community access"), **Accelerator** (£99/mo), and **Precision** (£250/mo, full weekly-accountability tier). Leaderboards is gated to Accelerator and Precision — Club members see Posts normally but get the locked/upsell state on Leaderboards. **There's no live Stripe → Supabase sync** — that's a real webhook-plus-customer-mapping project of its own, well beyond this chunk. For now, the coach sets each client's tier by hand from a new "Tier: Club / Accelerator / Precision" row on the Clients list, to match whatever they actually pay for. A client with no tier set yet defaults to Club (the most restricted option) — never accidentally the most permissive one.
+**Where the tiers actually came from.** Rather than invent a meaningless "Tier 1/Tier 2," I checked your live Stripe account — you have three real products: **Club** (£29.99/mo, the base membership, whose own Stripe listing already promises "Community access" — shown in the app as **Base**), **Accelerator** (£99/mo), and **Precision** (£250/mo, full weekly-accountability tier). Leaderboards is gated to Accelerator and Precision — Base members see Posts normally but get the locked/upsell state on Leaderboards. **There's no live Stripe → Supabase sync** — that's a real webhook-plus-customer-mapping project of its own, well beyond this chunk. For now, the coach sets each client's tier by hand from a new "Tier: Base / Accelerator / Precision" row on the Clients list, to match whatever they actually pay for. A client with no tier set yet defaults to Base (the most restricted option) — never accidentally the most permissive one. (The stored value is still `'club'` under the hood, matching the Stripe product and the database's check constraint — only the on-screen label changed.)
 
 **The ranking itself reuses real data, not a second scoring system:**
 - **This week** (the default view) sums the `xp_events` ledger — the exact same table `profiles.total_xp` is itself kept in sync from by the trigger `xp.sql` set up — filtered to the current Monday–Sunday week. That's the same week boundary Momentum Score already uses (`getCurrentWeekRange()`, now exported from `momentum.ts` specifically so this doesn't become a second copy of that date math).
@@ -1399,8 +1399,8 @@ Run `supabase/community-leaderboards.sql` in the SQL Editor after `community-mod
 5. Log a new workout completion, meal, or habit for one client (any of the ways that already award XP), refresh Leaderboards — confirm This week's total for that client goes up by the right amount immediately, since it's reading the ledger live, not a cached number.
 
 **Verify the tier gate actually works, both directions:**
-1. As the coach, open Clients — confirm every client shows a Tier row defaulting to Club, and tapping Accelerator or Precision updates it (check `select tier from client_tiers where client_id = '<id>';` in Supabase to confirm it saved).
-2. As a Club-tier client, open Community → Leaderboards — confirm you see the locked "🔒 Leaderboards... Accelerator and Precision perk" message, not the real ranking, while Posts on the other sub-tab works completely normally.
+1. As the coach, open Clients — confirm every client shows a Tier row defaulting to Base, and tapping Accelerator or Precision updates it (check `select tier from client_tiers where client_id = '<id>';` in Supabase to confirm it saved as `'club'`).
+2. As a Base-tier client, open Community → Leaderboards — confirm you see the locked "🔒 Leaderboards... Accelerator and Precision perk" message, not the real ranking, while Posts on the other sub-tab works completely normally.
 3. As the coach, set that same client to Accelerator. As that client, reopen Leaderboards — confirm the real ranking now shows.
 4. As the coach, open Leaderboards yourself — confirm you always see the real ranking regardless of any tier, since tiers are a client-only concept.
 
@@ -1444,7 +1444,7 @@ src/
         new.tsx          # pick client + habit name, save
       clients/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge and a Tier: Club/Accelerator/Precision picker (coach-set, gates that client's Leaderboards access)
+        index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge and a Tier: Base/Accelerator/Precision picker (coach-set, gates that client's Leaderboards access)
         [id].tsx          # one client's detail page — Programme section + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete)
       forms/
         _layout.tsx      # coach-only guard for everything below
@@ -1505,7 +1505,7 @@ src/
     momentum.ts                # getMomentumScore() — pure calculation, no new tables; getCurrentWeekRange() exported so other "this week" features (the Leaderboard's weekly XP ranking) share the exact same Monday, not a second copy of the date math
     compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
     community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file
-    leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products
+    leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products (Club shown in the app as "Base")
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
