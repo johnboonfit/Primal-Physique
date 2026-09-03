@@ -272,6 +272,46 @@ export async function archiveProgramme(programmeId: string) {
   if (error) throw error;
 }
 
+/**
+ * Unassigns a client's own programme instance -- NOT their shared coach
+ * template (this only ever runs against the client-owned copy
+ * assignProgrammeToClient makes; that copy is independent from the start,
+ * so this can never affect the template or any other client). Reuses the
+ * exact same `archived` flag and reasoning as archiveProgramme/
+ * archiveWorkout: the row (and every session, log, and completed
+ * assignment under it) stays exactly where it is, so history is never
+ * lost -- getClientProgramme() already excludes an archived instance, so
+ * it simply stops being "this client's current programme."
+ *
+ * Also archives every workout that belongs to one of this programme's own
+ * weeks, so listMyAssignments()'s existing archived-workout check pulls
+ * any of its still-PENDING sessions out of Up Next and the Calendar too.
+ * Sessions already completed are untouched either way -- archiving a
+ * workout only ever hides a *pending* one, never real logged history.
+ */
+export async function unassignProgramme(programmeId: string): Promise<void> {
+  const { error: programmeError } = await supabase
+    .from('programme_blocks')
+    .update({ archived: true })
+    .eq('id', programmeId);
+  if (programmeError) throw programmeError;
+
+  const { data: weeks, error: weeksError } = await supabase
+    .from('programme_weeks')
+    .select('id')
+    .eq('programme_id', programmeId);
+  if (weeksError) throw weeksError;
+
+  const weekIds = (weeks ?? []).map((week) => week.id as string);
+  if (weekIds.length === 0) return;
+
+  const { error: workoutsError } = await supabase
+    .from('workouts')
+    .update({ archived: true })
+    .in('programme_week_id', weekIds);
+  if (workoutsError) throw workoutsError;
+}
+
 type CopiedWeek = {
   weekId: string;
   weekNumber: number;
@@ -617,6 +657,7 @@ export async function getClientProgramme(clientId: string): Promise<ClientProgra
     .from('programme_blocks')
     .select('id, name, description, cover_image_url, goal_type, duration_weeks, start_date')
     .eq('client_id', clientId)
+    .eq('archived', false)
     .not('start_date', 'is', null)
     .order('start_date', { ascending: false })
     .limit(1)

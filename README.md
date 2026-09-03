@@ -1679,6 +1679,35 @@ Unchecking a set (or editing an already-checked one) goes through the exact same
    Confirm one row per checked set (not per exercise), with the weight/reps/RPE you actually entered — including the one you logged offline in step 7.
 9. Tap **Finish Session** — confirm the status flips to Completed, every input becomes read-only, and re-running the query above shows nothing changed from what was already logged incrementally (finishing the session never (re-)saves anything itself — every set was already saved the moment it was checked).
 
+## Editing a saved workout, and unassigning workouts/programmes from a client
+
+No new migration — every table and RLS policy this needed already existed (`workout_exercises`/`workout_exercise_sets` already had coach-scoped update/delete policies from earlier chunks; `assignments` already had a coach-scoped delete policy). This chunk closes two gaps: there was no way to open an already-saved workout and change it, and no way to pull a workout or programme back off a client once assigned.
+
+**Editing a workout reuses the exact same builder screen as creating one.** `/workouts/[id]` (tap **Edit** on a workout in My Workouts) renders the identical form `/workouts/new` does — same exercise search, same baseline fields, same set-type tagging — just preloaded from `getWorkoutDetail()` instead of starting blank. Both routes are now thin wrappers around one shared `<WorkoutForm>` component, so there's exactly one place this UI's behavior lives, not two copies that could quietly drift apart.
+
+**Saving an edit updates exercises in place — it never deletes and recreates them.** An exercise a client has already logged sets against still has to mean the same thing after the coach tweaks its sets/reps or baseline, so every exercise the coach keeps is updated by its existing row id, never replaced. Only genuinely new exercises get a fresh insert, and only genuinely removed ones get deleted — and a removal is checked against `workout_logs` first: if a client has ever logged a set against that exercise, the whole save is refused with a clear message naming it, rather than silently cascading away that client's real history. (Tagged sets themselves carry no history of their own — `workout_logs` stores its own set number directly — so those are freely replaced on every save.)
+
+**Unassigning a workout deletes the assignment outright, but only when that's actually safe.** A pending workout with nothing logged against it yet is a scheduling mistake with no cost to undoing — "Unassign" on the Clients page removes it completely. It's refused for a completed workout (that's a real result) and refused for a pending one the client has already started logging sets against, even though it's technically still "pending" — deleting the assignment would cascade-delete those real logged sets right along with it.
+
+**Unassigning a programme archives it, using the exact same flag as everything else in this app that "unassigns" — it never deletes.** A client's assigned programme is already their own fully independent copy (made by `assignProgrammeToClient` back when Programme Builder shipped), so "Unassign" flips `programme_blocks.archived` on that copy and archives every workout under its own weeks too. Archiving those workouts is what makes any of the programme's still-*pending* sessions disappear from Up Next and the Calendar — reusing the exact same archived-workout check the live session screen chunk added to `listMyAssignments()`, rather than a second, parallel filter. Anything already completed under the programme is untouched either way, on both counts: an archived programme still exists for `getProgrammeDetail()`/history, and archiving a workout only ever hides a pending one, never a real logged result.
+
+**Verify editing a workout preserves history correctly:**
+1. As the coach, open a workout that's been assigned to a client who has already logged at least one set against one of its exercises.
+2. Tap **Edit**, remove that specific exercise, and try to save. Confirm you get an error naming it and explaining it can't be removed — and that nothing was changed (`select * from workout_exercises where workout_id = '<id>';` still shows it).
+3. Instead, just change that exercise's sets/reps or baseline and save. Confirm the save succeeds and `workout_exercises.id` for that row is unchanged (`select id from workout_exercises where workout_id = '<id>' order by position;`) — proving the client's earlier logged sets (`workout_logs.exercise_id`) still point at a row that still exists and still means the same exercise.
+4. Add a brand-new exercise and save. Confirm it appears at the bottom of the workout for anyone who opens it next.
+
+**Verify unassigning a workout respects logged history:**
+1. On the Clients page, under **Assigned Workouts**, unassign a pending workout with nothing logged yet. Confirm it disappears from the list, and `select * from assignments where id = '<id>';` returns nothing.
+2. Try to unassign a pending workout the client has already logged at least one set against. Confirm you get an error and the assignment (and its logs) are untouched.
+3. Confirm a **completed** workout shows in the list with no Unassign option at all.
+
+**Verify unassigning a programme:**
+1. Assign a programme to a client, then have them complete at least one session and leave at least one more pending.
+2. On the Clients page, tap **Unassign** on the Programme card. Confirm the card now reads "No programme assigned yet."
+3. As that client, confirm the pending session is gone from Up Next and the Calendar, but the completed one still shows in their history exactly as before.
+4. Run `select archived from programme_blocks where id = '<programme id>';` — confirm `true`, and confirm the row (and its weeks/workouts/logs) still exist rather than being gone.
+
 ## Project structure reference
 
 ```
@@ -1699,8 +1728,9 @@ src/
         moderation.tsx      # coach-only (inline role check, no folder _layout.tsx): open reports with Dismiss/Delete post/Block author, plus a Blocked clients list with Unblock
       workouts/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of the coach's workouts, with Archive (soft-delete — see archive-content.sql)
-        new.tsx          # create-workout form (search-select exercises from the library); also reused for programme-week sessions
+        index.tsx        # list of the coach's workouts, with Edit and Archive (soft-delete — see archive-content.sql)
+        new.tsx          # thin wrapper around <WorkoutForm> for a blank workout; also reused for programme-week sessions
+        [id].tsx          # thin wrapper around the exact same <WorkoutForm>, preloaded from getWorkoutDetail() for editing
       programmes/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # Template Library — list of the coach's programmes, with Duplicate and Archive
@@ -1737,7 +1767,7 @@ src/
       clients/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge and a Tier: Base/Accelerator/Precision picker (coach-set, gates that client's Leaderboards access)
-        [id].tsx          # one client's detail page — Programme section + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete)
+        [id].tsx          # one client's detail page — Programme section (Unassign) + Assigned Workouts section (one-off workouts, Unassign) + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete)
       forms/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's check-in form templates, with Assign and Set as readiness (✓ badge on whichever one is currently the active pre-workout questionnaire)
@@ -1777,17 +1807,18 @@ src/
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
     question-answer-input.tsx    # <AnswerInput> — one render branch per answer kind (short_text/numeric/single_choice/multi_choice/scale), same reasoning; used by the check-in fill-out screen
     nutri-score-badge.tsx         # <NutriScoreBadge grade size> — official Nutri-Score A-E colors, small (list/search rows) or large (recipe hero) size
+    workout-form.tsx               # <WorkoutForm workoutId? weekId?> — the coach's whole workout builder, shared by /workouts/new (blank, or a programme-week session) and /workouts/[id] (preloaded for editing); which mode it's in is just whether workoutId was passed
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
   context/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
     supabase.ts          # Supabase client, reads from .env
-    workouts.ts           # createWorkout() (also saves per-exercise baseline weight/reps + any tagged sets) / getWorkoutDetail() (every exercise + baseline + tagged sets, in order -- the query shape a client screen will reuse) / listWorkouts() / listWorkoutsForWeek() / archiveWorkout() database calls
+    workouts.ts           # createWorkout() (also saves per-exercise baseline weight/reps + any tagged sets) / getWorkoutDetail() (every exercise + baseline + tagged sets + exerciseLibraryId/muscleGroup, in order) / updateWorkout() (reconciles exercises by id in place -- refuses to remove one with logged history) / listWorkouts() / listWorkoutsForWeek() / archiveWorkout() database calls
     set-types.ts           # SET_TYPES / SET_TYPE_DESCRIPTIONS -- the four set-tagging options and their fixed, built-in technique explanations (Drop Set/Rest-Pause/FST-7; Normal has none)
-    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / archiveProgramme() / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
+    programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() (excludes an archived/unassigned instance) / updateProgrammeName() / archiveProgramme() (a coach's own template) / unassignProgramme() (a client's assigned instance -- archives it and its own workouts) / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app; both now include each exercise's description
-    assignments.ts         # coach + client assignment database calls; getAssignmentDetail() (prescribed exercises + tagged sets, no logged data — see set-logging.ts) / getSetPrefills() — the per-SET weight/reps fallback chain (that exact set number's previous session by exercise_library_id, then coach baseline, then nothing fabricated) / finishSession() (just flips status — logging already happened incrementally) / getCoachAssignmentDetail() (per-set loggedSets[] now, not one logged value per exercise)
+    assignments.ts         # coach + client assignment database calls; getAssignmentDetail() (prescribed exercises + tagged sets, no logged data — see set-logging.ts) / getSetPrefills() — the per-SET weight/reps fallback chain (that exact set number's previous session by exercise_library_id, then coach baseline, then nothing fabricated) / finishSession() (just flips status — logging already happened incrementally) / getCoachAssignmentDetail() (per-set loggedSets[] now, not one logged value per exercise) / listClientStandaloneAssignments() (one client's one-off workouts, excludes programme sessions) / unassignWorkout() (deletes a pending assignment outright -- refuses one with logged sets)
     clients.ts               # listClients() / getClient() — coach-facing client roster, single-coach app so any coach sees any client
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() / listFoodLogHistory() / deleteFoodLog() — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)

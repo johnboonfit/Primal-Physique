@@ -7,6 +7,11 @@ import { ConfirmDialog } from '@/components/confirm-dialog';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
+import {
+  listClientStandaloneAssignments,
+  unassignWorkout,
+  type ClientAssignmentSummary,
+} from '@/lib/assignments';
 import { getClient, type ClientSummary } from '@/lib/clients';
 import { deleteFoodLog, listFoodLogHistory, type DailyFoodLog } from '@/lib/food-logs';
 import { archiveFormAssignment, listClientFormAssignments, type ClientFormAssignment } from '@/lib/form-assignments';
@@ -15,12 +20,20 @@ import {
   listClientCheckInInstances,
   type ClientCheckInInstance,
 } from '@/lib/form-check-ins';
-import { getClientProgramme, GOAL_TYPES, SCHEDULED_DAYS, type ClientProgrammeView } from '@/lib/programmes';
+import {
+  getClientProgramme,
+  GOAL_TYPES,
+  SCHEDULED_DAYS,
+  unassignProgramme,
+  type ClientProgrammeView,
+} from '@/lib/programmes';
 import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
 
 type PendingAction =
   | { kind: 'cancel-schedule'; id: string; formName: string }
-  | { kind: 'remove-checkin'; id: string; formName: string; scheduledDate: string; status: ClientCheckInInstance['status'] };
+  | { kind: 'remove-checkin'; id: string; formName: string; scheduledDate: string; status: ClientCheckInInstance['status'] }
+  | { kind: 'unassign-workout'; id: string; workoutName: string }
+  | { kind: 'unassign-programme'; id: string; programmeName: string };
 
 const CHECK_IN_STATUS_LABEL: Record<ClientCheckInInstance['status'], string> = {
   pending: 'Pending',
@@ -56,6 +69,7 @@ export default function ClientDetailScreen() {
   const [history, setHistory] = useState<DailyFoodLog[]>([]);
   const [target, setTarget] = useState<CalorieTarget | null>(null);
   const [programme, setProgramme] = useState<ClientProgrammeView | null>(null);
+  const [workoutAssignments, setWorkoutAssignments] = useState<ClientAssignmentSummary[]>([]);
   const [formAssignments, setFormAssignments] = useState<ClientFormAssignment[]>([]);
   const [checkInInstances, setCheckInInstances] = useState<ClientCheckInInstance[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,14 +88,16 @@ export default function ClientDetailScreen() {
       listFoodLogHistory(id, HISTORY_DAYS),
       getCalorieTarget(id),
       getClientProgramme(id),
+      listClientStandaloneAssignments(id),
       listClientFormAssignments(id),
       listClientCheckInInstances(id),
     ])
-      .then(([clientData, historyData, targetData, programmeData, formAssignmentData, checkInInstanceData]) => {
+      .then(([clientData, historyData, targetData, programmeData, workoutAssignmentData, formAssignmentData, checkInInstanceData]) => {
         setClient(clientData);
         setHistory(historyData);
         setTarget(targetData);
         setProgramme(programmeData);
+        setWorkoutAssignments(workoutAssignmentData);
         setFormAssignments(formAssignmentData);
         setCheckInInstances(checkInInstanceData);
       })
@@ -114,6 +130,10 @@ export default function ClientDetailScreen() {
     try {
       if (pendingAction.kind === 'cancel-schedule') {
         await archiveFormAssignment(pendingAction.id);
+      } else if (pendingAction.kind === 'unassign-workout') {
+        await unassignWorkout(pendingAction.id);
+      } else if (pendingAction.kind === 'unassign-programme') {
+        await unassignProgramme(pendingAction.id);
       } else {
         await archiveOrDeleteCheckIn(pendingAction.id);
       }
@@ -152,18 +172,57 @@ export default function ClientDetailScreen() {
             </ThemedText>
 
             {programme ? (
-              <Pressable onPress={() => router.push(`/programmes/${programme.id}`)}>
-                <ThemedView type="backgroundElement" style={styles.programmeCard}>
+              <ThemedView type="backgroundElement" style={styles.programmeCard}>
+                <Pressable onPress={() => router.push(`/programmes/${programme.id}`)}>
                   <ThemedText type="smallBold">{programme.name}</ThemedText>
                   <ThemedText type="small" themeColor="textSecondary">
                     Week {programme.currentWeekNumber}/{programme.durationWeeks} · View programme &amp; calendar →
                   </ThemedText>
-                </ThemedView>
-              </Pressable>
+                </Pressable>
+                <View style={styles.cardActions}>
+                  <Pressable
+                    onPress={() => setPendingAction({ kind: 'unassign-programme', id: programme.id, programmeName: programme.name })}>
+                    <ThemedText type="small" style={styles.removeText}>
+                      Unassign
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              </ThemedView>
             ) : (
               <ThemedText type="small" themeColor="textSecondary">
                 No programme assigned yet.
               </ThemedText>
+            )}
+
+            <ThemedText type="smallBold" style={styles.sectionLabel}>
+              Assigned Workouts
+            </ThemedText>
+
+            {workoutAssignments.length === 0 ? (
+              <ThemedText type="small" themeColor="textSecondary">
+                No one-off workouts assigned yet.
+              </ThemedText>
+            ) : (
+              workoutAssignments.map((assignment) => (
+                <ThemedView key={assignment.id} type="backgroundElement" style={styles.scheduleCard}>
+                  <ThemedText type="smallBold">{assignment.workoutName}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {assignment.assignedDate} · {assignment.status === 'completed' ? 'Completed' : 'Pending'}
+                  </ThemedText>
+                  {assignment.status === 'pending' && (
+                    <View style={styles.cardActions}>
+                      <Pressable
+                        onPress={() =>
+                          setPendingAction({ kind: 'unassign-workout', id: assignment.id, workoutName: assignment.workoutName })
+                        }>
+                        <ThemedText type="small" style={styles.removeText}>
+                          Unassign
+                        </ThemedText>
+                      </Pressable>
+                    </View>
+                  )}
+                </ThemedView>
+              ))
             )}
 
             <ThemedText type="smallBold" style={styles.sectionLabel}>
@@ -299,17 +358,35 @@ export default function ClientDetailScreen() {
 
       <ConfirmDialog
         visible={pendingAction !== null}
-        title={pendingAction?.kind === 'cancel-schedule' ? 'Cancel this schedule?' : 'Remove this check-in?'}
+        title={
+          pendingAction?.kind === 'cancel-schedule'
+            ? 'Cancel this schedule?'
+            : pendingAction?.kind === 'unassign-workout'
+              ? 'Unassign this workout?'
+              : pendingAction?.kind === 'unassign-programme'
+                ? 'Unassign this programme?'
+                : 'Remove this check-in?'
+        }
         message={
           pendingAction?.kind === 'cancel-schedule'
             ? `Stops new weekly check-ins for "${pendingAction.formName}" from being created. Any check-ins already generated aren't affected.`
-            : pendingAction?.kind === 'remove-checkin'
-              ? pendingAction.status === 'pending'
-                ? `"${pendingAction.formName}" (${pendingAction.scheduledDate}) hasn't been submitted yet, so it will be permanently deleted.`
-                : `"${pendingAction.formName}" (${pendingAction.scheduledDate}) is already ${CHECK_IN_STATUS_LABEL[pendingAction.status].toLowerCase()} — it will be archived, not deleted, so it still counts toward Compliance Score / On Time-Late tracking.`
-              : ''
+            : pendingAction?.kind === 'unassign-workout'
+              ? `"${pendingAction.workoutName}" will be removed from this client entirely. Only possible because it's still pending with nothing logged against it yet.`
+              : pendingAction?.kind === 'unassign-programme'
+                ? `"${pendingAction.programmeName}" will disappear from this client's Up Next, Calendar, and Programme card. Everything already completed under it stays exactly as it is and still counts toward their history.`
+                : pendingAction?.kind === 'remove-checkin'
+                  ? pendingAction.status === 'pending'
+                    ? `"${pendingAction.formName}" (${pendingAction.scheduledDate}) hasn't been submitted yet, so it will be permanently deleted.`
+                    : `"${pendingAction.formName}" (${pendingAction.scheduledDate}) is already ${CHECK_IN_STATUS_LABEL[pendingAction.status].toLowerCase()} — it will be archived, not deleted, so it still counts toward Compliance Score / On Time-Late tracking.`
+                  : ''
         }
-        confirmLabel={pendingAction?.kind === 'cancel-schedule' ? 'Cancel schedule' : 'Remove'}
+        confirmLabel={
+          pendingAction?.kind === 'cancel-schedule'
+            ? 'Cancel schedule'
+            : pendingAction?.kind === 'unassign-workout' || pendingAction?.kind === 'unassign-programme'
+              ? 'Unassign'
+              : 'Remove'
+        }
         busy={actioning}
         onConfirm={handleConfirmAction}
         onCancel={() => setPendingAction(null)}

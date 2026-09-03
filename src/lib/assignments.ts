@@ -232,6 +232,72 @@ export async function listMyAssignments(clientId: string): Promise<ClientAssignm
 }
 
 /**
+ * One client's one-off assigned workouts -- deliberately excludes
+ * anything whose workout belongs to a programme week, since those are
+ * already shown (with their own progress view) under that client's
+ * Programme section on the Clients page. Showing them again here would
+ * just be the same session twice under two different names.
+ */
+export async function listClientStandaloneAssignments(clientId: string): Promise<ClientAssignmentSummary[]> {
+  const { data, error } = await supabase
+    .from('assignments')
+    .select('id, assigned_date, status, workouts(name, programme_week_id)')
+    .eq('client_id', clientId)
+    .order('assigned_date', { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? [])
+    .filter((row) => {
+      const workout = row.workouts as unknown as { programme_week_id: string | null } | null;
+      return !workout?.programme_week_id;
+    })
+    .map((row) => ({
+      id: row.id as string,
+      workoutName: (row.workouts as unknown as { name: string } | null)?.name ?? 'Unknown workout',
+      assignedDate: row.assigned_date as string,
+      status: row.status as AssignmentStatus,
+    }));
+}
+
+/**
+ * Unassigns one pending workout outright -- safe because nothing
+ * references it yet. Refuses a completed one (that's a real result, not
+ * a scheduling mistake) and refuses one the client has already started
+ * logging sets against, even though it's technically still 'pending',
+ * since deleting the assignment would cascade-delete those real logged
+ * sets (workout_logs.assignment_id references assignments on delete
+ * cascade -- see workout-logs.sql). Either case throws a clear reason
+ * instead of silently doing nothing or destroying data.
+ */
+export async function unassignWorkout(assignmentId: string): Promise<void> {
+  const { data: assignment, error: fetchError } = await supabase
+    .from('assignments')
+    .select('status')
+    .eq('id', assignmentId)
+    .single();
+
+  if (fetchError) throw fetchError;
+  if (assignment.status !== 'pending') {
+    throw new Error("This workout has already been completed and can't be unassigned.");
+  }
+
+  const { data: logs, error: logsError } = await supabase
+    .from('workout_logs')
+    .select('id')
+    .eq('assignment_id', assignmentId)
+    .limit(1);
+
+  if (logsError) throw logsError;
+  if ((logs ?? []).length > 0) {
+    throw new Error("This client has already started logging sets for this workout, so it can't be unassigned.");
+  }
+
+  const { error: deleteError } = await supabase.from('assignments').delete().eq('id', assignmentId);
+  if (deleteError) throw deleteError;
+}
+
+/**
  * The exercise DEFINITION for a session -- name, description, target
  * sets/reps, baseline, and any tagged set techniques. Deliberately
  * carries no logged data at all: what's actually been done is a

@@ -92,6 +92,11 @@ export default function WorkoutsListScreen() {
                   {item.exerciseCount} exercise{item.exerciseCount === 1 ? '' : 's'}
                 </ThemedText>
                 <View style={styles.cardActions}>
+                  <Pressable onPress={() => router.push(`/workouts/${item.id}`)}>
+                    <ThemedText type="small" style={styles.editText}>
+                      Edit
+                    </ThemedText>
+                  </Pressable>
                   <Pressable onPress={() => setArchiveTarget(item)}>
                     <ThemedText type="small" style={styles.archiveText}>
                       Archive
@@ -168,6 +173,10 @@ const styles = StyleSheet.create({
   cardActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    gap: Spacing.three,
+  },
+  editText: {
+    color: Accent,
   },
   archiveText: {
     color: Colors.textSecondary,
