@@ -1600,6 +1600,27 @@ Run `supabase/readiness.sql` in the SQL Editor after `workout-set-types.sql`. Ev
    Confirm each session's four answers are grouped under its own distinct `assignment_id` — never mixed together, and never overwriting each other, even though both sets of answers came from the same client and the same questionnaire.
 3. Delete (or in a test environment, note the id of) one assignment and confirm its `readiness_responses` rows disappear with it (`on delete cascade`) while the other session's rows are untouched.
 
+## Weight/reps prefill: previous session, then coach baseline, then nothing made up
+
+No new migration — this is entirely app code, since every field it needs (`workout_logs`, and `workout_exercises.exercise_library_id`/`baseline_weight`/`baseline_reps`) already existed from earlier chunks. When a client opens an exercise they haven't logged yet for *this* session, the weight/reps fields now start pre-filled instead of blank, using a strict fallback order — and every pre-filled number stays fully editable, it's a starting point, never a locked value.
+
+**The three cases, walked through with concrete examples:**
+
+1. **Bench Press** — this client logged it 60kg × 8 reps in a previous session, and the coach also set a baseline of 40kg × 10 on this exercise. **Case 1 wins**: the fields pre-fill with 60 / 8, their own actual last performance — a real result always outranks a generic recommendation, even when both exist.
+2. **Bulgarian Split Squat** — this client has never logged this exercise before (first time it's come up), but the coach set a baseline of 20kg × 12 when building the workout. **Case 2**: the fields pre-fill with 20 / 12, and the screen labels it "Prefilled from your coach's suggested starting point" so the client knows it's a recommendation, not their own history.
+3. **Cable Face Pull** — brand new to this client, and the coach never set a baseline for it either. **Case 3**: the fields stay empty, with placeholder hint text ("Enter your starting weight" / "Enter your starting reps") instead of the generic "Weight"/"Reps" labels used everywhere else. Deliberately no fabricated number here — a "light starting weight" means something completely different for a deadlift than a bicep curl, so guessing one would be actively misleading rather than helpful.
+
+**Matching by the exercise, not the workout-exercise row.** Every time an exercise is added to a new workout, it gets a brand-new `workout_exercises` row (a fresh instance, its own id) — but it's the same underlying `exercise_library_id` every time the coach picks "Bench Press" again. Case 1's lookup matches on that library id across the client's entire logging history, not on any specific `workout_exercises.id`, which is what makes "their most recent numbers for this exact exercise" mean the same exercise across different workouts, weeks, and programmes — not just a coincidental repeat within one workout.
+
+**Resuming your own in-progress session takes priority over all three cases.** If a client already logged this exact exercise for THIS assignment (reopening a partly-filled session, or one already marked complete), the fields always show exactly what they themselves entered — the fallback chain never overwrites a real answer that already exists; it only ever fires for an exercise this specific session hasn't touched yet.
+
+**Verify all three fallback cases actually trigger:**
+1. **Previous session (case 1)**: log an exercise once (any weight/reps), mark that workout complete. Assign the *same client* a new workout containing the *same library exercise*. Open it — the fields should pre-fill with what was logged last time, and a small note should say it came from your last session.
+2. **Coach baseline (case 2)**: pick an exercise this client has never logged. In Workout Builder, set a baseline weight/reps on it when adding it to a workout, then assign that workout. Open it as the client — the fields should pre-fill with the coach's numbers, labeled as a suggested starting point.
+3. **Nothing available (case 3)**: assign a workout with an exercise this client has never logged and that has no baseline set. Open it — both fields should be empty, showing "Enter your starting weight" / "Enter your starting reps" instead of the usual placeholders.
+4. **Editability**: in any of the three cases, change the pre-filled number before saving, then mark the workout complete. Confirm what's actually stored (`select weight, reps from workout_logs where assignment_id = '<id>';`) matches what you typed, not the original suggestion.
+5. **Priority check**: reopen a workout you already partially logged (don't mark it complete). Confirm the fields show what you entered then — not a fresh pull from the fallback chain — proving case 0 (resuming your own session) always wins over cases 1–3.
+
 ## Project structure reference
 
 ```
@@ -1666,7 +1687,7 @@ src/
         [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
         assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
       assigned/
-        [id].tsx          # client's workout view — the active readiness questionnaire first if this session hasn't answered it yet, then logs performance, or shows it once completed
+        [id].tsx          # client's workout view — the active readiness questionnaire first if this session hasn't answered it yet, then logs performance (weight/reps prefilled: previous session > coach baseline > empty with a hint, always editable) or shows it once completed
       checkins/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
@@ -1708,7 +1729,7 @@ src/
     set-types.ts           # SET_TYPES / SET_TYPE_DESCRIPTIONS -- the four set-tagging options and their fixed, built-in technique explanations (Drop Set/Rest-Pause/FST-7; Normal has none)
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / archiveProgramme() / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
-    assignments.ts         # coach + client assignment + workout-log database calls
+    assignments.ts         # coach + client assignment + workout-log database calls; getExercisePrefills() — the weight/reps fallback chain (previous session by exercise_library_id, then coach baseline, then nothing fabricated)
     clients.ts               # listClients() / getClient() — coach-facing client roster, single-coach app so any coach sees any client
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() / listFoodLogHistory() / deleteFoodLog() — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)

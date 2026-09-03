@@ -9,7 +9,13 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import { getAssignmentDetail, logWorkout, type AssignmentDetail } from '@/lib/assignments';
+import {
+  getAssignmentDetail,
+  getExercisePrefills,
+  logWorkout,
+  type AssignmentDetail,
+  type ExercisePrefill,
+} from '@/lib/assignments';
 import { getQuestionTypeDefinition, type AnswerValue } from '@/lib/question-types';
 import { getReadinessStatusForAssignment, submitReadinessResponses, type ReadinessStatus } from '@/lib/readiness';
 import { awardWorkoutXp } from '@/lib/xp';
@@ -35,12 +41,32 @@ type ExerciseInput = {
   reps: string;
 };
 
-function buildInputsFromDetail(detail: AssignmentDetail): Record<string, ExerciseInput> {
+/**
+ * A resumed, already-logged exercise always shows exactly what the
+ * client themselves entered -- the fallback chain (previous session /
+ * coach baseline / nothing) only ever applies to an exercise THIS
+ * assignment hasn't been logged for yet, which is the whole point: it's
+ * a starting suggestion for a set that hasn't happened, not a
+ * replacement for a real answer that already exists.
+ */
+function buildInputsFromDetail(
+  detail: AssignmentDetail,
+  prefills: Record<string, ExercisePrefill>
+): Record<string, ExerciseInput> {
   const inputs: Record<string, ExerciseInput> = {};
   detail.exercises.forEach((exercise) => {
+    if (exercise.loggedWeight !== null || exercise.loggedReps !== null) {
+      inputs[exercise.id] = {
+        weight: exercise.loggedWeight !== null ? String(exercise.loggedWeight) : '',
+        reps: exercise.loggedReps !== null ? String(exercise.loggedReps) : '',
+      };
+      return;
+    }
+
+    const prefill = prefills[exercise.id];
     inputs[exercise.id] = {
-      weight: exercise.loggedWeight !== null ? String(exercise.loggedWeight) : '',
-      reps: exercise.loggedReps !== null ? String(exercise.loggedReps) : '',
+      weight: prefill && prefill.weight !== null ? String(prefill.weight) : '',
+      reps: prefill && prefill.reps !== null ? String(prefill.reps) : '',
     };
   });
   return inputs;
@@ -53,6 +79,7 @@ export default function AssignedWorkoutDetailScreen() {
 
   const [detail, setDetail] = useState<AssignmentDetail | null>(null);
   const [inputs, setInputs] = useState<Record<string, ExerciseInput>>({});
+  const [prefills, setPrefills] = useState<Record<string, ExercisePrefill>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -64,20 +91,24 @@ export default function AssignedWorkoutDetailScreen() {
   const [readinessError, setReadinessError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || !session) return;
     let cancelled = false;
 
     Promise.all([getAssignmentDetail(id), getReadinessStatusForAssignment(id)])
-      .then(([assignmentData, readinessData]) => {
+      .then(async ([assignmentData, readinessData]) => {
         if (cancelled) return;
         setDetail(assignmentData);
-        setInputs(buildInputsFromDetail(assignmentData));
         setReadiness(readinessData);
         const answers: Record<string, AnswerValue> = {};
         readinessData.questions.forEach((question) => {
           answers[question.id] = blankReadinessAnswer(question);
         });
         setReadinessAnswers(answers);
+
+        const prefillMap = await getExercisePrefills(session.user.id, assignmentData.id, assignmentData.exercises);
+        if (cancelled) return;
+        setPrefills(prefillMap);
+        setInputs(buildInputsFromDetail(assignmentData, prefillMap));
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load this workout.');
@@ -89,7 +120,7 @@ export default function AssignedWorkoutDetailScreen() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, session]);
 
   const handleSubmitReadiness = async () => {
     setReadinessError(null);
@@ -164,7 +195,10 @@ export default function AssignedWorkoutDetailScreen() {
       }
       const refreshed = await getAssignmentDetail(detail.id);
       setDetail(refreshed);
-      setInputs(buildInputsFromDetail(refreshed));
+      // Every exercise now has a real logged value, so the fallback
+      // chain no longer applies to any of them -- reusing the prefills
+      // already fetched for this screen is correct, not stale.
+      setInputs(buildInputsFromDetail(refreshed, prefills));
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Something went wrong saving your log.');
     } finally {
@@ -247,6 +281,16 @@ export default function AssignedWorkoutDetailScreen() {
 
                   {detail.exercises.map((exercise, index) => {
                     const input = inputs[exercise.id] ?? { weight: '', reps: '' };
+                    const alreadyLogged = exercise.loggedWeight !== null || exercise.loggedReps !== null;
+                    const prefill = prefills[exercise.id];
+                    const prefillLabel =
+                      !alreadyLogged && prefill?.source === 'previous_session'
+                        ? 'Prefilled from your last session with this exercise -- edit if today is different.'
+                        : !alreadyLogged && prefill?.source === 'baseline'
+                          ? "Prefilled from your coach's suggested starting point -- edit if you know better."
+                          : null;
+                    const noSuggestion = !alreadyLogged && (!prefill || prefill.source === 'none');
+
                     return (
                       <ThemedView key={exercise.id} type="backgroundElement" style={styles.exerciseCard}>
                         <View style={styles.exerciseHeader}>
@@ -266,24 +310,31 @@ export default function AssignedWorkoutDetailScreen() {
                             Logged: {exercise.loggedWeight ?? '—'} weight · {exercise.loggedReps ?? '—'} reps
                           </ThemedText>
                         ) : (
-                          <View style={styles.inputsRow}>
-                            <TextInput
-                              value={input.weight}
-                              onChangeText={(value) => updateInput(exercise.id, 'weight', value)}
-                              placeholder="Weight"
-                              placeholderTextColor={theme.textSecondary}
-                              keyboardType="numeric"
-                              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                            />
-                            <TextInput
-                              value={input.reps}
-                              onChangeText={(value) => updateInput(exercise.id, 'reps', value)}
-                              placeholder="Reps"
-                              placeholderTextColor={theme.textSecondary}
-                              keyboardType="numeric"
-                              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                            />
-                          </View>
+                          <>
+                            <View style={styles.inputsRow}>
+                              <TextInput
+                                value={input.weight}
+                                onChangeText={(value) => updateInput(exercise.id, 'weight', value)}
+                                placeholder={noSuggestion ? 'Enter your starting weight' : 'Weight'}
+                                placeholderTextColor={theme.textSecondary}
+                                keyboardType="numeric"
+                                style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                              />
+                              <TextInput
+                                value={input.reps}
+                                onChangeText={(value) => updateInput(exercise.id, 'reps', value)}
+                                placeholder={noSuggestion ? 'Enter your starting reps' : 'Reps'}
+                                placeholderTextColor={theme.textSecondary}
+                                keyboardType="numeric"
+                                style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                              />
+                            </View>
+                            {prefillLabel && (
+                              <ThemedText type="small" themeColor="textSecondary" style={styles.prefillLabel}>
+                                {prefillLabel}
+                              </ThemedText>
+                            )}
+                          </>
                         )}
                       </ThemedView>
                     );
@@ -361,6 +412,9 @@ const styles = StyleSheet.create({
   inputsRow: {
     flexDirection: 'row',
     gap: Spacing.two,
+  },
+  prefillLabel: {
+    marginTop: Spacing.half,
   },
   input: {
     flex: 1,

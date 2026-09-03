@@ -38,7 +38,25 @@ export type AssignmentDetail = {
     setsReps: string;
     loggedWeight: number | null;
     loggedReps: number | null;
+    /** Null for an exercise added before exercise-library linking
+     * existed — prefill-by-previous-session has nothing to match on
+     * without it, same as an exercise no coach has ever set a baseline
+     * for. */
+    exerciseLibraryId: string | null;
+    baselineWeight: number | null;
+    baselineReps: number | null;
   }[];
+};
+
+/** Where a pre-filled weight/reps value actually came from -- shown to
+ * the client so "60 / 8" reads as "your own last session" rather than a
+ * mystery number, and so it's possible to verify which fallback fired. */
+export type ExercisePrefillSource = 'previous_session' | 'baseline' | 'none';
+
+export type ExercisePrefill = {
+  source: ExercisePrefillSource;
+  weight: number | null;
+  reps: number | null;
 };
 
 export type CoachAssignmentDetail = {
@@ -163,7 +181,9 @@ export async function listMyAssignments(clientId: string): Promise<ClientAssignm
 export async function getAssignmentDetail(assignmentId: string): Promise<AssignmentDetail> {
   const { data, error } = await supabase
     .from('assignments')
-    .select('id, assigned_date, status, workouts(name, workout_exercises(id, name, sets_reps, position))')
+    .select(
+      'id, assigned_date, status, workouts(name, workout_exercises(id, name, sets_reps, position, exercise_library_id, baseline_weight, baseline_reps))'
+    )
     .eq('id', assignmentId)
     .single();
 
@@ -171,7 +191,15 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
 
   const workout = data.workouts as unknown as {
     name: string;
-    workout_exercises: { id: string; name: string; sets_reps: string; position: number }[];
+    workout_exercises: {
+      id: string;
+      name: string;
+      sets_reps: string;
+      position: number;
+      exercise_library_id: string | null;
+      baseline_weight: number | null;
+      baseline_reps: number | null;
+    }[];
   } | null;
 
   const { data: logs, error: logsError } = await supabase
@@ -200,6 +228,9 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
         setsReps: exercise.sets_reps,
         loggedWeight: logged?.weight ?? null,
         loggedReps: logged?.reps ?? null,
+        exerciseLibraryId: exercise.exercise_library_id,
+        baselineWeight: exercise.baseline_weight,
+        baselineReps: exercise.baseline_reps,
       };
     });
 
@@ -210,6 +241,71 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
     status: data.status as AssignmentStatus,
     exercises,
   };
+}
+
+/**
+ * The fallback chain for a not-yet-logged exercise, one entry per
+ * exercise in the current assignment:
+ *
+ *   1. This client's most recent PREVIOUS logged session for the exact
+ *      same library exercise (matched by exercise_library_id, since a
+ *      workout_exercises row is a fresh instance every time an exercise
+ *      is added to a new workout -- it's the library id that identifies
+ *      "the same exercise" across sessions, not workout_exercises.id).
+ *   2. The coach's recommended baseline weight/reps for THIS exercise
+ *      instance, if one was set when the workout was built.
+ *   3. Neither -- the caller shows an empty field with a hint instead of
+ *      guessing a number that could be wildly wrong for this exercise.
+ *
+ * Deliberately excludes the current assignment's own logs (a client
+ * reopening a session they've already partly logged should see what
+ * THEY entered, not their previous session's numbers -- that's handled
+ * separately, before this fallback chain even runs).
+ */
+export async function getExercisePrefills(
+  clientId: string,
+  currentAssignmentId: string,
+  exercises: { id: string; exerciseLibraryId: string | null; baselineWeight: number | null; baselineReps: number | null }[]
+): Promise<Record<string, ExercisePrefill>> {
+  const libraryIds = new Set(exercises.map((e) => e.exerciseLibraryId).filter((id): id is string => id !== null));
+
+  const mostRecentByLibraryId = new Map<string, { weight: number | null; reps: number | null }>();
+
+  if (libraryIds.size > 0) {
+    // Every one of this client's past logs, most recent first -- filtered
+    // to the exercises we actually care about in JS rather than via a
+    // PostgREST filter on the embedded relation, which doesn't reliably
+    // support filtering by a joined table's column. Fine at this app's
+    // scale; the first (most recent) row per library id is the one kept.
+    const { data, error } = await supabase
+      .from('workout_logs')
+      .select('weight, reps, workout_exercises!inner(exercise_library_id)')
+      .eq('client_id', clientId)
+      .neq('assignment_id', currentAssignmentId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    for (const row of data ?? []) {
+      const libraryId = (row.workout_exercises as unknown as { exercise_library_id: string | null } | null)
+        ?.exercise_library_id;
+      if (!libraryId || !libraryIds.has(libraryId) || mostRecentByLibraryId.has(libraryId)) continue;
+      mostRecentByLibraryId.set(libraryId, { weight: row.weight as number | null, reps: row.reps as number | null });
+    }
+  }
+
+  const prefills: Record<string, ExercisePrefill> = {};
+  for (const exercise of exercises) {
+    const previous = exercise.exerciseLibraryId ? mostRecentByLibraryId.get(exercise.exerciseLibraryId) : undefined;
+    if (previous && (previous.weight !== null || previous.reps !== null)) {
+      prefills[exercise.id] = { source: 'previous_session', weight: previous.weight, reps: previous.reps };
+    } else if (exercise.baselineWeight !== null || exercise.baselineReps !== null) {
+      prefills[exercise.id] = { source: 'baseline', weight: exercise.baselineWeight, reps: exercise.baselineReps };
+    } else {
+      prefills[exercise.id] = { source: 'none', weight: null, reps: null };
+    }
+  }
+  return prefills;
 }
 
 /** Saves whatever weight/reps were entered, skipping exercises left blank
