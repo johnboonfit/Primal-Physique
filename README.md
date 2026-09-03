@@ -1507,6 +1507,32 @@ Run `supabase/nutri-score.sql` in the SQL Editor after `recipes.sql`. Every ingr
 4. If it doesn't match, the most likely reason is the fruit/veg/nut % estimate — check what category USDA/Open Food Facts filed it under; a miscategorized product is the one part of this calculation that's an approximation rather than exact.
 5. For the recipe-level badge: build a small recipe, hand-sum every ingredient's cached sugars/saturated fat/sodium/fibre/protein (visible via `select * from recipe_ingredients where recipe_id = '<id>';` in Supabase), divide by servings, then multiply by `100 / (total grams ÷ servings)` to get the per-100g figures the badge is actually graded on — run those through the point tables above by hand and confirm the grade matches.
 
+## Meal Plan Templates, and portion-scaling to a client's real target
+
+Run `supabase/meal-plan-templates.sql` in the SQL Editor after `nutri-score.sql`. A coach-only "Meal Plan Templates" library — a day of eating (breakfast/lunch/dinner/snacks) built entirely from Recipe Builder recipes, tagged with a goal (Cutting/Bulking/Recomp/Strength, the exact same tags as Programme Builder) and a target macro split. Assign one to a client and every ingredient quantity scales proportionally to that client's real, current Adaptive TDEE target — not the template's original numbers.
+
+**There's no "baseline calories" field to fill in.** Same rule as Recipe Builder's macros and Nutri-Score: never store something that can be computed. A template's baseline is whatever its recipes actually add up to — sum every meal slot's `recipe's calories-per-serving × servings prescribed`, across all four slots. Type in whatever recipes you want; the baseline is always exactly right, because it's not a separate number that could drift from reality.
+
+**The target macro split is a design goal, not an input to the scaling math.** You set a target (e.g. 40% protein / 35% carb / 25% fat) when creating a template, and the template screen shows your recipes' *actual* computed split next to it — so you can see at a glance whether what you built actually hits the ratio you were aiming for. Scaling can't fix a ratio that's off at baseline (see below), so this comparison is where you'd notice and fix it, by swapping or resizing recipes.
+
+**The scaling math, worked through:**
+1. `scaleFactor = client's real target ÷ template's computed baseline`. A 2000kcal template assigned to a client with a 2400kcal target: `scaleFactor = 2400 / 2000 = 1.2`.
+2. Every ingredient in every recipe in every slot gets multiplied by that same factor — quantity in grams, calories, protein, carbs, fat, sugars, saturated fat, sodium, fibre, all of it (they all scale linearly with mass, so multiplying the cached amount is identical to recalculating from a bigger quantity). The one exception is Nutri-Score's fruit/veg/legume/nut % — that's a ratio of the food itself, not an absolute amount, so it never changes.
+3. New day total = baseline × scaleFactor = exactly the client's target, by construction, every time — not an approximation.
+4. The macro ratio is untouched by step 2, since scaling everything by the same number can't change the relationship between the numbers. Whatever split the template actually had at baseline is the split the client gets too.
+
+**Why this isn't built like Programme Builder's assignment.** Assigning a programme duplicates it into an independent, client-owned copy — sessions then get rescheduled per client without touching the template or anyone else. A meal plan assignment is deliberately just a *pointer* (`meal_plan_assignments`: template + client, nothing else) — the scaled numbers are recalculated live, every time the assignment is viewed, off the client's **current** calorie target. Freezing a scaled copy at assignment time would go stale the moment that client's Adaptive TDEE recalculates the following week; a live pointer never can.
+
+**No client-facing view yet**, same gap as Recipe Builder: a client can't see their own assigned meal plan in the app yet. The scaled view lives at the coach's `/meal-plans/assigned/[assignmentId]` screen for now, reachable right after assigning — ready to carry over whenever a client-facing Nutrition view for this exists.
+
+**Verify the scaled version actually hits the client's real target:**
+1. In Supabase, find or set a client's calorie target — Coach Nutrition panel or the TDEE tables show their current `targetCalories` directly (this is the exact number `getCalorieTarget()` returns and the meal plan scales against).
+2. Build a template, add a recipe to each meal slot, and note the "Baseline (calculated from recipes below)" total on the template screen.
+3. Assign it to that client, then open the resulting scaled view. Confirm `Client's target` shown there matches step 1's number exactly, and `totals.calories` (the scaled day total) also matches it exactly — not approximately.
+4. Confirm `Scale factor` shown equals (client's target ÷ template's baseline) to a couple of decimal places.
+5. Pick one ingredient and hand-check it: take its baseline grams (visible on the template's recipe in Recipe Builder), multiply by (the meal slot's prescribed servings ÷ that recipe's total servings), then by the scale factor from step 4 — it should match the scaled grams shown in the assigned view exactly.
+6. Confirm the scaled view's protein/carb/fat split matches the template's own "Actual split" percentages shown on the template screen — scaling changes the totals, never the ratio.
+
 ## Project structure reference
 
 ```
@@ -1542,6 +1568,14 @@ src/
         new.tsx           # create-recipe form — name, prep/cook time, servings, tags, instructions; redirects to the recipe so ingredients (and a photo) can be added
         [id].tsx          # one recipe — cover photo upload, calculated per-serving + whole-recipe macro card, ingredient list with + Add (same USDA search as food logging) and Remove, instructions, Delete recipe
         edit/[id].tsx      # edit a recipe's name/prep/cook/servings/tags/instructions — ingredients are added/removed from the detail screen instead
+      meal-plans/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # Meal Plan Templates library — computed baseline kcal, actual vs target macro split, item count, Assign, Delete
+        new.tsx           # create-template form — name, goal tag (shares Programme Builder's GOAL_TYPES), target protein/carb/fat % (must total 100)
+        [id].tsx          # one template — computed baseline totals + actual-vs-target split, breakfast/lunch/dinner/snacks slots each with + Add recipe (search over the coach's own Recipe Builder library) and Remove, Assign to a client, Delete
+        edit/[id].tsx      # edit a template's name/goal/target split — recipes are added/removed from the detail screen instead
+        assign/[id].tsx     # pick a client, assign — redirects straight to that assignment's scaled view
+        assigned/[assignmentId].tsx  # the portion-scaled result for one client: their real calorie target, the scale factor, and every recipe's ingredients scaled to match -- recalculated live on every load, never a frozen copy
       exercise-library/
         _layout.tsx      # coach-only guard for now
         index.tsx        # search + muscle-group filter over the imported exercise_library table
@@ -1624,6 +1658,7 @@ src/
     leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products (Club shown in the app as "Base")
     recipes.ts                    # createRecipe() / listRecipes() / getRecipeDetail() / updateRecipeDetails() / deleteRecipe() / addRecipeIngredient() / removeRecipeIngredient() / uploadRecipePhoto() / computeMacroTotals() — the one place recipe macros are summed and divided by servings, pure and reused by both the list and detail screens
     nutri-score.ts                # computeNutriScore() — the public Nutri-Score formula from scratch (energy/sugar/sat-fat/sodium negative points, fruit-veg-nut%/fibre/protein positive points) / computeRecipeNutriScore() (sums ingredients, divides by servings, re-normalizes to per-100g before scoring) / estimateFruitVegLegumeNutPercentFromCategory() (category-based estimate, since neither data source has a real % for arbitrary foods)
+    meal-plans.ts                  # computeMealPlanTotals() (baseline kcal + actual macro % from a template's recipes, never stored) / scaleMealPlan() (the portion-scaling engine -- pure, DB-independent) / createMealPlanTemplate() / listMealPlanTemplates() / getMealPlanTemplateDetail() / updateMealPlanTemplateDetails() / deleteMealPlanTemplate() / addMealPlanItem() / removeMealPlanItem() / assignMealPlanToClient() / listMealPlanAssignmentsForClient() / getScaledMealPlan() (loads an assignment and scales it live against the client's CURRENT calorie target)
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
@@ -1666,4 +1701,5 @@ supabase/
   chat-read-receipts.sql                                                         # paste in after chat.sql — conversation_reads (one "read up to" cursor per person per conversation), added to the realtime publication too
   recipes.sql                                                                       # paste in after chat-read-receipts.sql — recipes + recipe_ingredients (coach-owned, macros always calculated not stored), recipe-photos bucket
   nutri-score.sql                                                                     # paste in after recipes.sql — adds sugars/saturated_fat/sodium_mg/fiber/fruit_veg_legume_nut_percent columns to recipe_ingredients, no RLS changes needed
+  meal-plan-templates.sql                                                               # paste in after nutri-score.sql — meal_plan_templates + meal_plan_template_items (coach-owned, references recipes) + meal_plan_assignments (a template+client pointer, is_coach()-gated like assignments.sql)
 ```

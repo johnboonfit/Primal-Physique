@@ -64,6 +64,10 @@ export default function HomeScreen() {
             <ThemedText type="linkPrimary">Recipe Builder</ThemedText>
           </Link>
 
+          <Link href="/meal-plans" style={styles.linkSpacing}>
+            <ThemedText type="linkPrimary">Meal Plan Templates</ThemedText>
+          </Link>
+
           <Link href="/exercise-library" style={styles.linkSpacing}>
             <ThemedText type="linkPrimary">Exercise Library</ThemedText>
           </Link>
