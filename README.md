@@ -1858,6 +1858,23 @@ Added a `status` field to clients (`active` | `paused`) and the coach-side actio
 5. Reactivate them. Confirm the badge disappears and the dashboard count goes back up — same one-column write, opposite value.
 6. Optional, confirms the trigger: as the *client's own* logged-in session, try `update profiles set status = 'paused' where id = auth.uid();` directly in Supabase — it should fail with "Only a coach can change a client's status," even though that client can normally update other columns (like `full_name`) on their own row.
 
+## Modern tab icons, and extending the Home redesign to Nutrition and Compliance
+
+Two separate things in one pass: real icons on the client's 5-tab bar (the app had none anywhere before this), and applying Home's newer "sleeker" visual language — a unified glowing summary card, side-by-side stat cards instead of a stack — to the other screens where it genuinely fits.
+
+**Tab icons**: added `@expo/vector-icons` (the standard cross-platform icon set for Expo — works on iOS, Android, *and* web, unlike `expo-symbols`, which is iOS-only and already a dependency but unusable for a screen this app also renders on web). Installed at `^15.1.1`, matching the `^15.0.2` Expo SDK 57 expects. Each tab gets a filled glyph when active, outline otherwise (Home, Training/barbell, Nutrition/apple, Progress/trending-up, Chat/speech bubble) — color comes from the tab bar's existing `tabBarActiveTintColor`/`tabBarInactiveTintColor` (oxblood/textSecondary), the same values the text label already used, so the icon and label never disagree about which tab is active.
+
+**Nutrition**: the date navigator, the calorie hero stat, and the three macro rings used to be three separate floating elements with a stray text line in between. They're now one glowing card (`Glow.teal`, matching the Volume Analyser and the Nutrition summary's own conceptual sibling) — "today's nutrition" now reads as one thing, not three.
+
+**Progress → Compliance**: the two breakdown cards (check-in punctuality, macro adherence) were stacked full-width underneath the Compliance Score hero. They're now side by side, matching the "hero + supporting stats in a row" shape Home and the coach dashboard both already use, and freeing up more than half the vertical space they used to take.
+
+**Deliberately NOT touched, and why**: Metrics, Measure, and Photos (chart- and photo-comparison-centered — a different, already-appropriate visual language; forcing stat tiles in wouldn't clarify anything and risks touching working weight/measurement-logging forms for no real gain), and Chat/Calendar (a messaging tool and a scheduler, not a stats dashboard — only their tab icons changed). "Replicate the pattern everywhere" was read as "apply it where it actually improves the screen," not "add a stat-tile row to every screen regardless of fit."
+
+**Verify:**
+1. Open the client tab bar — confirm all 5 tabs show a real icon, filled on whichever tab is active, outline on the rest, in the same oxblood/gray the labels already used.
+2. Open Nutrition — confirm the date nav, calorie ring, and macro rings all sit inside one bordered/glowing card rather than floating separately.
+3. Open Progress → Compliance — confirm the two breakdown cards sit side by side under the score, and that both still show their full detail sentence (the 15%/kcal specifics weren't trimmed for the sake of fitting a narrower card).
+
 ## Project structure reference
 
 ```
@@ -1931,10 +1948,10 @@ src/
       checkins/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
-        _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
+        _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat), each with an @expo/vector-icons Ionicon (filled when active, outline otherwise) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
         index.tsx        # Home tab — greeting + a 3-across hero row (Momentum / Steps [muted placeholder] / Calories Today), streak + Level/XP combined into one row, daily logging nudge, weekly TDEE recalculation check, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
         training.tsx      # Training tab — Volume Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) directly under the hero stat, then Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
-        nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
+        nutrition.tsx      # Nutrition tab — one glowing summary card (‹›date navigator + calories vs. real calorie target + macro rings), 4 meal sections, USDA search + camera barcode scan
         progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
         chat.tsx             # Chat tab — real messaging now: resolves/creates this client's conversation with "the coach", then renders <ChatThread>
         calendar.tsx        # Not a tab anymore, still a real route — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />, reached via Training's "View Calendar" link
@@ -1946,7 +1963,7 @@ src/
     measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
     photo-compare-slider.tsx  # generic, reusable before/after image slider — drag to reveal, pinch either photo to resize it
     photos-panel.tsx            # Progress → Photos sub-tab content (front/side/back upload, gallery, compare tool)
-    compliance-panel.tsx          # Progress → Compliance sub-tab content — HeroStat + punctuality/macro-adherence breakdown cards, reads getComplianceScore()
+    compliance-panel.tsx          # Progress → Compliance sub-tab content — HeroStat + side-by-side punctuality/macro-adherence breakdown cards, reads getComplianceScore()
     session-calendar.tsx          # <SessionCalendar clientId role> — the real Week/Month calendar, shared by client/calendar.tsx and Programme Builder; also renders due/completed check-ins (own status marker, tappable only for role="client")
     time-range-toggle.tsx     # shared 1W/1M/6M/1Y/All Time chip row, used by both MetricsPanel and MeasurePanel
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)

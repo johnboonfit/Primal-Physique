@@ -60,29 +60,31 @@ export function CompliancePanel() {
         Last 4 weeks · {breakdown.windowStart} – {breakdown.windowEnd}
       </ThemedText>
 
-      <ThemedView type="backgroundElement" style={styles.card}>
-        <View style={styles.rowHeader}>
-          <ThemedText type="smallBold">Check-in punctuality</ThemedText>
+      <View style={styles.breakdownRow}>
+        <ThemedView type="backgroundElement" style={styles.card}>
           <ThemedText type="smallBold">{round(breakdown.punctualityRate)}%</ThemedText>
-        </View>
-        <ThemedText type="small" themeColor="textSecondary">
-          {breakdown.checkInsScheduled === 0
-            ? 'No check-ins scheduled yet in this window.'
-            : `${breakdown.checkInsOnTime} of ${breakdown.checkInsScheduled} submitted on time.`}
-        </ThemedText>
-      </ThemedView>
+          <ThemedText type="small" themeColor="textSecondary">
+            Check-in punctuality
+          </ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            {breakdown.checkInsScheduled === 0
+              ? 'No check-ins scheduled yet in this window.'
+              : `${breakdown.checkInsOnTime} of ${breakdown.checkInsScheduled} submitted on time.`}
+          </ThemedText>
+        </ThemedView>
 
-      <ThemedView type="backgroundElement" style={styles.card}>
-        <View style={styles.rowHeader}>
-          <ThemedText type="smallBold">Macro adherence</ThemedText>
+        <ThemedView type="backgroundElement" style={styles.card}>
           <ThemedText type="smallBold">{round(breakdown.macroAdherenceRate)}%</ThemedText>
-        </View>
-        <ThemedText type="small" themeColor="textSecondary">
-          {breakdown.targetCalories === null
-            ? 'No calorie target yet — needs a real TDEE estimate first.'
-            : `${breakdown.daysAdherent} of ${breakdown.daysInWindow} days within 15% of ${Math.round(breakdown.targetCalories)} kcal/day.`}
-        </ThemedText>
-      </ThemedView>
+          <ThemedText type="small" themeColor="textSecondary">
+            Macro adherence
+          </ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            {breakdown.targetCalories === null
+              ? 'No calorie target yet — needs a real TDEE estimate first.'
+              : `${breakdown.daysAdherent} of ${breakdown.daysInWindow} days within 15% of ${Math.round(breakdown.targetCalories)} kcal/day.`}
+          </ThemedText>
+        </ThemedView>
+      </View>
     </View>
   );
 }
@@ -103,14 +105,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: -Spacing.two,
   },
+  breakdownRow: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
   card: {
+    flex: 1,
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.half,
-  },
-  rowHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
   },
 });

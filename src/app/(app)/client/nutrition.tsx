@@ -325,61 +325,65 @@ export default function NutritionScreen() {
             Nutrition
           </ThemedText>
 
-          <View style={styles.dateNavRow}>
-            <Pressable onPress={handlePrevDay} style={styles.dateNavButton} hitSlop={8}>
-              <ThemedText type="smallBold" style={styles.dateNavButtonText}>
-                ‹
-              </ThemedText>
-            </Pressable>
-            <View style={styles.dateNavLabelWrap}>
-              <ThemedText themeColor="textSecondary" style={styles.date}>
-                {isToday ? 'Today' : formatDisplayDate(logDate)}
-              </ThemedText>
-            </View>
-            <Pressable onPress={handleNextDay} style={styles.dateNavButton} disabled={isToday} hitSlop={8}>
-              <ThemedText
-                type="smallBold"
-                style={[styles.dateNavButtonText, isToday && styles.dateNavButtonTextDisabled]}>
-                ›
-              </ThemedText>
-            </Pressable>
-          </View>
-
           {loading && <ActivityIndicator style={styles.loader} />}
           {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
-          {!loading && !error && target && (
-            <>
-              <HeroStat
-                value={totalCalories}
-                label={`of ${Math.round(target.targetCalories)} kcal target`}
-                progress={totalCalories / target.targetCalories}
-              />
-              <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
-                {goalLabel(target.goalType)}
-                {target.goalType && target.modifierPercent !== 0
-                  ? ` (${target.modifierPercent > 0 ? '+' : ''}${round(target.modifierPercent)}% of TDEE)`
-                  : ''}
-                {' · TDEE '}
-                {Math.round(target.estimatedTdee)} kcal
-              </ThemedText>
-            </>
-          )}
+          {!loading && !error && (
+            <View style={styles.summaryGlow}>
+              <ThemedView type="backgroundElement" style={styles.summaryCard}>
+                <View style={styles.dateNavRow}>
+                  <Pressable onPress={handlePrevDay} style={styles.dateNavButton} hitSlop={8}>
+                    <ThemedText type="smallBold" style={styles.dateNavButtonText}>
+                      ‹
+                    </ThemedText>
+                  </Pressable>
+                  <View style={styles.dateNavLabelWrap}>
+                    <ThemedText themeColor="textSecondary" style={styles.date}>
+                      {isToday ? 'Today' : formatDisplayDate(logDate)}
+                    </ThemedText>
+                  </View>
+                  <Pressable onPress={handleNextDay} style={styles.dateNavButton} disabled={isToday} hitSlop={8}>
+                    <ThemedText
+                      type="smallBold"
+                      style={[styles.dateNavButtonText, isToday && styles.dateNavButtonTextDisabled]}>
+                      ›
+                    </ThemedText>
+                  </Pressable>
+                </View>
 
-          {!loading && !error && !target && (
-            <>
-              <HeroStat value={totalCalories} label="Calories Today" />
-              <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
-                Log your weight and meals daily — once there's enough history, your real calorie target shows here.
-              </ThemedText>
-            </>
-          )}
+                {target ? (
+                  <>
+                    <HeroStat
+                      value={totalCalories}
+                      label={`of ${Math.round(target.targetCalories)} kcal target`}
+                      progress={totalCalories / target.targetCalories}
+                    />
+                    <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
+                      {goalLabel(target.goalType)}
+                      {target.goalType && target.modifierPercent !== 0
+                        ? ` (${target.modifierPercent > 0 ? '+' : ''}${round(target.modifierPercent)}% of TDEE)`
+                        : ''}
+                      {' · TDEE '}
+                      {Math.round(target.estimatedTdee)} kcal
+                    </ThemedText>
+                  </>
+                ) : (
+                  <>
+                    <HeroStat value={totalCalories} label="Calories Today" />
+                    <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
+                      Log your weight and meals daily — once there's enough history, your real calorie target shows here.
+                    </ThemedText>
+                  </>
+                )}
 
-          {!loading && !error && entries.length > 0 && (
-            <View style={styles.macroRow}>
-              <MacroRing value={round(totalProtein)} label="Protein" progress={proteinShare} />
-              <MacroRing value={round(totalCarbs)} label="Carbs" progress={carbsShare} />
-              <MacroRing value={round(totalFat)} label="Fat" progress={fatShare} />
+                {entries.length > 0 && (
+                  <View style={styles.macroRow}>
+                    <MacroRing value={round(totalProtein)} label="Protein" progress={proteinShare} />
+                    <MacroRing value={round(totalCarbs)} label="Carbs" progress={carbsShare} />
+                    <MacroRing value={round(totalFat)} label="Fat" progress={fatShare} />
+                  </View>
+                )}
+              </ThemedView>
             </View>
           )}
 
@@ -593,11 +597,20 @@ const styles = StyleSheet.create({
   date: {
     textAlign: 'center',
   },
+  summaryGlow: {
+    ...Glow.teal,
+    borderRadius: Spacing.four,
+  },
+  summaryCard: {
+    borderRadius: Spacing.four,
+    padding: Spacing.three,
+    gap: Spacing.one,
+  },
   dateNavRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: Spacing.two,
+    marginBottom: Spacing.one,
   },
   dateNavButton: {
     paddingHorizontal: Spacing.three,
