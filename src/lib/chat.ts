@@ -226,7 +226,8 @@ export function canDeleteForEveryone(createdAt: string): boolean {
 }
 
 /** Fires on every insert or update (new message, edit, either kind of
- * delete) in this conversation. Returns an unsubscribe function. */
+ * delete, or the other party's read receipt moving) in this
+ * conversation. Returns an unsubscribe function. */
 export function subscribeToConversation(conversationId: string, onChange: () => void): () => void {
   const channel = supabase
     .channel(`messages:${conversationId}`)
@@ -235,11 +236,51 @@ export function subscribeToConversation(conversationId: string, onChange: () => 
       { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` },
       onChange
     )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'conversation_reads', filter: `conversation_id=eq.${conversationId}` },
+      onChange
+    )
     .subscribe();
 
   return () => {
     supabase.removeChannel(channel);
   };
+}
+
+/**
+ * Marks everything currently in the conversation as read by this
+ * person, right now — the same "opening it and seeing what's there
+ * means you've read it" simplification every real messaging app makes,
+ * rather than tracking which specific messages were actually looked
+ * at. Upsert since "first time reading this conversation" and
+ * "advancing the cursor again" are the same action.
+ */
+export async function markConversationRead(conversationId: string, userId: string): Promise<void> {
+  const { error } = await supabase
+    .from('conversation_reads')
+    .upsert(
+      { conversation_id: conversationId, user_id: userId, last_read_at: new Date().toISOString() },
+      { onConflict: 'conversation_id,user_id' }
+    );
+  if (error) throw error;
+}
+
+/** Both participants' read cursors for this conversation, keyed by
+ * user id — a message counts as read by someone if their cursor here
+ * is at or after that message's created_at. */
+export async function getReadReceipts(conversationId: string): Promise<Record<string, string>> {
+  const { data, error } = await supabase
+    .from('conversation_reads')
+    .select('user_id, last_read_at')
+    .eq('conversation_id', conversationId);
+  if (error) throw error;
+
+  const map: Record<string, string> = {};
+  (data ?? []).forEach((row) => {
+    map[row.user_id as string] = row.last_read_at as string;
+  });
+  return map;
 }
 
 /** Call while a chat screen is actually open — same "check while

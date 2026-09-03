@@ -7,7 +7,7 @@ import {
   useAudioRecorderState,
 } from 'expo-audio';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
@@ -24,8 +24,10 @@ import {
   deleteMessageForMe,
   editMessage,
   getLastSeen,
+  getReadReceipts,
   isOnline,
   listMessages,
+  markConversationRead,
   sendTextMessage,
   sendVoiceMessage,
   subscribeToConversation,
@@ -90,6 +92,7 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
   const [error, setError] = useState<string | null>(null);
 
   const [otherOnline, setOtherOnline] = useState(false);
+  const [readReceipts, setReadReceipts] = useState<Record<string, string>>({});
 
   const [composerText, setComposerText] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -108,10 +111,21 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
 
   const load = useCallback(() => {
     if (!currentUserId) return;
-    listMessages(conversationId, currentUserId)
-      .then(setMessages)
+    Promise.all([listMessages(conversationId, currentUserId), getReadReceipts(conversationId)])
+      .then(([messageData, receipts]) => {
+        setMessages(messageData);
+        setReadReceipts(receipts);
+      })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load messages.'))
       .finally(() => setLoading(false));
+
+    // Opening the thread and seeing what's in it counts as reading it —
+    // same simplification every real messaging app makes, rather than
+    // tracking which specific messages were actually looked at. A
+    // failure here shouldn't block the thread from loading.
+    markConversationRead(conversationId, currentUserId).catch((err) =>
+      console.error('Failed to mark conversation read:', err)
+    );
   }, [conversationId, currentUserId]);
 
   useFocusEffect(
@@ -241,6 +255,19 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
 
   const remainingSeconds = MAX_VOICE_MESSAGE_SECONDS - recorderState.durationMillis / 1000;
 
+  // Only the most recent message you sent shows a Sent/Read status —
+  // reading a conversation advances a single cursor past everything
+  // before it, so showing the same status under every one of your
+  // messages would be redundant, not more informative.
+  const lastOwnMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].senderId === currentUserId && !messages[i].deletedForEveryone) return messages[i].id;
+    }
+    return null;
+  }, [messages, currentUserId]);
+
+  const otherPartyReadAt = readReceipts[otherPartyId] ?? null;
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -290,6 +317,17 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
                     <ThemedText type="small" themeColor="textSecondary">
                       {formatTimestamp(item.createdAt)}
                     </ThemedText>
+                    {isOwn &&
+                      item.id === lastOwnMessageId &&
+                      (otherPartyReadAt && new Date(otherPartyReadAt).getTime() >= new Date(item.createdAt).getTime() ? (
+                        <ThemedText type="small" style={styles.readLabel}>
+                          Read
+                        </ThemedText>
+                      ) : (
+                        <ThemedText type="small" themeColor="textSecondary">
+                          Sent
+                        </ThemedText>
+                      ))}
                   </View>
                 </ThemedView>
               </Pressable>
@@ -475,6 +513,9 @@ const styles = StyleSheet.create({
   },
   editedLabel: {
     fontStyle: 'italic',
+  },
+  readLabel: {
+    color: Colors.tealBright,
   },
   tombstone: {
     fontStyle: 'italic',

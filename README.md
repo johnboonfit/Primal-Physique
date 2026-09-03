@@ -1449,6 +1449,22 @@ Run `supabase/chat.sql` in the SQL Editor after `community-leaderboards.sql`. Wo
 
 **Verify presence:** open the app as a client and leave the Chat tab open — as the coach, open that client's thread and confirm it shows "🟢 Online." Background the client's app (or navigate away from Chat) and wait about 90 seconds — confirm it flips to "Offline" for the coach without either side needing to do anything.
 
+## Read receipts
+
+Run `supabase/chat-read-receipts.sql` in the SQL Editor after `chat.sql`. One "Sent" or "Read" label under your most recently sent message, not a full read-tracking system.
+
+**One cursor per person, not one row per message.** `conversation_reads` holds a single `last_read_at` timestamp per (conversation, person) — opening a conversation and seeing what's in it counts as "read up to right now," the same simplification every real messaging app makes, rather than tracking which individual messages were actually looked at. A message counts as read by someone the moment their cursor reaches or passes that message's `created_at`. This is also why only real-time chat needed this chunk to be small: the conversations/messages foundation, RLS conventions, and realtime wiring all already existed — this is one new table plugged into the same patterns.
+
+**Only your last message shows a status, not every one.** Reading a conversation advances one cursor past everything before it, so if the most recent message you sent has been read, every earlier one has too — showing "Read" under all of them would be redundant clutter, not more information.
+
+**Who can see what:** unlike `message_hidden_for` (which only its own owner can ever see — the whole point is that it's private), a read cursor is visible to *both* participants in the conversation, not just its owner — that's the entire purpose of a read receipt. But a person can still only ever write their *own* cursor; nobody can mark a message "read" on someone else's behalf. Two different RLS shapes for two different privacy needs, both already established elsewhere in this app (`community_blocks`' owner-only visibility vs. the broader "any participant" visibility `messages` itself already uses).
+
+**Verify it:**
+1. As a client, send a message. As the coach, without opening that client's thread yet, confirm the client's own view still shows "Sent" under it.
+2. As the coach, open that client's thread (which marks it read). As the client, without needing to refresh, confirm the label flips to "Read" live — this is the same realtime channel messages already use, just also listening for `conversation_reads` changes now.
+3. Send two messages in a row as the client. Confirm only the *second* (most recent) one ever shows a status — the first never does, even after it's been read.
+4. In Supabase, confirm `conversation_reads` has exactly one row per person per conversation (never one per message) — `select * from conversation_reads where conversation_id = '<id>';` should return at most 2 rows, no matter how many messages exist.
+
 ## Project structure reference
 
 ```
@@ -1528,7 +1544,7 @@ src/
     confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt — archive actions, Community's Delete/Block
     report-post-modal.tsx    # <ReportPostModal> — same Modal shape as ConfirmDialog plus a free-text optional reason field, kept separate since ConfirmDialog's callers all expect its fixed message-only shape
     leaderboard-panel.tsx     # Community → Leaderboards sub-tab content — This week/Lifetime toggle, ranked rows with a placeholder initials avatar, self-highlight; shows the locked/upsell state instead when the viewing client's tier doesn't have access
-    chat-thread.tsx             # <ChatThread> — the whole conversation view (messages, composer, voice recording, emoji picker, edit/delete actions, presence), shared identically by the client's Chat tab and the coach's per-client thread
+    chat-thread.tsx             # <ChatThread> — the whole conversation view (messages, composer, voice recording, emoji picker, edit/delete actions, presence, Sent/Read status on your last message), shared identically by the client's Chat tab and the coach's per-client thread
     emoji-picker.tsx             # <EmojiPicker> — fixed curated grid, not a full emoji-keyboard library
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
     question-answer-input.tsx    # <AnswerInput> — one render branch per answer kind (short_text/numeric/single_choice/multi_choice/scale), same reasoning; used by the check-in fill-out screen
@@ -1553,7 +1569,7 @@ src/
     tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables; getCurrentWeekRange() exported so other "this week" features (the Leaderboard's weekly XP ranking) share the exact same Monday, not a second copy of the date math
-    chat.ts                      # getOrCreateConversation() / listMessages() / sendTextMessage() / sendVoiceMessage() / editMessage() / deleteMessageForMe() / deleteMessageForEveryone() / subscribeToConversation() (realtime) / updateLastSeen() / getLastSeen() / isOnline() / listCoachConversations() / getAnyCoach()
+    chat.ts                      # getOrCreateConversation() / listMessages() / sendTextMessage() / sendVoiceMessage() / editMessage() / deleteMessageForMe() / deleteMessageForEveryone() / subscribeToConversation() (realtime) / updateLastSeen() / getLastSeen() / isOnline() / listCoachConversations() / getAnyCoach() / markConversationRead() / getReadReceipts()
     compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
     community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file
     leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products (Club shown in the app as "Base")
@@ -1596,4 +1612,5 @@ supabase/
   community-moderation.sql                                                 # paste in after community.sql — community_reports, community_posts delete policies, community_blocks + the blocked-can't-post insert check
   community-leaderboards.sql                                                 # paste in after community-moderation.sql — client_tiers (Club/Accelerator/Precision) + get_weekly_xp_leaderboard()/get_lifetime_xp_leaderboard() SECURITY DEFINER functions
   chat.sql                                                                     # paste in after community-leaderboards.sql — conversations, messages (+ edit trigger, delete-for-everyone time window), message_hidden_for, chat-audio bucket, realtime publication, profiles.last_seen_at
+  chat-read-receipts.sql                                                         # paste in after chat.sql — conversation_reads (one "read up to" cursor per person per conversation), added to the realtime publication too
 ```
