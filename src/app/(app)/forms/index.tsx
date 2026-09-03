@@ -9,12 +9,16 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listFormTemplates, type FormTemplateSummary } from '@/lib/form-templates';
+import { getReadinessFormId, setReadinessFormId } from '@/lib/readiness';
 
 export default function FormsListScreen() {
   const { session } = useAuth();
   const [forms, setForms] = useState<FormTemplateSummary[]>([]);
+  const [readinessFormId, setReadinessFormIdState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [settingReadinessId, setSettingReadinessId] = useState<string | null>(null);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -22,9 +26,11 @@ export default function FormsListScreen() {
       let cancelled = false;
 
       setLoading(true);
-      listFormTemplates(session.user.id)
-        .then((data) => {
-          if (!cancelled) setForms(data);
+      Promise.all([listFormTemplates(session.user.id), getReadinessFormId()])
+        .then(([formsData, readinessId]) => {
+          if (cancelled) return;
+          setForms(formsData);
+          setReadinessFormIdState(readinessId);
         })
         .catch((err) => {
           if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load forms.');
@@ -39,6 +45,19 @@ export default function FormsListScreen() {
     }, [session])
   );
 
+  const handleSetReadiness = async (formId: string) => {
+    setReadinessError(null);
+    setSettingReadinessId(formId);
+    try {
+      await setReadinessFormId(formId);
+      setReadinessFormIdState(formId);
+    } catch (err) {
+      setReadinessError(err instanceof Error ? err.message : 'Failed to set the readiness questionnaire.');
+    } finally {
+      setSettingReadinessId(null);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -51,7 +70,8 @@ export default function FormsListScreen() {
           </Pressable>
         </ThemedView>
         <ThemedText themeColor="textSecondary" type="small" style={styles.subtitle}>
-          Reusable check-in forms — assign one to a client on a recurring schedule.
+          Reusable check-in forms — assign one to a client on a recurring schedule. One form can also be set as the
+          Pre-Workout Readiness questionnaire, shown to every client at the start of every session.
         </ThemedText>
 
         {!loading && !error && <HeroStat value={forms.length} label="Forms Built" />}
@@ -59,6 +79,7 @@ export default function FormsListScreen() {
         {loading && <ActivityIndicator style={styles.loader} />}
 
         {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
+        {readinessError && <ThemedText style={styles.error}>{readinessError}</ThemedText>}
 
         {!loading && !error && forms.length === 0 && (
           <ThemedText themeColor="textSecondary" style={styles.empty}>
@@ -71,21 +92,38 @@ export default function FormsListScreen() {
             data={forms}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
-            renderItem={({ item }) => (
-              <ThemedView type="backgroundElement" style={styles.card}>
-                <Pressable onPress={() => router.push(`/forms/${item.id}`)}>
-                  <ThemedText type="smallBold">{item.name}</ThemedText>
-                  <ThemedText type="small" themeColor="textSecondary">
-                    {item.questionCount} question{item.questionCount === 1 ? '' : 's'}
-                  </ThemedText>
-                </Pressable>
-                <View style={styles.cardActions}>
-                  <Pressable onPress={() => router.push(`/forms/assign/${item.id}`)}>
-                    <ThemedText type="linkPrimary">Assign</ThemedText>
+            renderItem={({ item }) => {
+              const isReadiness = item.id === readinessFormId;
+              return (
+                <ThemedView type="backgroundElement" style={styles.card}>
+                  <Pressable onPress={() => router.push(`/forms/${item.id}`)}>
+                    <ThemedText type="smallBold">{item.name}</ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {item.questionCount} question{item.questionCount === 1 ? '' : 's'}
+                    </ThemedText>
+                    {isReadiness && (
+                      <ThemedText type="small" style={styles.readinessBadge}>
+                        ✓ Pre-Workout Readiness questionnaire
+                      </ThemedText>
+                    )}
                   </Pressable>
-                </View>
-              </ThemedView>
-            )}
+                  <View style={styles.cardActions}>
+                    <Pressable onPress={() => router.push(`/forms/assign/${item.id}`)}>
+                      <ThemedText type="linkPrimary">Assign</ThemedText>
+                    </Pressable>
+                    {!isReadiness && (
+                      <Pressable onPress={() => handleSetReadiness(item.id)} disabled={settingReadinessId === item.id}>
+                        {settingReadinessId === item.id ? (
+                          <ActivityIndicator size="small" />
+                        ) : (
+                          <ThemedText type="linkPrimary">Set as readiness</ThemedText>
+                        )}
+                      </Pressable>
+                    )}
+                  </View>
+                </ThemedView>
+              );
+            }}
           />
         )}
 
@@ -143,6 +181,11 @@ const styles = StyleSheet.create({
   cardActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    gap: Spacing.three,
+  },
+  readinessBadge: {
+    color: Colors.tealBright,
+    marginTop: Spacing.half,
   },
   backButton: {
     alignItems: 'center',

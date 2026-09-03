@@ -1568,6 +1568,38 @@ Run `supabase/workout-set-types.sql` in the SQL Editor after `meal-plan-template
 2. As that client (or via `set role postgres` / the SQL Editor's role switcher, or by temporarily copying the client's JWT), run the same query as above — the RLS policy this migration added means it should return the identical rows, proving a client-facing screen can genuinely read this data once it's built, not just the coach.
 3. `src/lib/workouts.ts` now exports `getWorkoutDetail(workoutId)`, which runs the exact query shape a client screen will need (every exercise, its baseline, and its tagged sets, in order) — call it from anywhere in the app and confirm it returns the same numbers as steps 1-3 above. That function existing and returning correct data now is what makes it a drop-in call for the next chunk instead of new plumbing.
 
+## Pre-workout readiness questionnaire
+
+Run `supabase/readiness.sql` in the SQL Editor after `workout-set-types.sql`. Every client now answers a short readiness check-in at the very start of a workout session — before they see a single exercise — built on the exact same question-type system (short text/number/select/scale/measurement) as the Phase 8 check-in Forms, but structurally simpler on purpose.
+
+**Reused vs. not reused, and why.** `form_templates` and `form_questions` (the actual question builder — types, labels, config) are reused as-is; you build a readiness questionnaire in the same Forms screen you already use for check-ins. `form_assignments` and `form_check_ins` are *not* reused, because none of what they exist for applies here — there's no recurring schedule, no due-window, no "missed" state to track. Readiness is triggered by starting a workout, full stop. Reusing that machinery would've meant faking a recurrence rule for something that isn't recurring.
+
+**One global questionnaire, not a per-client assignment.** `app_settings` gains one column, `readiness_form_id`, pointing at whichever single form is active — the same singleton-settings shape already used for Community's on/off switch. Every client answers the exact same questions; a coach switches which form is "the" readiness questionnaire from a new **Set as readiness** action on the Forms list, which also shows a ✓ badge on whichever one is currently active.
+
+**Responses link to the session, not a schedule.** The new `readiness_responses` table has a straight foreign key to `assignments` — an actual, specific, already-scheduled workout for a specific client. No check-in row, no assignment-of-a-form in between. That's the real structural difference from check-ins: a readiness answer belongs to the one session it precedes, permanently, whether or not anything about "how often does this client check in" ever existed.
+
+**A default questionnaire so there's something to test with immediately.** The migration seeds one, once: "Pre-Workout Readiness" with four scale (1–10) questions — sleep quality, muscle soreness, energy level, stress — owned by whichever coach account already exists, and marked active automatically. If you later build your own and set it as active, this default is simply no longer used (still sitting in your Forms library, easy to delete once you don't need it as a reference).
+
+**Where the gate lives.** The client's workout session screen (`/assigned/[id]`) now checks readiness status before rendering exercises: if the active questionnaire hasn't been answered yet for *this specific session*, the questionnaire shows instead — same screen, no separate route. Submitting reveals the exercises immediately, no reload needed. A session that's already `completed`, or one where no readiness questionnaire is configured at all, skips the gate entirely and behaves exactly as before this chunk.
+
+**Verify the questionnaire shows correctly:**
+1. As the coach, open Check-in Forms — confirm "Pre-Workout Readiness" appears with its ✓ badge and 4 questions (or build your own and tap **Set as readiness** on it).
+2. As a client with a pending workout assigned, open that workout. Confirm you see the readiness questions — not the exercise list — and that submitting with a question left blank shows a validation error instead of going through.
+3. Answer every question and submit. Confirm the exercise list (and Mark Complete flow) now appears in the same screen, unchanged from before this chunk.
+4. Reopen the same workout. Confirm the readiness questionnaire does **not** show again — it's already answered for this session.
+
+**Verify responses link to the right session:**
+1. Have the same client complete readiness for two different assigned workouts (two different `assignments` rows).
+2. In Supabase, run:
+   ```sql
+   select assignment_id, question_id, answer
+   from readiness_responses
+   where client_id = '<the client id>'
+   order by assignment_id, question_id;
+   ```
+   Confirm each session's four answers are grouped under its own distinct `assignment_id` — never mixed together, and never overwriting each other, even though both sets of answers came from the same client and the same questionnaire.
+3. Delete (or in a test environment, note the id of) one assignment and confirm its `readiness_responses` rows disappear with it (`on delete cascade`) while the other session's rows are untouched.
+
 ## Project structure reference
 
 ```
@@ -1629,12 +1661,12 @@ src/
         [id].tsx          # one client's detail page — Programme section + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete)
       forms/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of the coach's check-in form templates, with Assign
+        index.tsx        # list of the coach's check-in form templates, with Assign and Set as readiness (✓ badge on whichever one is currently the active pre-workout questionnaire)
         new.tsx          # form builder — name + ordered question list, each with a type (short text/number/single select/multi select/scale/measurement) and type-driven config
         [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
         assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
       assigned/
-        [id].tsx          # client's workout view — logs performance, or shows it once completed
+        [id].tsx          # client's workout view — the active readiness questionnaire first if this session hasn't answered it yet, then logs performance, or shows it once completed
       checkins/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
@@ -1700,6 +1732,7 @@ src/
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
     form-assignments.ts            # createFormAssignment() / listClientFormAssignments() / archiveFormAssignment() database calls + listUpcomingCheckInDates() — pure, computes future dates from a recurrence rule, nothing stored per-occurrence
     form-check-ins.ts              # ensureCheckInsUpToDate() (lazy materialize + archive-as-missed sweep, run on client app open) / listUpNextCheckIns() / listVisibleCheckIns() / getCheckInDetail() / submitCheckIn() / listClientCheckInInstances() / archiveOrDeleteCheckIn() database calls
+    readiness.ts                    # getReadinessFormId() / setReadinessFormId() (app_settings.readiness_form_id, the one active questionnaire) / getReadinessStatusForAssignment() (the active form's questions + whatever THIS session has answered so far) / submitReadinessResponses() -- deliberately not built on form_assignments/form_check_ins, see readiness.sql
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
@@ -1739,4 +1772,5 @@ supabase/
   nutri-score.sql                                                                     # paste in after recipes.sql — adds sugars/saturated_fat/sodium_mg/fiber/fruit_veg_legume_nut_percent columns to recipe_ingredients, no RLS changes needed
   meal-plan-templates.sql                                                               # paste in after nutri-score.sql — meal_plan_templates + meal_plan_template_items (coach-owned, references recipes) + meal_plan_assignments (a template+client pointer, is_coach()-gated like assignments.sql)
   workout-set-types.sql                                                                   # paste in after meal-plan-templates.sql — workout_exercises.baseline_weight/baseline_reps + workout_exercise_sets (per-set technique tagging), client read access already included
+  readiness.sql                                                                             # paste in after workout-set-types.sql — app_settings.readiness_form_id, readiness_responses (linked to assignments, not form_check_ins), seeds one default 4-question form if none is configured yet
 ```

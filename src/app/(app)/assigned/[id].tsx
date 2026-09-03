@@ -3,13 +3,28 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AnswerInput } from '@/components/question-answer-input';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { getAssignmentDetail, logWorkout, type AssignmentDetail } from '@/lib/assignments';
+import { getQuestionTypeDefinition, type AnswerValue } from '@/lib/question-types';
+import { getReadinessStatusForAssignment, submitReadinessResponses, type ReadinessStatus } from '@/lib/readiness';
 import { awardWorkoutXp } from '@/lib/xp';
+
+/** A sensible starting value per answer kind for a not-yet-answered
+ * readiness question -- same reasoning as checkins/[id].tsx's
+ * blankAnswerFor: 0/blank would be a real (wrong) answer for a scale, so
+ * that starts at null instead. */
+function blankReadinessAnswer(question: ReadinessStatus['questions'][number]): AnswerValue {
+  if (question.answer !== null) return question.answer as AnswerValue;
+  const kind = getQuestionTypeDefinition(question.questionType).answerKind;
+  if (kind === 'short_text' || kind === 'numeric') return '';
+  if (kind === 'multi_choice') return [];
+  return null;
+}
 
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
@@ -43,15 +58,26 @@ export default function AssignedWorkoutDetailScreen() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const [readiness, setReadiness] = useState<ReadinessStatus | null>(null);
+  const [readinessAnswers, setReadinessAnswers] = useState<Record<string, AnswerValue>>({});
+  const [submittingReadiness, setSubmittingReadiness] = useState(false);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
 
-    getAssignmentDetail(id)
-      .then((data) => {
+    Promise.all([getAssignmentDetail(id), getReadinessStatusForAssignment(id)])
+      .then(([assignmentData, readinessData]) => {
         if (cancelled) return;
-        setDetail(data);
-        setInputs(buildInputsFromDetail(data));
+        setDetail(assignmentData);
+        setInputs(buildInputsFromDetail(assignmentData));
+        setReadiness(readinessData);
+        const answers: Record<string, AnswerValue> = {};
+        readinessData.questions.forEach((question) => {
+          answers[question.id] = blankReadinessAnswer(question);
+        });
+        setReadinessAnswers(answers);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load this workout.');
@@ -64,6 +90,39 @@ export default function AssignedWorkoutDetailScreen() {
       cancelled = true;
     };
   }, [id]);
+
+  const handleSubmitReadiness = async () => {
+    setReadinessError(null);
+    if (!session || !readiness) return;
+
+    for (let i = 0; i < readiness.questions.length; i++) {
+      const question = readiness.questions[i];
+      const typeDefinition = getQuestionTypeDefinition(question.questionType);
+      const validationError = typeDefinition.validateAnswer(question.config, readinessAnswers[question.id] ?? null);
+      if (validationError) {
+        setReadinessError(`Question ${i + 1}: ${validationError}`);
+        return;
+      }
+    }
+
+    setSubmittingReadiness(true);
+    try {
+      const responses = readiness.questions.map((question) => {
+        const typeDefinition = getQuestionTypeDefinition(question.questionType);
+        return {
+          questionId: question.id,
+          answer: typeDefinition.toStoredAnswer(question.config, readinessAnswers[question.id] ?? null),
+        };
+      });
+      await submitReadinessResponses(id, session.user.id, responses);
+      const refreshed = await getReadinessStatusForAssignment(id);
+      setReadiness(refreshed);
+    } catch (err) {
+      setReadinessError(err instanceof Error ? err.message : 'Something went wrong submitting your answers.');
+    } finally {
+      setSubmittingReadiness(false);
+    }
+  };
 
   const updateInput = (exerciseId: string, field: keyof ExerciseInput, value: string) => {
     setInputs((current) => ({
@@ -140,69 +199,113 @@ export default function AssignedWorkoutDetailScreen() {
                 </ThemedText>
               </ThemedText>
 
-              {detail.exercises.length === 0 && (
-                <ThemedText themeColor="textSecondary">This workout has no exercises.</ThemedText>
-              )}
+              {readiness && !readiness.completed && detail.status === 'pending' ? (
+                <>
+                  <ThemedText themeColor="textSecondary" style={styles.readinessIntro}>
+                    Quick check before you start -- {readiness.formName}.
+                  </ThemedText>
 
-              {detail.exercises.map((exercise, index) => {
-                const input = inputs[exercise.id] ?? { weight: '', reps: '' };
-                return (
-                  <ThemedView key={exercise.id} type="backgroundElement" style={styles.exerciseCard}>
-                    <View style={styles.exerciseHeader}>
-                      <ThemedText type="small" themeColor="textSecondary">
-                        {index + 1}
-                      </ThemedText>
-                      <View style={styles.exerciseText}>
-                        <ThemedText type="smallBold">{exercise.name}</ThemedText>
-                        <ThemedText type="small" themeColor="textSecondary">
-                          Target: {exercise.setsReps}
+                  {readiness.questions.map((question, index) => {
+                    const typeDefinition = getQuestionTypeDefinition(question.questionType);
+                    return (
+                      <ThemedView key={question.id} type="backgroundElement" style={styles.exerciseCard}>
+                        <ThemedText type="smallBold">
+                          {index + 1}. {question.label}
                         </ThemedText>
-                      </View>
-                    </View>
+                        <AnswerInput
+                          answerKind={typeDefinition.answerKind}
+                          config={question.config}
+                          value={readinessAnswers[question.id] ?? null}
+                          onChange={(value) =>
+                            setReadinessAnswers((current) => ({ ...current, [question.id]: value }))
+                          }
+                        />
+                      </ThemedView>
+                    );
+                  })}
 
-                    {detail.status === 'completed' ? (
-                      <ThemedText type="small">
-                        Logged: {exercise.loggedWeight ?? '—'} weight · {exercise.loggedReps ?? '—'} reps
-                      </ThemedText>
+                  {readinessError && <ThemedText style={styles.error}>{readinessError}</ThemedText>}
+
+                  <Pressable
+                    style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+                    onPress={handleSubmitReadiness}
+                    disabled={submittingReadiness}>
+                    {submittingReadiness ? (
+                      <ActivityIndicator color={Colors.text} />
                     ) : (
-                      <View style={styles.inputsRow}>
-                        <TextInput
-                          value={input.weight}
-                          onChangeText={(value) => updateInput(exercise.id, 'weight', value)}
-                          placeholder="Weight"
-                          placeholderTextColor={theme.textSecondary}
-                          keyboardType="numeric"
-                          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                        />
-                        <TextInput
-                          value={input.reps}
-                          onChangeText={(value) => updateInput(exercise.id, 'reps', value)}
-                          placeholder="Reps"
-                          placeholderTextColor={theme.textSecondary}
-                          keyboardType="numeric"
-                          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                        />
-                      </View>
+                      <ThemedText type="smallBold" style={styles.primaryButtonText}>
+                        Continue to workout
+                      </ThemedText>
                     )}
-                  </ThemedView>
-                );
-              })}
-
-              {saveError && <ThemedText style={styles.error}>{saveError}</ThemedText>}
-
-              {detail.status === 'pending' && (
-                <Pressable
-                  style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
-                  onPress={handleMarkComplete}
-                  disabled={saving}>
-                  {saving ? (
-                    <ActivityIndicator color={Colors.text} />
-                  ) : (
-                    <ThemedText type="smallBold" style={styles.primaryButtonText}>
-                      Mark Complete
-                    </ThemedText>
+                  </Pressable>
+                </>
+              ) : (
+                <>
+                  {detail.exercises.length === 0 && (
+                    <ThemedText themeColor="textSecondary">This workout has no exercises.</ThemedText>
                   )}
-                </Pressable>
+
+                  {detail.exercises.map((exercise, index) => {
+                    const input = inputs[exercise.id] ?? { weight: '', reps: '' };
+                    return (
+                      <ThemedView key={exercise.id} type="backgroundElement" style={styles.exerciseCard}>
+                        <View style={styles.exerciseHeader}>
+                          <ThemedText type="small" themeColor="textSecondary">
+                            {index + 1}
+                          </ThemedText>
+                          <View style={styles.exerciseText}>
+                            <ThemedText type="smallBold">{exercise.name}</ThemedText>
+                            <ThemedText type="small" themeColor="textSecondary">
+                              Target: {exercise.setsReps}
+                            </ThemedText>
+                          </View>
+                        </View>
+
+                        {detail.status === 'completed' ? (
+                          <ThemedText type="small">
+                            Logged: {exercise.loggedWeight ?? '—'} weight · {exercise.loggedReps ?? '—'} reps
+                          </ThemedText>
+                        ) : (
+                          <View style={styles.inputsRow}>
+                            <TextInput
+                              value={input.weight}
+                              onChangeText={(value) => updateInput(exercise.id, 'weight', value)}
+                              placeholder="Weight"
+                              placeholderTextColor={theme.textSecondary}
+                              keyboardType="numeric"
+                              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                            />
+                            <TextInput
+                              value={input.reps}
+                              onChangeText={(value) => updateInput(exercise.id, 'reps', value)}
+                              placeholder="Reps"
+                              placeholderTextColor={theme.textSecondary}
+                              keyboardType="numeric"
+                              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                            />
+                          </View>
+                        )}
+                      </ThemedView>
+                    );
+                  })}
+
+                  {saveError && <ThemedText style={styles.error}>{saveError}</ThemedText>}
+
+                  {detail.status === 'pending' && (
+                    <Pressable
+                      style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+                      onPress={handleMarkComplete}
+                      disabled={saving}>
+                      {saving ? (
+                        <ActivityIndicator color={Colors.text} />
+                      ) : (
+                        <ThemedText type="smallBold" style={styles.primaryButtonText}>
+                          Mark Complete
+                        </ThemedText>
+                      )}
+                    </Pressable>
+                  )}
+                </>
               )}
             </>
           )}
@@ -226,6 +329,9 @@ const styles = StyleSheet.create({
     marginTop: Spacing.two,
   },
   date: {
+    marginBottom: Spacing.two,
+  },
+  readinessIntro: {
     marginBottom: Spacing.two,
   },
   statusCompleted: {
