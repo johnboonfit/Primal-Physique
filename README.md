@@ -1533,6 +1533,41 @@ Run `supabase/meal-plan-templates.sql` in the SQL Editor after `nutri-score.sql`
 5. Pick one ingredient and hand-check it: take its baseline grams (visible on the template's recipe in Recipe Builder), multiply by (the meal slot's prescribed servings ÷ that recipe's total servings), then by the scale factor from step 4 — it should match the scaled grams shown in the assigned view exactly.
 6. Confirm the scaled view's protein/carb/fat split matches the template's own "Actual split" percentages shown on the template screen — scaling changes the totals, never the ratio.
 
+## Workout Builder: set-type tagging and coach-recommended baselines
+
+Run `supabase/workout-set-types.sql` in the SQL Editor after `meal-plan-templates.sql`. Two additive capabilities on top of the existing Workout Builder (Phase 4) — nothing about how a workout is built or displayed today changes.
+
+**1. Tagging individual sets with a technique.** Until now, an exercise's volume was one free-text field ("3x10") with no concept of an individual set at all. This adds a real `workout_exercise_sets` table — one row per set a coach explicitly tags — alongside that text field, not replacing it. Most exercises won't use this; it exists for the specific sets where a coach wants to call out something other than a normal set (e.g. "set 3 of this exercise is a drop set"). Four types: Normal, Drop Set, Rest-Pause, FST-7.
+
+**The three special techniques' descriptions are a fixed, built-in constant** (`SET_TYPE_DESCRIPTIONS` in `src/lib/set-types.ts`), not something a coach types out per exercise — same reasoning as `GOAL_TYPES` and `RECIPE_TAGS`: a coach picks a type, every client sees the exact same accurate explanation every time, from whichever coach:
+- **Drop Set** — perform to your target reps (or near failure), then immediately drop the weight ~20-30% and keep going for as many reps as you can, no rest in between.
+- **Rest-Pause** — reps to near failure, rack it, rest 10-15 seconds, continue with the same weight for a few more reps — repeat that cycle 2-3 times as one "set."
+- **FST-7** — seven sets of the last exercise for a muscle group, moderate weight, 8-12 reps, only 30-45 seconds rest, with a deep stretch held after each set — meant to pump blood into the muscle and stretch the surrounding fascia.
+
+**2. Coach-recommended baseline weight/reps, per exercise.** Two new optional columns on `workout_exercises` — `baseline_weight` and `baseline_reps` — filled in on the same New Workout screen where the exercise itself is added. These exist purely as a fallback number: when a client logging a set has no previous session of their own for that exercise to pull real numbers from, the coach's recommended starting point is what's shown instead of nothing. Actually *using* that fallback in a logging screen is the client-facing chunk that comes next — this chunk stores it and makes sure it's genuinely there to read.
+
+**No new detail/edit screen.** Workout Builder has always been create-once (no `workouts/[id].tsx` to come back and edit later) — both new fields are captured on the existing New Workout form, per exercise, at creation time, consistent with how the rest of that screen already works.
+
+**Client read access is already wired up**, even though the client-facing screen itself doesn't exist yet — same "no client-facing view yet" gap as Recipe Builder and Meal Plan Templates, but for `workout_exercise_sets` specifically there's no reason to wait: it's the exact same RLS shape `client-access.sql` already grants on `workout_exercises` (read-only, only for a workout actually assigned to that client), so this migration adds it now rather than needing to be revisited later just for that.
+
+**Verify a coach can tag sets and set baselines correctly:**
+1. In the New Workout screen, add an exercise from the library, fill in a baseline weight and reps, then tap **+ Tag a set** a couple of times and set different types on each (e.g. set 1 Normal, set 2 Drop Set).
+2. Remove one of the tagged sets and confirm the rest renumber immediately (set 3 becomes set 2, etc.) — set numbers should always stay contiguous starting at 1.
+3. Save the workout. In Supabase, run:
+   ```sql
+   select we.name, we.baseline_weight, we.baseline_reps, wes.set_number, wes.set_type
+   from workout_exercises we
+   left join workout_exercise_sets wes on wes.exercise_id = we.id
+   where we.workout_id = '<the workout id>'
+   order by we.position, wes.set_number;
+   ```
+   Confirm the baseline numbers and every tagged set's type match exactly what you entered.
+
+**Verify the data is actually queryable for the client-facing screen that comes next:**
+1. Assign that workout to a client (same Assignments flow as before).
+2. As that client (or via `set role postgres` / the SQL Editor's role switcher, or by temporarily copying the client's JWT), run the same query as above — the RLS policy this migration added means it should return the identical rows, proving a client-facing screen can genuinely read this data once it's built, not just the coach.
+3. `src/lib/workouts.ts` now exports `getWorkoutDetail(workoutId)`, which runs the exact query shape a client screen will need (every exercise, its baseline, and its tagged sets, in order) — call it from anywhere in the app and confirm it returns the same numbers as steps 1-3 above. That function existing and returning correct data now is what makes it a drop-in call for the next chunk instead of new plumbing.
+
 ## Project structure reference
 
 ```
@@ -1637,7 +1672,8 @@ src/
     auth-context.tsx    # session + profile state, available anywhere via useAuth()
   lib/
     supabase.ts          # Supabase client, reads from .env
-    workouts.ts           # createWorkout() / listWorkouts() / listWorkoutsForWeek() / archiveWorkout() database calls
+    workouts.ts           # createWorkout() (also saves per-exercise baseline weight/reps + any tagged sets) / getWorkoutDetail() (every exercise + baseline + tagged sets, in order -- the query shape a client screen will reuse) / listWorkouts() / listWorkoutsForWeek() / archiveWorkout() database calls
+    set-types.ts           # SET_TYPES / SET_TYPE_DESCRIPTIONS -- the four set-tagging options and their fixed, built-in technique explanations (Drop Set/Rest-Pause/FST-7; Normal has none)
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / archiveProgramme() / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
     assignments.ts         # coach + client assignment + workout-log database calls
@@ -1702,4 +1738,5 @@ supabase/
   recipes.sql                                                                       # paste in after chat-read-receipts.sql — recipes + recipe_ingredients (coach-owned, macros always calculated not stored), recipe-photos bucket
   nutri-score.sql                                                                     # paste in after recipes.sql — adds sugars/saturated_fat/sodium_mg/fiber/fruit_veg_legume_nut_percent columns to recipe_ingredients, no RLS changes needed
   meal-plan-templates.sql                                                               # paste in after nutri-score.sql — meal_plan_templates + meal_plan_template_items (coach-owned, references recipes) + meal_plan_assignments (a template+client pointer, is_coach()-gated like assignments.sql)
+  workout-set-types.sql                                                                   # paste in after meal-plan-templates.sql — workout_exercises.baseline_weight/baseline_reps + workout_exercise_sets (per-set technique tagging), client read access already included
 ```

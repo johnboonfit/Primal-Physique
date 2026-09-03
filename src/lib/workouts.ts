@@ -1,9 +1,24 @@
+import type { SetType } from '@/lib/set-types';
 import { supabase } from '@/lib/supabase';
+
+export type ExerciseSetDraft = {
+  setNumber: number;
+  setType: SetType;
+};
 
 export type ExerciseDraft = {
   exerciseLibraryId: string;
   name: string;
   setsReps: string;
+  /** Coach-recommended fallback numbers, used when a client has no
+   * previous session of their own to log against -- optional, since not
+   * every exercise needs one. */
+  baselineWeight: number | null;
+  baselineReps: number | null;
+  /** Individual sets tagged with a technique other than (or including)
+   * Normal -- optional and separate from setsReps; most exercises won't
+   * have any of these at all. */
+  sets: ExerciseSetDraft[];
 };
 
 export type WorkoutSummary = {
@@ -11,6 +26,27 @@ export type WorkoutSummary = {
   name: string;
   createdAt: string;
   exerciseCount: number;
+};
+
+export type WorkoutExerciseSet = {
+  id: string;
+  setNumber: number;
+  setType: SetType;
+};
+
+export type WorkoutExerciseDetail = {
+  id: string;
+  name: string;
+  setsReps: string;
+  baselineWeight: number | null;
+  baselineReps: number | null;
+  sets: WorkoutExerciseSet[];
+};
+
+export type WorkoutDetail = {
+  id: string;
+  name: string;
+  exercises: WorkoutExerciseDetail[];
 };
 
 /**
@@ -41,14 +77,39 @@ export async function createWorkout(
     exercise_library_id: exercise.exerciseLibraryId,
     name: exercise.name,
     sets_reps: exercise.setsReps,
+    baseline_weight: exercise.baselineWeight,
+    baseline_reps: exercise.baselineReps,
     position: index,
   }));
 
-  const { error: exercisesError } = await supabase.from('workout_exercises').insert(rows);
+  // .select('id') is needed here (not just a bare insert) so the
+  // per-set type rows below can be attached to the right exercise --
+  // Supabase preserves row order on a multi-row insert, so index i of
+  // the returned ids always corresponds to index i of `exercises`.
+  const { data: insertedExercises, error: exercisesError } = await supabase
+    .from('workout_exercises')
+    .insert(rows)
+    .select('id');
 
   if (exercisesError) {
     await supabase.from('workouts').delete().eq('id', workout.id);
     throw exercisesError;
+  }
+
+  const setRows = exercises.flatMap((exercise, index) =>
+    exercise.sets.map((set) => ({
+      exercise_id: (insertedExercises as { id: string }[])[index].id,
+      set_number: set.setNumber,
+      set_type: set.setType,
+    }))
+  );
+
+  if (setRows.length > 0) {
+    const { error: setsError } = await supabase.from('workout_exercise_sets').insert(setRows);
+    if (setsError) {
+      await supabase.from('workouts').delete().eq('id', workout.id);
+      throw setsError;
+    }
   }
 
   return workout.id as string;
@@ -70,6 +131,47 @@ export async function listWorkouts(coachId: string): Promise<WorkoutSummary[]> {
     createdAt: row.created_at as string,
     exerciseCount: (row.workout_exercises as { count: number }[] | null)?.[0]?.count ?? 0,
   }));
+}
+
+/**
+ * The full shape of a workout -- every exercise, its baseline
+ * weight/reps, and any individually-tagged sets, in order. This is the
+ * exact query a client-facing screen will need to reuse; verifying it
+ * here now (before that screen exists) confirms the data really is
+ * queryable end to end, not just present in the coach's create form.
+ */
+export async function getWorkoutDetail(workoutId: string): Promise<WorkoutDetail> {
+  const { data: workout, error: workoutError } = await supabase
+    .from('workouts')
+    .select('id, name')
+    .eq('id', workoutId)
+    .single();
+
+  if (workoutError) throw workoutError;
+
+  const { data: exerciseRows, error: exercisesError } = await supabase
+    .from('workout_exercises')
+    .select('id, name, sets_reps, baseline_weight, baseline_reps, workout_exercise_sets (id, set_number, set_type)')
+    .eq('workout_id', workoutId)
+    .order('position', { ascending: true });
+
+  if (exercisesError) throw exercisesError;
+
+  const exercises: WorkoutExerciseDetail[] = (exerciseRows ?? []).map((row) => {
+    const setRows = (row.workout_exercise_sets as { id: string; set_number: number; set_type: string }[]) ?? [];
+    return {
+      id: row.id as string,
+      name: row.name as string,
+      setsReps: row.sets_reps as string,
+      baselineWeight: row.baseline_weight as number | null,
+      baselineReps: row.baseline_reps as number | null,
+      sets: setRows
+        .map((set) => ({ id: set.id, setNumber: set.set_number, setType: set.set_type as SetType }))
+        .sort((a, b) => a.setNumber - b.setNumber),
+    };
+  });
+
+  return { id: workout.id as string, name: workout.name as string, exercises };
 }
 
 /** Archiving, not deleting — assignments and workout_logs reference this

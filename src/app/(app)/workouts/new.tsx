@@ -10,9 +10,16 @@ import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { listExerciseLibrarySummaries, type ExerciseSummary } from '@/lib/exercise-library';
 import { getProgrammeWeekContext, type ProgrammeWeekContext } from '@/lib/programmes';
-import { createWorkout } from '@/lib/workouts';
+import { SET_TYPES, type SetType } from '@/lib/set-types';
+import { createWorkout, type ExerciseDraft } from '@/lib/workouts';
 
 const MAX_SUGGESTIONS = 8;
+
+type SetRow = {
+  key: string;
+  setNumber: number;
+  setType: SetType;
+};
 
 type ExerciseRow = {
   key: string;
@@ -21,16 +28,66 @@ type ExerciseRow = {
   muscleGroup: string | null;
   setsReps: string;
   searchQuery: string;
+  baselineWeight: string;
+  baselineReps: string;
+  taggedSets: SetRow[];
 };
 
 let nextKey = 0;
 function makeExerciseRow(): ExerciseRow {
   nextKey += 1;
-  return { key: `exercise-${nextKey}`, exerciseLibraryId: null, exerciseName: '', muscleGroup: null, setsReps: '', searchQuery: '' };
+  return {
+    key: `exercise-${nextKey}`,
+    exerciseLibraryId: null,
+    exerciseName: '',
+    muscleGroup: null,
+    setsReps: '',
+    searchQuery: '',
+    baselineWeight: '',
+    baselineReps: '',
+    taggedSets: [],
+  };
+}
+
+let nextSetKey = 0;
+function makeSetRow(setNumber: number): SetRow {
+  nextSetKey += 1;
+  return { key: `set-${nextSetKey}`, setNumber, setType: 'normal' };
 }
 
 function titleCase(word: string) {
   return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+/** Validates and converts one form row into what createWorkout() actually
+ * saves. Returns an error message (string) instead of throwing, so the
+ * caller can point out which exercise the problem is in. */
+function buildExerciseDraft(row: ExerciseRow): ExerciseDraft | string {
+  const trimmedWeight = row.baselineWeight.trim();
+  const trimmedReps = row.baselineReps.trim();
+
+  let baselineWeight: number | null = null;
+  if (trimmedWeight) {
+    const parsed = Number(trimmedWeight);
+    if (Number.isNaN(parsed) || parsed < 0) return 'Baseline weight must be a number of 0 or more.';
+    baselineWeight = parsed;
+  }
+
+  let baselineReps: number | null = null;
+  if (trimmedReps) {
+    const parsed = Number(trimmedReps);
+    if (!Number.isInteger(parsed) || parsed <= 0) return 'Baseline reps must be a whole number greater than 0.';
+    baselineReps = parsed;
+  }
+
+  return {
+    exerciseLibraryId: row.exerciseLibraryId as string,
+    name: row.exerciseName,
+    setsReps: row.setsReps.trim(),
+    baselineWeight,
+    baselineReps,
+    sets: row.taggedSets.map((set) => ({ setNumber: set.setNumber, setType: set.setType })),
+  };
 }
 
 export default function NewWorkoutScreen() {
@@ -107,6 +164,41 @@ export default function NewWorkoutScreen() {
     setExercises((current) => (current.length > 1 ? current.filter((row) => row.key !== key) : current));
   };
 
+  const addTaggedSet = (exerciseKey: string) => {
+    setExercises((current) =>
+      current.map((row) =>
+        row.key === exerciseKey ? { ...row, taggedSets: [...row.taggedSets, makeSetRow(row.taggedSets.length + 1)] } : row
+      )
+    );
+  };
+
+  const removeTaggedSet = (exerciseKey: string, setKey: string) => {
+    setExercises((current) =>
+      current.map((row) =>
+        row.key === exerciseKey
+          ? {
+              ...row,
+              // Renumber the rest so set numbers stay contiguous (1, 2,
+              // 3...) after removing one from the middle.
+              taggedSets: row.taggedSets
+                .filter((set) => set.key !== setKey)
+                .map((set, index) => ({ ...set, setNumber: index + 1 })),
+            }
+          : row
+      )
+    );
+  };
+
+  const setTaggedSetType = (exerciseKey: string, setKey: string, setType: SetType) => {
+    setExercises((current) =>
+      current.map((row) =>
+        row.key === exerciseKey
+          ? { ...row, taggedSets: row.taggedSets.map((set) => (set.key === setKey ? { ...set, setType } : set)) }
+          : row
+      )
+    );
+  };
+
   const handleSave = async () => {
     setError(null);
     if (!session) return;
@@ -117,17 +209,21 @@ export default function NewWorkoutScreen() {
       return;
     }
 
-    const cleaned = exercises
-      .filter((row) => row.exerciseLibraryId !== null)
-      .map((row) => ({
-        exerciseLibraryId: row.exerciseLibraryId as string,
-        name: row.exerciseName,
-        setsReps: row.setsReps.trim(),
-      }));
+    const activeRows = exercises.filter((row) => row.exerciseLibraryId !== null);
 
-    if (cleaned.length === 0) {
+    if (activeRows.length === 0) {
       setError('Add at least one exercise from the library.');
       return;
+    }
+
+    const cleaned: ExerciseDraft[] = [];
+    for (const row of activeRows) {
+      const draft = buildExerciseDraft(row);
+      if (typeof draft === 'string') {
+        setError(`${row.exerciseName || 'An exercise'}: ${draft}`);
+        return;
+      }
+      cleaned.push(draft);
     }
 
     setSaving(true);
@@ -187,6 +283,11 @@ export default function NewWorkoutScreen() {
                 onClear={() => clearSelection(row.key)}
                 onSearchChange={(value) => updateRow(row.key, { searchQuery: value })}
                 onSetsRepsChange={(value) => updateRow(row.key, { setsReps: value })}
+                onBaselineWeightChange={(value) => updateRow(row.key, { baselineWeight: value })}
+                onBaselineRepsChange={(value) => updateRow(row.key, { baselineReps: value })}
+                onAddSet={() => addTaggedSet(row.key)}
+                onRemoveSet={(setKey) => removeTaggedSet(row.key, setKey)}
+                onSetTypeChange={(setKey, setType) => setTaggedSetType(row.key, setKey, setType)}
                 onRemove={() => removeExercise(row.key)}
               />
             ))}
@@ -231,6 +332,11 @@ function ExerciseRowInput({
   onClear,
   onSearchChange,
   onSetsRepsChange,
+  onBaselineWeightChange,
+  onBaselineRepsChange,
+  onAddSet,
+  onRemoveSet,
+  onSetTypeChange,
   onRemove,
 }: {
   row: ExerciseRow;
@@ -242,6 +348,11 @@ function ExerciseRowInput({
   onClear: () => void;
   onSearchChange: (value: string) => void;
   onSetsRepsChange: (value: string) => void;
+  onBaselineWeightChange: (value: string) => void;
+  onBaselineRepsChange: (value: string) => void;
+  onAddSet: () => void;
+  onRemoveSet: (setKey: string) => void;
+  onSetTypeChange: (setKey: string, setType: SetType) => void;
   onRemove: () => void;
 }) {
   const suggestions = useMemo(() => {
@@ -307,6 +418,65 @@ function ExerciseRowInput({
             placeholderTextColor={theme.textSecondary}
             style={[styles.exerciseInput, { color: theme.text, borderColor: theme.backgroundSelected }]}
           />
+
+          <View style={styles.baselineRow}>
+            <TextInput
+              value={row.baselineWeight}
+              onChangeText={onBaselineWeightChange}
+              placeholder="Baseline weight (optional)"
+              placeholderTextColor={theme.textSecondary}
+              keyboardType="decimal-pad"
+              testID={`exercise-${index}-baseline-weight`}
+              style={[styles.exerciseInput, styles.baselineInput, { color: theme.text, borderColor: theme.backgroundSelected }]}
+            />
+            <TextInput
+              value={row.baselineReps}
+              onChangeText={onBaselineRepsChange}
+              placeholder="Baseline reps (optional)"
+              placeholderTextColor={theme.textSecondary}
+              keyboardType="number-pad"
+              testID={`exercise-${index}-baseline-reps`}
+              style={[styles.exerciseInput, styles.baselineInput, { color: theme.text, borderColor: theme.backgroundSelected }]}
+            />
+          </View>
+          <ThemedText type="small" themeColor="textSecondary">
+            Used as a fallback for a client with no previous session logged for this exercise.
+          </ThemedText>
+
+          <ThemedText type="small" themeColor="textSecondary" style={styles.taggedSetsLabel}>
+            Set types (optional -- tag individual sets, e.g. "set 3 is a drop set")
+          </ThemedText>
+          {row.taggedSets.map((set, setIndex) => (
+            <View key={set.key} style={styles.setRow} testID={`exercise-${index}-set-${setIndex}`}>
+              <ThemedText type="small" style={styles.setNumber} testID={`exercise-${index}-set-${setIndex}-number`}>
+                Set {set.setNumber}
+              </ThemedText>
+              <View style={styles.setTypeChips}>
+                {SET_TYPES.map(({ key: typeKey, label }) => {
+                  const selected = set.setType === typeKey;
+                  return (
+                    <Pressable
+                      key={typeKey}
+                      onPress={() => onSetTypeChange(set.key, typeKey)}
+                      testID={`exercise-${index}-set-${setIndex}-type-${typeKey}`}
+                      style={[styles.setTypeChip, { borderColor: theme.backgroundSelected }, selected && styles.setTypeChipSelected]}>
+                      <ThemedText type="small" style={selected ? styles.setTypeChipTextSelected : undefined}>
+                        {label}
+                      </ThemedText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Pressable onPress={() => onRemoveSet(set.key)} hitSlop={8} testID={`exercise-${index}-set-${setIndex}-remove`}>
+                <ThemedText style={styles.removeText}>Remove</ThemedText>
+              </Pressable>
+            </View>
+          ))}
+          <Pressable onPress={onAddSet} style={styles.addSetButton} testID={`exercise-${index}-add-set`}>
+            <ThemedText type="small" style={styles.addSetText}>
+              + Tag a set
+            </ThemedText>
+          </Pressable>
         </View>
         {canRemove && (
           <Pressable onPress={onRemove} hitSlop={8}>
@@ -378,6 +548,51 @@ const styles = StyleSheet.create({
   selectedExerciseText: {
     flex: 1,
     gap: Spacing.half,
+  },
+  baselineRow: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  baselineInput: {
+    flex: 1,
+  },
+  taggedSetsLabel: {
+    marginTop: Spacing.one,
+  },
+  setRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  setNumber: {
+    width: 44,
+  },
+  setTypeChips: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.one,
+  },
+  setTypeChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.half,
+  },
+  setTypeChipSelected: {
+    ...Glow.oxblood,
+    backgroundColor: Accent,
+    borderColor: Accent,
+  },
+  setTypeChipTextSelected: {
+    color: Colors.text,
+    fontWeight: '700',
+  },
+  addSetButton: {
+    alignSelf: 'flex-start',
+  },
+  addSetText: {
+    color: Accent,
   },
   suggestionsBox: {
     borderWidth: 1,
