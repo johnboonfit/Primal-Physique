@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { HeroStat } from '@/components/hero-stat';
+import { StatTile } from '@/components/stat-tile';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
@@ -23,7 +23,7 @@ import { ensureCheckInsUpToDate, listUpNextCheckIns, type UpNextCheckIn } from '
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
 import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
 import { getCurrentStreak } from '@/lib/streak';
-import { checkAndRecalculateTdeeIfDue } from '@/lib/tdee';
+import { checkAndRecalculateTdeeIfDue, getCalorieTarget } from '@/lib/tdee';
 import { hasWeightLogForDate } from '@/lib/weight-logs';
 import { awardHabitXp, getXpSummary, type XpSummary } from '@/lib/xp';
 
@@ -77,6 +77,8 @@ export default function ClientHomeScreen() {
 
   const [weightLoggedToday, setWeightLoggedToday] = useState<boolean | null>(null);
   const [foodLoggedToday, setFoodLoggedToday] = useState<boolean | null>(null);
+  const [caloriesToday, setCaloriesToday] = useState<number | null>(null);
+  const [calorieTarget, setCalorieTarget] = useState<number | null>(null);
 
   // communityEnabled is the coach's app-wide switch (separate from
   // communityHidden, this client's own personal preference) — null
@@ -271,11 +273,17 @@ export default function ClientHomeScreen() {
       if (!session) return;
       let cancelled = false;
 
-      Promise.all([hasWeightLogForDate(session.user.id, logDate), listFoodLogsForDate(session.user.id, logDate)])
-        .then(([weightLogged, foodLogs]) => {
+      Promise.all([
+        hasWeightLogForDate(session.user.id, logDate),
+        listFoodLogsForDate(session.user.id, logDate),
+        getCalorieTarget(session.user.id),
+      ])
+        .then(([weightLogged, foodLogs, target]) => {
           if (cancelled) return;
           setWeightLoggedToday(weightLogged);
           setFoodLoggedToday(foodLogs.length > 0);
+          setCaloriesToday(foodLogs.reduce((sum, entry) => sum + entry.calories, 0));
+          setCalorieTarget(target?.targetCalories ?? null);
         })
         .catch((err) => console.error("Failed to check today's logging status:", err));
 
@@ -385,7 +393,7 @@ export default function ClientHomeScreen() {
   const upNextLoading = loading || checkInsLoading;
   const upNextError = error || checkInsError;
 
-  const displayName = profile?.full_name || profile?.email.split('@')[0] || '';
+  const displayName = (profile?.full_name || profile?.email.split('@')[0] || '').split(' ')[0];
   const completedCount = habits.filter((habit) => completedIds.has(habit.id)).length;
 
   const missingWeight = weightLoggedToday === false;
@@ -415,16 +423,51 @@ export default function ClientHomeScreen() {
             </Pressable>
           </View>
 
-          {streak !== null && (
-            <View style={styles.streakRow}>
-              <ThemedText type="smallBold" style={styles.streakText}>
-                🔥 {streak}
-              </ThemedText>
-              <ThemedText type="small" themeColor="textSecondary">
-                day streak
-              </ThemedText>
-            </View>
-          )}
+          <View style={styles.heroRow}>
+            <StatTile
+              value={momentumLoading || !momentum ? '--' : momentum.score.toFixed(1)}
+              label="Momentum"
+              subtitle="out of 10"
+              style={styles.heroTile}
+            />
+            <StatTile value="--" label="Steps" subtitle="Sync a wearable" muted style={styles.heroTile} />
+            <StatTile
+              value={caloriesToday !== null ? String(Math.round(caloriesToday)) : '--'}
+              label="Calories"
+              subtitle={calorieTarget !== null ? `of ${Math.round(calorieTarget)}` : 'logged today'}
+              style={styles.heroTile}
+              onPress={() => router.push('/client/nutrition')}
+            />
+          </View>
+
+          {!momentumLoading && momentumError && <ThemedText style={styles.error}>{momentumError}</ThemedText>}
+
+          <View style={styles.progressRow}>
+            {streak !== null && (
+              <View style={styles.streakRow}>
+                <ThemedText type="smallBold" style={styles.streakText}>
+                  🔥 {streak}
+                </ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  day streak
+                </ThemedText>
+              </View>
+            )}
+
+            {!xpLoading && xp && (
+              <View style={styles.xpInline}>
+                <View style={styles.xpHeader}>
+                  <ThemedText type="smallBold">Level {xp.level}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {xp.totalXp % 500}/500 XP
+                  </ThemedText>
+                </View>
+                <View style={styles.xpTrack}>
+                  <View style={[styles.xpFill, { width: `${((xp.totalXp % 500) / 500) * 100}%` }]} />
+                </View>
+              </View>
+            )}
+          </View>
 
           {loggingNudge && (
             <Pressable onPress={() => router.push(loggingNudge!.href)}>
@@ -488,35 +531,6 @@ export default function ClientHomeScreen() {
               ))}
               {manualError && <ThemedText style={styles.error}>{manualError}</ThemedText>}
             </ThemedView>
-          )}
-
-          {!xpLoading && xp && (
-            <ThemedView type="backgroundElement" style={styles.xpCard}>
-              <View style={styles.xpHeader}>
-                <ThemedText type="smallBold">Level {xp.level}</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  {xp.totalXp} XP
-                </ThemedText>
-              </View>
-              <View style={styles.xpTrack}>
-                <View style={[styles.xpFill, { width: `${((xp.totalXp % 500) / 500) * 100}%` }]} />
-              </View>
-              <ThemedText type="small" themeColor="textSecondary">
-                {xp.totalXp % 500}/500 to Level {xp.level + 1}
-              </ThemedText>
-            </ThemedView>
-          )}
-
-          {momentumLoading && <ActivityIndicator style={styles.loader} />}
-
-          {!momentumLoading && momentumError && <ThemedText style={styles.error}>{momentumError}</ThemedText>}
-
-          {!momentumLoading && !momentumError && momentum && (
-            <HeroStat
-              value={momentum.score.toFixed(2)}
-              label="Momentum Score"
-              progress={(momentum.score - 1) / 9}
-            />
           )}
 
           <View style={styles.sectionHeaderRow}>
@@ -633,11 +647,13 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: Spacing.two,
   },
   greeting: {
     flex: 1,
+    fontSize: 22,
+    lineHeight: 27,
   },
   sectionLabel: {
     marginTop: Spacing.two,
@@ -698,10 +714,22 @@ const styles = StyleSheet.create({
   habitCheckPending: {
     color: Colors.textSecondary,
   },
-  xpCard: {
-    borderRadius: Spacing.two,
-    padding: Spacing.three,
+  heroRow: {
+    flexDirection: 'row',
     gap: Spacing.two,
+  },
+  heroTile: {
+    flex: 1,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+  },
+  xpInline: {
+    flex: 1,
+    gap: Spacing.half,
   },
   xpHeader: {
     flexDirection: 'row',

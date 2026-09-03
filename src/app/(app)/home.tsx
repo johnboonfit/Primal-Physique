@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { StatTile } from '@/components/stat-tile';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
@@ -39,35 +40,6 @@ function formatRelativeTime(iso: string): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-function capitalize(word: string): string {
-  return word.charAt(0).toUpperCase() + word.slice(1);
-}
-
-type StatTileProps = {
-  value: string;
-  label: string;
-  color?: string;
-  onPress?: () => void;
-};
-
-function StatTile({ value, label, color, onPress }: StatTileProps) {
-  return (
-    <Pressable
-      style={({ pressed }) => [styles.statTile, pressed && onPress && styles.pressed]}
-      onPress={onPress}
-      disabled={!onPress}>
-      <ThemedView type="backgroundElement" style={styles.statTileInner}>
-        <ThemedText type="title" style={[styles.statValue, color ? { color } : undefined]}>
-          {value}
-        </ThemedText>
-        <ThemedText type="small" themeColor="textSecondary" style={styles.statLabel}>
-          {label}
-        </ThemedText>
-      </ThemedView>
-    </Pressable>
-  );
 }
 
 function NavCard({ title, subtitle, href }: { title: string; subtitle: string; href: string }) {
@@ -182,22 +154,30 @@ export default function HomeScreen() {
           {!loading && !error && stats && (
             <>
               <View style={styles.statGrid}>
-                <StatTile value={String(stats.activeClients)} label="Active Clients" onPress={() => router.push('/clients')} />
+                <StatTile
+                  value={String(stats.activeClients)}
+                  label="Active Clients"
+                  onPress={() => router.push('/clients')}
+                  style={styles.statTileHalf}
+                />
                 <StatTile
                   value={stats.avgCompliance !== null ? `${stats.avgCompliance}%` : '--'}
                   label="Avg Compliance"
                   color={stats.avgCompliance !== null ? complianceColor(stats.avgCompliance) : undefined}
                   onPress={() => router.push('/clients')}
+                  style={styles.statTileHalf}
                 />
                 <StatTile
                   value={String(stats.overdueCheckIns)}
                   label="Overdue Check-ins"
                   color={stats.overdueCheckIns > 0 ? Accent : undefined}
+                  style={styles.statTileHalf}
                 />
                 <StatTile
                   value={String(stats.openReports)}
                   label="Open Reports"
                   color={stats.openReports > 0 ? Accent : undefined}
+                  style={styles.statTileHalf}
                   onPress={() => router.push('/community/moderation' as never)}
                 />
               </View>
@@ -300,25 +280,8 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: Spacing.two,
   },
-  statTile: {
+  statTileHalf: {
     width: '48%',
-  },
-  statTileInner: {
-    borderRadius: Spacing.two,
-    padding: Spacing.three,
-    gap: Spacing.half,
-    borderTopWidth: 3,
-    borderTopColor: Colors.tealBright,
-  },
-  statValue: {
-    fontSize: 32,
-    lineHeight: 36,
-  },
-  statLabel: {
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-    fontSize: 11,
-    lineHeight: 14,
   },
   pressed: {
     opacity: 0.85,

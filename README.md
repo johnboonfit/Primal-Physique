@@ -1821,6 +1821,23 @@ The coach's `/home` used to be one card of plain text links to every section, no
 5. Log a meal and complete a workout as a test client — confirm both appear at the top of Recent Activity within a few seconds of reopening the dashboard, in the correct order (most recent first), with the right client name.
 6. Drop a client's compliance below 50% (or find one already there) and confirm they appear in Needs Attention; confirm a client sitting at exactly 50% or above does not.
 
+## Client Home tab: side-by-side hero stats, and an honest Steps placeholder
+
+The client's Home tab had one full-width Momentum Score block and nothing else at a glance — everything else (streak, level, Up Next, habits) was further down the scroll. Added a 3-across hero row right under the greeting: Momentum, Steps, and Calories Today, using the new shared `<StatTile>` component (`src/components/stat-tile.tsx`, also used by the coach dashboard's stat row now, so the two screens share one visual language for "small stat card in a row").
+
+**Momentum and Calories Today are both real, already-computed numbers** — Momentum reuses `getMomentumScore()` exactly as before (just displayed as a compact tile instead of a full-width `<HeroStat>`), and Calories Today is a genuinely new calculation: `sum(calories)` across today's `food_logs`, shown against the client's real calorie target (`getCalorieTarget()`, the same Adaptive TDEE number Nutrition and Compliance already use) when one exists, or a plain "logged today" otherwise.
+
+**Steps is a deliberate, honest placeholder — not a fake number.** This app has no step data anywhere: no pedometer/HealthKit integration, no manual step log, nothing in the database. Rather than invent a number, the Steps tile renders in a visibly different, muted style — a dashed border, a plain "--", "Sync a wearable" as its subtitle — so it reads as "not connected yet," not as a real zero. It'll start showing a real number the moment a wearable integration exists to back it; nothing about the design needs to change then beyond swapping in that real value.
+
+**`<StatTile>` has a `muted` mode for exactly this situation** — any future "not connected yet" stat (anywhere in the app) can reuse the same honest-placeholder treatment instead of a new one-off getting invented per screen.
+
+**Smaller layout cleanup while in here**: the greeting now shows first name only (matching the coach dashboard's greeting) instead of the full name, which was wrapping to three lines on longer names; streak and Level/XP were combined into one compact row instead of two separate stacked blocks, freeing up space so the hero stats and Up Next are visible without scrolling on most phones.
+
+**Verify:**
+1. Confirm the Momentum tile's number matches what the old full-width version showed (no calculation change, just a smaller card).
+2. Log a meal or two as a test client, confirm Calories Today updates to match `select sum(calories) from food_logs where client_id = '<id>' and log_date = current_date;` on reopening Home.
+3. Confirm the Steps tile always shows "--" / "Sync a wearable" in its own muted, dashed-border style — never a number, never styled like the other two.
+
 ## Project structure reference
 
 ```
@@ -1895,14 +1912,15 @@ src/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
-        index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
+        index.tsx        # Home tab — greeting + a 3-across hero row (Momentum / Steps [muted placeholder] / Calories Today), streak + Level/XP combined into one row, daily logging nudge, weekly TDEE recalculation check, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
         training.tsx      # Training tab — Volume Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) directly under the hero stat, then Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
         chat.tsx             # Chat tab — real messaging now: resolves/creates this client's conversation with "the coach", then renders <ChatThread>
         calendar.tsx        # Not a tab anymore, still a real route — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />, reached via Training's "View Calendar" link
   components/
-    hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
+    hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used where one number should dominate the screen)
+    stat-tile.tsx        # <StatTile value label subtitle? color? muted? onPress?> — the compact stat card for side-by-side rows (coach dashboard's 4-across, client Home's 3-across); muted renders a dashed-border, textSecondary "not connected yet" placeholder instead of a real value
     macro-ring.tsx        # small SVG donut ring (Nutrition tab's Protein/Carbs/Fat breakdown)
     weight-trend-chart.tsx  # SVG line chart — actual weight (teal) + smoothed trend (red), used by MetricsPanel
     measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
