@@ -1465,6 +1465,27 @@ Run `supabase/chat-read-receipts.sql` in the SQL Editor after `chat.sql`. One "S
 3. Send two messages in a row as the client. Confirm only the *second* (most recent) one ever shows a status — the first never does, even after it's been read.
 4. In Supabase, confirm `conversation_reads` has exactly one row per person per conversation (never one per message) — `select * from conversation_reads where conversation_id = '<id>';` should return at most 2 rows, no matter how many messages exist.
 
+## Recipe Builder: calculated macros, never typed in
+
+Run `supabase/recipes.sql` in the SQL Editor after `chat-read-receipts.sql`. A coach-only "Recipe Builder" for building reusable recipes — name, cover photo, an ingredients list, instructions, prep/cook time, servings, and tags — with macros per serving that are *always calculated*, never manually entered.
+
+**Two new tables, no client-facing view yet.** `recipes` holds the recipe itself (name, instructions, prep/cook minutes, servings, tags, an optional cover photo path). `recipe_ingredients` holds one row per ingredient in a recipe. Both are locked to "you own it" RLS — a coach can only ever see, edit, or delete their own recipes — the same shape as `programme_blocks`/`programme_weeks`, just with no client ever assigned one yet.
+
+**Ingredients reuse the exact same search you already use for food logging.** Tapping "+ Add ingredient" opens the same USDA FoodData Central typed search as the Nutrition tab's "Add to meal" flow — search, pick a result, enter a quantity in grams. The moment you pick a quantity, that ingredient's macros are scaled from the per-100g source figures and saved into `recipe_ingredients` as plain numbers — calories, protein, carbs, fat, all already multiplied out for that quantity. Exactly like `food_logs` already does for a logged meal: the numbers are a permanent snapshot, so if USDA's data for that food changes later, or the food disappears from their database entirely, every recipe that already used it keeps showing the exact numbers it saved at the time.
+
+**Macros per serving are never stored — they're calculated on every read.** There is no `calories_per_serving` column anywhere. `computeMacroTotals()` in `src/lib/recipes.ts` is the one place this math happens: sum every ingredient's cached calories/protein/carbs/fat, then divide each total by the recipe's `servings`. It's a small, pure function with no database or network dependency, called identically by the Recipe Library list (for the calories/serving preview on each card) and the recipe detail screen (for the full per-serving + whole-recipe breakdown). Changing `servings` on the Edit screen doesn't touch a single ingredient — it just changes the divisor, and every macro number updates immediately.
+
+**A recipe's cover photo works exactly like progress photos.** A private `recipe-photos` Storage bucket, one folder per coach (`storage.foldername(name)[1] = auth.uid()`), uploaded via the same base64-decode-to-ArrayBuffer path used everywhere else in this app for Storage uploads (React Native's Blob/File/FormData path against Supabase Storage isn't reliable). Replacing a photo removes the old file; deleting a recipe removes its file too.
+
+**Verify the calculated macros are actually correct — not just present:**
+1. In the Recipe Builder, tap **+ New**, name it anything, set servings to a real number (e.g. 2), and save — you land on the recipe's detail screen.
+2. Tap **+ Add ingredient**, search for a real food (e.g. "chicken breast, raw"), and note the exact "Per 100g" figures the app shows you *before* you save it — those are the real numbers coming back from USDA for that specific search result.
+3. Enter a quantity (e.g. 200g) and tap **Add to recipe**. By hand (or a calculator), multiply each per-100g figure by 200/100 — that's what the ingredient row should now show.
+4. Repeat with one or two more ingredients, writing down each one's per-100g figures and its quantity as you go.
+5. On the recipe detail screen, hand-add every ingredient's calories together, then divide by the servings number you set — compare that to the "Per serving (calculated)" card's calorie figure. Do the same for protein, carbs, and fat.
+6. Change the **Edit → Servings** number and save. Confirm the per-serving figures on the detail screen change immediately (same totals, different divisor) — and that removing or adding an ingredient changes the totals, not the per-serving math itself.
+7. In Supabase, run `select name, calories, protein, carbs, fat from recipe_ingredients where recipe_id = '<id>';` and confirm every row matches what you hand-calculated in step 3 — this is the actual snapshot the app is reading from, not a live lookup.
+
 ## Project structure reference
 
 ```
@@ -1494,6 +1515,12 @@ src/
         [id].tsx          # one programme — cover image, tap-to-rename, weeks list, + Add week; Calorie target editor + embedded SessionCalendar for assigned (client) instances
         assign/[id].tsx     # pick a client + start date, assign a template to them — redirects straight to the new assigned programme, not the unrelated Assignments list
         week/[weekId].tsx  # one week of a programme — its sessions, + New session
+      recipes/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # Recipe Builder library — list of the coach's recipes, calories/serving preview, tags, Delete
+        new.tsx           # create-recipe form — name, prep/cook time, servings, tags, instructions; redirects to the recipe so ingredients (and a photo) can be added
+        [id].tsx          # one recipe — cover photo upload, calculated per-serving + whole-recipe macro card, ingredient list with + Add (same USDA search as food logging) and Remove, instructions, Delete recipe
+        edit/[id].tsx      # edit a recipe's name/prep/cook/servings/tags/instructions — ingredients are added/removed from the detail screen instead
       exercise-library/
         _layout.tsx      # coach-only guard for now
         index.tsx        # search + muscle-group filter over the imported exercise_library table
@@ -1573,6 +1600,7 @@ src/
     compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
     community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file
     leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products (Club shown in the app as "Base")
+    recipes.ts                    # createRecipe() / listRecipes() / getRecipeDetail() / updateRecipeDetails() / deleteRecipe() / addRecipeIngredient() / removeRecipeIngredient() / uploadRecipePhoto() / computeMacroTotals() — the one place recipe macros are summed and divided by servings, pure and reused by both the list and detail screens
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
@@ -1613,4 +1641,5 @@ supabase/
   community-leaderboards.sql                                                 # paste in after community-moderation.sql — client_tiers (Club/Accelerator/Precision) + get_weekly_xp_leaderboard()/get_lifetime_xp_leaderboard() SECURITY DEFINER functions
   chat.sql                                                                     # paste in after community-leaderboards.sql — conversations, messages (+ edit trigger, delete-for-everyone time window), message_hidden_for, chat-audio bucket, realtime publication, profiles.last_seen_at
   chat-read-receipts.sql                                                         # paste in after chat.sql — conversation_reads (one "read up to" cursor per person per conversation), added to the realtime publication too
+  recipes.sql                                                                       # paste in after chat-read-receipts.sql — recipes + recipe_ingredients (coach-owned, macros always calculated not stored), recipe-photos bucket
 ```
