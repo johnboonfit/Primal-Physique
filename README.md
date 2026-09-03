@@ -1641,6 +1641,44 @@ Run `supabase/exercise-swaps.sql` in the SQL Editor after `readiness.sql`. A cli
 7. Tap **Undo** on the swapped exercise and confirm it reverts to the original name and its coach baseline (if one was set) — then confirm `assignment_exercise_swaps` no longer has a row for that slot.
 8. Log the swapped exercise and mark the workout complete — confirm `workout_logs.exercise_id` still equals `<slot-id>` (the original slot), not some new id — the log belongs to the position in the workout, exactly as before this chunk.
 
+## The live session screen: per-set logging, RPE, an auto rest timer, and local-first caching
+
+Run `supabase/live-session.sql` in the SQL Editor after `exercise-swaps.sql`. This is the screen the last four chunks were all building toward: `/assigned/[id]` now logs a session **set by set**, not one number per exercise, and brings prefill, swap, and set-type tagging together on it for the first time. It also stops depending on the network to not lose a set.
+
+**Why logging moved from one row per exercise to one row per set.** `workout_logs` used to hold a single weight/reps/rpe per exercise per assignment — fine for "how much did you lift," useless for "what did you actually do on set 3 of the drop set." This chunk adds `workout_logs.set_number` and `workout_logs.rpe`, plus a `unique (assignment_id, exercise_id, set_number)` constraint, so every set a client checks off is its own row. `getAssignmentDetail()` no longer touches `workout_logs` at all — what's *prescribed* (name, description, sets/reps, tagged set-types, baseline) and what's *actually logged* are now fully separate concerns, fetched and merged by the screen. How many checkable set rows to show is a heuristic, not a stored count: it's the leading number parsed out of `sets_reps` (e.g. "4x8" → 4), widened to cover any set a coach explicitly tagged past that number — so a coach who tags set 5 of a "3x10" as an FST-7 finisher always sees 5 rows, never 3.
+
+**Each set's checkbox drives the rest timer, weight/reps/RPE are logged per set, and a tagged set shows its own instructions inline.** Checking a set complete auto-starts a rest timer (90 seconds, ±15s adjustable, or Skip) — the same timer whether it's a plain set or a Drop Set/Rest-Pause/FST-7 one. A tagged set additionally shows a small label ("Drop Set") and the exact built-in instructions for performing it (from `src/lib/set-types.ts`, unchanged from the Workout Builder chunk), directly under that set's checkbox — so the client doesn't have to remember what a drop set is mid-workout. RPE reuses the same 1–10 scale input the readiness questionnaire uses, just configured per-set instead of per-question.
+
+**Local-first caching, so a set is never lost to a bad connection.** This is the mechanism piece, and it's worth walking through exactly what happens when you tap a set's checkbox, in order:
+
+1. **The write to on-device storage happens first, and the UI waits only on that.** The set's values are saved to `AsyncStorage` immediately (a plain device-storage write — it cannot fail because of the network), and the checkbox flips to checked the instant that's done.
+2. **The push to Supabase is then attempted, but never allowed to block or fail the UI.** If it succeeds, the local entry is marked `synced: true` and nothing else happens. If it fails — phone loses signal, Supabase is briefly unreachable, anything — the failure is caught, logged, and otherwise ignored. The set stays checked, exactly as if the push had succeeded, because as far as the client is concerned, they did the set. What's missing is durably recorded as `synced: false` on-device, not lost.
+3. **Every unsynced entry gets retried automatically, with no user action required.** A retry sweep runs on screen load, after every subsequent set that gets checked (a natural "we're talking to the network again" moment), and on a quiet 20-second timer for as long as the screen stays open. A single in-memory flag stops two sweeps from overlapping; if the client keeps working while offline, the queue just grows until connectivity returns.
+4. **Retrying is always safe, even if a push actually succeeded and only the confirmation was lost.** Every sync is an `upsert` keyed on the same `(assignment_id, exercise_id, set_number)` constraint the SQL above adds — so retrying a set that's secretly already saved just overwrites it with the same values, never creates a duplicate row or throws a conflict error.
+5. **Reopening the screen trusts on-device data over the server for anything not yet confirmed.** On load, the screen merges Supabase's confirmed logs with whatever's still sitting in local cache, and a local unsynced value always wins — it reflects the last thing the client actually did, which the server may not know about yet. Once everything for a session is confirmed synced, the local cache for it is cleared; a leftover entry for a finished session is harmless either way.
+
+Unchecking a set (or editing an already-checked one) goes through the exact same local-write-first path — including a queued delete if the un-check itself fails to reach the server offline.
+
+**Swaps and prefill both plug into the per-set model exactly as designed in earlier chunks.** A swap's replacement exercise goes through its own fresh 3-tier prefill (previous session for *that* exercise → coach baseline, suppressed since a swap is active → empty with a hint), per set — so an ascending pyramid's different weight per set still prefills correctly. Tagged set-types are deliberately **not** cleared by a swap — a "set 3 is a drop set" instruction describes the session's structure, not which exercise fills that slot, so it stays exactly where it was even if the exercise underneath it changes. Swapping (or undoing a swap) does clear any sets already checked off under the exercise identity being replaced, since those checked numbers belonged to whichever exercise was actually performed at the time.
+
+**Verify the whole screen — prefill, swap, set-types, checkboxes, timer, and local caching — together, in one real session:**
+1. Assign a workout with at least two exercises: one the client has logged before (any previous completed assignment with the same library exercise), and one with a coach-set baseline but no history. Open it as that client.
+2. If a readiness questionnaire is active, answer it — confirm the exercise list only appears after submitting.
+3. Confirm the previously-logged exercise pre-fills per set from its own last session (not one number smeared across every set, if it had a different weight per set), labeled "From your last session with this exercise"; confirm the baseline-only exercise pre-fills from the coach's numbers, labeled as a suggested starting point.
+4. If either exercise has a coach-tagged set (Drop Set/Rest-Pause/FST-7 from the Workout Builder), confirm that set shows the label and its full built-in instructions.
+5. Check a set complete — confirm the rest timer starts automatically at the top of the screen, and that ±15s/Skip work.
+6. Tap **Swap** on one exercise, pick a same-muscle-group alternative, and confirm: the name/description update, its baseline suggestion is gone (fresh prefill instead), and any tagged set on that exercise still shows its label. Tap **Undo** and confirm it reverts fully, including the prefill.
+7. To see local caching survive an actual failure: put your device in Airplane Mode (or otherwise cut its connection), then check a new set complete. It should still show as checked — nothing on screen indicates a failure. Leave Airplane Mode on and fully close/reopen the app to that same session: the set should *still* show checked, proving it was never only sitting in memory. Turn connectivity back on and wait roughly 20 seconds (or check one more set, which also triggers a retry).
+8. In Supabase, confirm the set from step 7 actually landed:
+   ```sql
+   select assignment_id, exercise_id, set_number, weight, reps, rpe
+   from workout_logs
+   where assignment_id = '<this assignment id>'
+   order by exercise_id, set_number;
+   ```
+   Confirm one row per checked set (not per exercise), with the weight/reps/RPE you actually entered — including the one you logged offline in step 7.
+9. Tap **Finish Session** — confirm the status flips to Completed, every input becomes read-only, and re-running the query above shows nothing changed from what was already logged incrementally (finishing the session never (re-)saves anything itself — every set was already saved the moment it was checked).
+
 ## Project structure reference
 
 ```
@@ -1691,7 +1729,7 @@ src/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of assignments, with status
         new.tsx          # pick workout + client + date, save
-        [id].tsx          # coach's view of one assignment — prescribed vs. actual
+        [id].tsx          # coach's view of one assignment — prescribed vs. actual, one row per logged SET now, not one per exercise
       habits/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of habits the coach has created, with Archive
@@ -1707,7 +1745,7 @@ src/
         [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
         assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
       assigned/
-        [id].tsx          # client's workout view — the active readiness questionnaire first if this session hasn't answered it yet, then logs performance (weight/reps prefilled: previous session > coach baseline > empty with a hint, always editable; a Swap link opens same-muscle-group alternatives, session-only) or shows it once completed
+        [id].tsx          # client's live session screen — readiness gate first if unanswered, then per-SET checkboxes (weight/reps/RPE, prefilled: previous session > coach baseline > empty with a hint, always editable), tagged sets show their technique label + instructions, checking a set auto-starts an editable rest timer, a Swap link opens same-muscle-group alternatives (session-only), Finish Session locks it read-only — every set is cached to on-device storage the instant it's checked and synced to Supabase in the background, so nothing is lost to a dropped connection
       checkins/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
@@ -1748,8 +1786,8 @@ src/
     workouts.ts           # createWorkout() (also saves per-exercise baseline weight/reps + any tagged sets) / getWorkoutDetail() (every exercise + baseline + tagged sets, in order -- the query shape a client screen will reuse) / listWorkouts() / listWorkoutsForWeek() / archiveWorkout() database calls
     set-types.ts           # SET_TYPES / SET_TYPE_DESCRIPTIONS -- the four set-tagging options and their fixed, built-in technique explanations (Drop Set/Rest-Pause/FST-7; Normal has none)
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() / updateProgrammeName() / archiveProgramme() / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
-    exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app
-    assignments.ts         # coach + client assignment + workout-log database calls; getExercisePrefills() — the weight/reps fallback chain (previous session by exercise_library_id, then coach baseline, then nothing fabricated)
+    exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app; both now include each exercise's description
+    assignments.ts         # coach + client assignment database calls; getAssignmentDetail() (prescribed exercises + tagged sets, no logged data — see set-logging.ts) / getSetPrefills() — the per-SET weight/reps fallback chain (that exact set number's previous session by exercise_library_id, then coach baseline, then nothing fabricated) / finishSession() (just flips status — logging already happened incrementally) / getCoachAssignmentDetail() (per-set loggedSets[] now, not one logged value per exercise)
     clients.ts               # listClients() / getClient() — coach-facing client roster, single-coach app so any coach sees any client
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() / listFoodLogHistory() / deleteFoodLog() — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
@@ -1775,6 +1813,7 @@ src/
     form-check-ins.ts              # ensureCheckInsUpToDate() (lazy materialize + archive-as-missed sweep, run on client app open) / listUpNextCheckIns() / listVisibleCheckIns() / getCheckInDetail() / submitCheckIn() / listClientCheckInInstances() / archiveOrDeleteCheckIn() database calls
     readiness.ts                    # getReadinessFormId() / setReadinessFormId() (app_settings.readiness_form_id, the one active questionnaire) / getReadinessStatusForAssignment() (the active form's questions + whatever THIS session has answered so far) / submitReadinessResponses() -- deliberately not built on form_assignments/form_check_ins, see readiness.sql
     exercise-swaps.ts                # listExerciseSwapsForAssignment() / swapExerciseForSession() / undoExerciseSwap() -- session-only substitutions in assignment_exercise_swaps; never touches workout_exercises or the underlying programme
+    set-logging.ts                    # saveSetLog() / deleteSetLog() — write to AsyncStorage first (the only thing the caller awaits), then best-effort push to Supabase, silently queuing on failure; flushPendingSetLogs() retries anything still queued (idempotent upsert, safe to retry); getMergedSetLogs() — server-confirmed logs overridden by anything still unsynced locally
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
@@ -1816,4 +1855,5 @@ supabase/
   workout-set-types.sql                                                                   # paste in after meal-plan-templates.sql — workout_exercises.baseline_weight/baseline_reps + workout_exercise_sets (per-set technique tagging), client read access already included
   readiness.sql                                                                             # paste in after workout-set-types.sql — app_settings.readiness_form_id, readiness_responses (linked to assignments, not form_check_ins), seeds one default 4-question form if none is configured yet
   exercise-swaps.sql                                                                          # paste in after readiness.sql — assignment_exercise_swaps (session-only exercise substitution, never mutates workout_exercises)
+  live-session.sql                                                                              # paste in after exercise-swaps.sql — workout_logs.set_number/rpe + a unique (assignment_id, exercise_id, set_number) constraint (what makes the local-cache sync idempotent), client update/delete policies for editing/unchecking a set
 ```

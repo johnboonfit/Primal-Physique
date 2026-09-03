@@ -74,9 +74,18 @@ export default function CoachAssignmentDetailScreen() {
                   <ThemedText type="small" themeColor="textSecondary">
                     Prescribed: {exercise.setsReps}
                   </ThemedText>
-                  <ThemedText type="small">
-                    Actual: {exercise.loggedWeight ?? '—'} weight · {exercise.loggedReps ?? '—'} reps
-                  </ThemedText>
+                  {exercise.loggedSets.length === 0 ? (
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Not logged yet.
+                    </ThemedText>
+                  ) : (
+                    exercise.loggedSets.map((set) => (
+                      <ThemedText key={set.setNumber} type="small">
+                        Set {set.setNumber}: {set.weight ?? '—'} kg · {set.reps ?? '—'} reps
+                        {set.rpe !== null ? ` · RPE ${set.rpe}` : ''}
+                      </ThemedText>
+                    ))
+                  )}
                 </ThemedView>
               ))}
             </>

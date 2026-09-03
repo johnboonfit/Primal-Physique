@@ -18,6 +18,7 @@ export type ExerciseSummary = {
   muscleGroup: string;
   category: string;
   equipment: string[];
+  description: string | null;
 };
 
 export type ExerciseDetail = ExerciseSummary & {
@@ -41,7 +42,7 @@ export type ExerciseDetail = ExerciseSummary & {
 export async function listExerciseLibrarySummaries(): Promise<ExerciseSummary[]> {
   const { data, error } = await supabase
     .from('exercise_library')
-    .select('id, name, muscle_group, category, equipment')
+    .select('id, name, muscle_group, category, equipment, description')
     .order('name');
 
   if (error) throw error;
@@ -52,6 +53,7 @@ export async function listExerciseLibrarySummaries(): Promise<ExerciseSummary[]>
     muscleGroup: row.muscle_group as string,
     category: row.category as string,
     equipment: (row.equipment as string[] | null) ?? [],
+    description: row.description as string | null,
   }));
 }
 

@@ -1,3 +1,4 @@
+import type { SetType } from '@/lib/set-types';
 import { supabase } from '@/lib/supabase';
 
 export type WorkoutOption = {
@@ -27,6 +28,14 @@ export type ClientAssignmentSummary = {
   status: AssignmentStatus;
 };
 
+/** One set a coach explicitly tagged with a training technique -- most
+ * exercises have none of these at all (an untagged set is just a plain
+ * "Normal" set with no indicator shown). */
+export type TaggedSet = {
+  setNumber: number;
+  setType: SetType;
+};
+
 export type AssignmentDetail = {
   id: string;
   workoutName: string;
@@ -35,9 +44,15 @@ export type AssignmentDetail = {
   exercises: {
     id: string;
     name: string;
+    description: string | null;
     setsReps: string;
-    loggedWeight: number | null;
-    loggedReps: number | null;
+    /** How many sets to actually render as checkable rows -- parsed
+     * from the leading number in setsReps (e.g. "3x10" -> 3), widened to
+     * cover any set the coach explicitly tagged past that number. See
+     * parseSetsCount()'s own comment for why this is a heuristic, not an
+     * exact structured count. */
+    totalSets: number;
+    taggedSets: TaggedSet[];
     /** Null for an exercise added before exercise-library linking
      * existed — prefill-by-previous-session has nothing to match on
      * without it, same as an exercise no coach has ever set a baseline
@@ -52,9 +67,10 @@ export type AssignmentDetail = {
   }[];
 };
 
-/** Where a pre-filled weight/reps value actually came from -- shown to
- * the client so "60 / 8" reads as "your own last session" rather than a
- * mystery number, and so it's possible to verify which fallback fired. */
+/** Where a pre-filled weight/reps value for one SET actually came from --
+ * shown to the client so "60 / 8" reads as "your own last session"
+ * rather than a mystery number, and so it's possible to verify which
+ * fallback fired. */
 export type ExercisePrefillSource = 'previous_session' | 'baseline' | 'none';
 
 export type ExercisePrefill = {
@@ -73,15 +89,10 @@ export type CoachAssignmentDetail = {
     id: string;
     name: string;
     setsReps: string;
-    loggedWeight: number | null;
-    loggedReps: number | null;
+    /** Every logged set for this exercise, in set order -- empty if
+     * nothing's been logged for it yet. */
+    loggedSets: { setNumber: number; weight: number | null; reps: number | null; rpe: number | null }[];
   }[];
-};
-
-export type ExerciseLogEntry = {
-  exerciseId: string;
-  weight: number | null;
-  reps: number | null;
 };
 
 export type OverdueAssignment = {
@@ -112,6 +123,33 @@ function endOfWeek(today: Date) {
   const day = today.getUTCDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
   const diffToSunday = day === 0 ? 0 : 7 - day;
   return addDays(today, diffToSunday);
+}
+
+const DEFAULT_SETS_COUNT = 3;
+const MAX_REASONABLE_SETS = 20;
+
+/**
+ * `sets_reps` is free text a coach types ("3x10", "4x8-12", "AMRAP",
+ * whatever) -- there's no structured "how many sets" field, so this
+ * pulls the leading number out of it as a heuristic. It's genuinely
+ * just that: an approximation for how many checkable set rows to show,
+ * not an exact count backed by real per-set data. A coach who wants
+ * precise control over the set count can tag individual sets (sub-chunk
+ * 1); getExerciseSetsCount below widens this number to cover any tagged
+ * set past what got parsed here, so an explicit tag never gets hidden.
+ */
+function parseSetsCount(setsReps: string): number {
+  const match = setsReps.trim().match(/^(\d+)/);
+  if (!match) return DEFAULT_SETS_COUNT;
+  const parsed = Number(match[1]);
+  if (!Number.isInteger(parsed) || parsed < 1) return DEFAULT_SETS_COUNT;
+  return Math.min(parsed, MAX_REASONABLE_SETS);
+}
+
+function getExerciseSetsCount(setsReps: string, taggedSets: TaggedSet[]): number {
+  const parsed = parseSetsCount(setsReps);
+  const highestTagged = taggedSets.reduce((max, set) => Math.max(max, set.setNumber), 0);
+  return Math.max(parsed, highestTagged);
 }
 
 export async function listCoachWorkoutOptions(coachId: string): Promise<WorkoutOption[]> {
@@ -182,11 +220,19 @@ export async function listMyAssignments(clientId: string): Promise<ClientAssignm
   }));
 }
 
+/**
+ * The exercise DEFINITION for a session -- name, description, target
+ * sets/reps, baseline, and any tagged set techniques. Deliberately
+ * carries no logged data at all: what's actually been done is a
+ * completely separate concern now (see set-logging.ts), fetched and
+ * merged by the caller, since logging moved from one row per exercise to
+ * one row per SET.
+ */
 export async function getAssignmentDetail(assignmentId: string): Promise<AssignmentDetail> {
   const { data, error } = await supabase
     .from('assignments')
     .select(
-      'id, assigned_date, status, workouts(name, workout_exercises(id, name, sets_reps, position, exercise_library_id, baseline_weight, baseline_reps, exercise_library(muscle_group)))'
+      'id, assigned_date, status, workouts(name, workout_exercises(id, name, sets_reps, position, exercise_library_id, baseline_weight, baseline_reps, exercise_library(muscle_group, description), workout_exercise_sets(set_number, set_type)))'
     )
     .eq('id', assignmentId)
     .single();
@@ -203,36 +249,26 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
       exercise_library_id: string | null;
       baseline_weight: number | null;
       baseline_reps: number | null;
-      exercise_library: { muscle_group: string } | null;
+      exercise_library: { muscle_group: string; description: string | null } | null;
+      workout_exercise_sets: { set_number: number; set_type: string }[] | null;
     }[];
   } | null;
-
-  const { data: logs, error: logsError } = await supabase
-    .from('workout_logs')
-    .select('exercise_id, weight, reps')
-    .eq('assignment_id', assignmentId);
-
-  if (logsError) throw logsError;
-
-  const logsByExercise = new Map<string, { weight: number | null; reps: number | null }>();
-  (logs ?? []).forEach((log) => {
-    logsByExercise.set(log.exercise_id as string, {
-      weight: log.weight as number | null,
-      reps: log.reps as number | null,
-    });
-  });
 
   const exercises = (workout?.workout_exercises ?? [])
     .slice()
     .sort((a, b) => a.position - b.position)
     .map((exercise) => {
-      const logged = logsByExercise.get(exercise.id);
+      const taggedSets: TaggedSet[] = (exercise.workout_exercise_sets ?? [])
+        .map((set) => ({ setNumber: set.set_number, setType: set.set_type as SetType }))
+        .sort((a, b) => a.setNumber - b.setNumber);
+
       return {
         id: exercise.id,
         name: exercise.name,
+        description: exercise.exercise_library?.description ?? null,
         setsReps: exercise.sets_reps,
-        loggedWeight: logged?.weight ?? null,
-        loggedReps: logged?.reps ?? null,
+        totalSets: getExerciseSetsCount(exercise.sets_reps, taggedSets),
+        taggedSets,
         exerciseLibraryId: exercise.exercise_library_id,
         muscleGroup: exercise.exercise_library?.muscle_group ?? null,
         baselineWeight: exercise.baseline_weight,
@@ -250,94 +286,116 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
 }
 
 /**
- * The fallback chain for a not-yet-logged exercise, one entry per
- * exercise in the current assignment:
+ * The fallback chain, per SET, for a not-yet-logged set:
  *
- *   1. This client's most recent PREVIOUS logged session for the exact
+ *   1. This client's most recent PREVIOUS session that logged the exact
  *      same library exercise (matched by exercise_library_id, since a
  *      workout_exercises row is a fresh instance every time an exercise
- *      is added to a new workout -- it's the library id that identifies
- *      "the same exercise" across sessions, not workout_exercises.id).
+ *      is added to a new workout) -- specifically THAT session's SAME
+ *      set number, not just any row for that exercise, so an ascending
+ *      pyramid (different weight per set) prefills each set from its own
+ *      real history rather than one number smeared across every set.
  *   2. The coach's recommended baseline weight/reps for THIS exercise
- *      instance, if one was set when the workout was built.
+ *      instance, applied the same to every set (it's a single starting
+ *      point, not a per-set prescription) -- but ONLY if this exercise
+ *      was never swapped for a different one this session, since a
+ *      baseline set for the original exercise means nothing for
+ *      whatever replaced it (the caller is responsible for passing
+ *      baselineWeight/baselineReps as null when a swap is active).
  *   3. Neither -- the caller shows an empty field with a hint instead of
  *      guessing a number that could be wildly wrong for this exercise.
  *
- * Deliberately excludes the current assignment's own logs (a client
- * reopening a session they've already partly logged should see what
- * THEY entered, not their previous session's numbers -- that's handled
- * separately, before this fallback chain even runs).
+ * Deliberately excludes the current assignment's own logs -- a client
+ * reopening a session they've already partly logged sees what THEY
+ * entered (handled by the caller merging in this session's own set-logs
+ * first), never their previous session's numbers instead.
  */
-export async function getExercisePrefills(
+export async function getSetPrefills(
   clientId: string,
   currentAssignmentId: string,
-  exercises: { id: string; exerciseLibraryId: string | null; baselineWeight: number | null; baselineReps: number | null }[]
+  exercises: {
+    id: string;
+    exerciseLibraryId: string | null;
+    baselineWeight: number | null;
+    baselineReps: number | null;
+    totalSets: number;
+  }[]
 ): Promise<Record<string, ExercisePrefill>> {
   const libraryIds = new Set(exercises.map((e) => e.exerciseLibraryId).filter((id): id is string => id !== null));
 
-  const mostRecentByLibraryId = new Map<string, { weight: number | null; reps: number | null }>();
+  const mostRecentAssignmentByLibraryId = new Map<string, string>();
+  const setsByLibraryId = new Map<string, Map<number, { weight: number | null; reps: number | null }>>();
 
   if (libraryIds.size > 0) {
-    // Every one of this client's past logs, most recent first -- filtered
-    // to the exercises we actually care about in JS rather than via a
-    // PostgREST filter on the embedded relation, which doesn't reliably
-    // support filtering by a joined table's column. Fine at this app's
-    // scale; the first (most recent) row per library id is the one kept.
+    // Every one of this client's past SET logs, most recent first --
+    // filtered to the exercises we actually care about in JS rather than
+    // via a PostgREST filter on the embedded relation, which doesn't
+    // reliably support filtering by a joined table's column. Fine at
+    // this app's scale.
     const { data, error } = await supabase
       .from('workout_logs')
-      .select('weight, reps, workout_exercises!inner(exercise_library_id)')
+      .select('assignment_id, set_number, weight, reps, workout_exercises!inner(exercise_library_id)')
       .eq('client_id', clientId)
       .neq('assignment_id', currentAssignmentId)
+      .not('set_number', 'is', null)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
 
-    for (const row of data ?? []) {
+    const rows = data ?? [];
+
+    // Pass 1: identify, per library id, the single most recent
+    // assignment that logged ANY set of it (rows are already
+    // most-recent-first, so the first match per library id wins).
+    for (const row of rows) {
       const libraryId = (row.workout_exercises as unknown as { exercise_library_id: string | null } | null)
         ?.exercise_library_id;
-      if (!libraryId || !libraryIds.has(libraryId) || mostRecentByLibraryId.has(libraryId)) continue;
-      mostRecentByLibraryId.set(libraryId, { weight: row.weight as number | null, reps: row.reps as number | null });
+      if (!libraryId || !libraryIds.has(libraryId) || mostRecentAssignmentByLibraryId.has(libraryId)) continue;
+      mostRecentAssignmentByLibraryId.set(libraryId, row.assignment_id as string);
+    }
+
+    // Pass 2: pull every set from THAT specific assignment (and that
+    // library exercise) into a set_number -> {weight, reps} map, so set
+    // 1 prefills from that session's set 1, set 2 from its set 2, etc.
+    for (const row of rows) {
+      const libraryId = (row.workout_exercises as unknown as { exercise_library_id: string | null } | null)
+        ?.exercise_library_id;
+      if (!libraryId) continue;
+      if (row.assignment_id !== mostRecentAssignmentByLibraryId.get(libraryId)) continue;
+
+      if (!setsByLibraryId.has(libraryId)) setsByLibraryId.set(libraryId, new Map());
+      setsByLibraryId
+        .get(libraryId)!
+        .set(row.set_number as number, { weight: row.weight as number | null, reps: row.reps as number | null });
     }
   }
 
   const prefills: Record<string, ExercisePrefill> = {};
   for (const exercise of exercises) {
-    const previous = exercise.exerciseLibraryId ? mostRecentByLibraryId.get(exercise.exerciseLibraryId) : undefined;
-    if (previous && (previous.weight !== null || previous.reps !== null)) {
-      prefills[exercise.id] = { source: 'previous_session', weight: previous.weight, reps: previous.reps };
-    } else if (exercise.baselineWeight !== null || exercise.baselineReps !== null) {
-      prefills[exercise.id] = { source: 'baseline', weight: exercise.baselineWeight, reps: exercise.baselineReps };
-    } else {
-      prefills[exercise.id] = { source: 'none', weight: null, reps: null };
+    const previousSets = exercise.exerciseLibraryId ? setsByLibraryId.get(exercise.exerciseLibraryId) : undefined;
+
+    for (let setNumber = 1; setNumber <= exercise.totalSets; setNumber++) {
+      const key = `${exercise.id}:${setNumber}`;
+      const previous = previousSets?.get(setNumber);
+
+      if (previous && (previous.weight !== null || previous.reps !== null)) {
+        prefills[key] = { source: 'previous_session', weight: previous.weight, reps: previous.reps };
+      } else if (exercise.baselineWeight !== null || exercise.baselineReps !== null) {
+        prefills[key] = { source: 'baseline', weight: exercise.baselineWeight, reps: exercise.baselineReps };
+      } else {
+        prefills[key] = { source: 'none', weight: null, reps: null };
+      }
     }
   }
   return prefills;
 }
 
-/** Saves whatever weight/reps were entered, skipping exercises left blank
- * entirely, then flips the assignment to 'completed'. */
-export async function logWorkout(clientId: string, assignmentId: string, entries: ExerciseLogEntry[]) {
-  const rows = entries
-    .filter((entry) => entry.weight !== null || entry.reps !== null)
-    .map((entry) => ({
-      assignment_id: assignmentId,
-      client_id: clientId,
-      exercise_id: entry.exerciseId,
-      weight: entry.weight,
-      reps: entry.reps,
-    }));
-
-  if (rows.length > 0) {
-    const { error: logError } = await supabase.from('workout_logs').insert(rows);
-    if (logError) throw logError;
-  }
-
-  const { error: statusError } = await supabase
-    .from('assignments')
-    .update({ status: 'completed' })
-    .eq('id', assignmentId);
-
-  if (statusError) throw statusError;
+/** Flips the assignment to 'completed' -- logging itself already
+ * happened incrementally, set by set, via set-logging.ts as each one was
+ * checked off, so there's nothing left to save here. */
+export async function finishSession(assignmentId: string) {
+  const { error } = await supabase.from('assignments').update({ status: 'completed' }).eq('id', assignmentId);
+  if (error) throw error;
 }
 
 export async function getCoachAssignmentDetail(assignmentId: string): Promise<CoachAssignmentDetail> {
@@ -358,32 +416,40 @@ export async function getCoachAssignmentDetail(assignmentId: string): Promise<Co
 
   const { data: logs, error: logsError } = await supabase
     .from('workout_logs')
-    .select('exercise_id, weight, reps')
-    .eq('assignment_id', assignmentId);
+    .select('exercise_id, set_number, weight, reps, rpe')
+    .eq('assignment_id', assignmentId)
+    .order('set_number', { ascending: true });
 
   if (logsError) throw logsError;
 
-  const logsByExercise = new Map<string, { weight: number | null; reps: number | null }>();
+  const setsByExercise = new Map<
+    string,
+    { setNumber: number; weight: number | null; reps: number | null; rpe: number | null }[]
+  >();
   (logs ?? []).forEach((log) => {
-    logsByExercise.set(log.exercise_id as string, {
+    const exerciseId = log.exercise_id as string;
+    const existing = setsByExercise.get(exerciseId) ?? [];
+    existing.push({
+      // Older, pre-set-level rows have no set_number -- shown as set 1
+      // rather than dropped, so a coach reviewing a session logged
+      // before this chunk still sees the number that was recorded.
+      setNumber: (log.set_number as number | null) ?? 1,
       weight: log.weight as number | null,
       reps: log.reps as number | null,
+      rpe: log.rpe as number | null,
     });
+    setsByExercise.set(exerciseId, existing);
   });
 
   const exercises = (workout?.workout_exercises ?? [])
     .slice()
     .sort((a, b) => a.position - b.position)
-    .map((exercise) => {
-      const logged = logsByExercise.get(exercise.id);
-      return {
-        id: exercise.id,
-        name: exercise.name,
-        setsReps: exercise.sets_reps,
-        loggedWeight: logged?.weight ?? null,
-        loggedReps: logged?.reps ?? null,
-      };
-    });
+    .map((exercise) => ({
+      id: exercise.id,
+      name: exercise.name,
+      setsReps: exercise.sets_reps,
+      loggedSets: setsByExercise.get(exercise.id) ?? [],
+    }));
 
   return {
     id: data.id as string,

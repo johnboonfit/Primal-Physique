@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -10,9 +10,9 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import {
+  finishSession,
   getAssignmentDetail,
-  getExercisePrefills,
-  logWorkout,
+  getSetPrefills,
   type AssignmentDetail,
   type ExercisePrefill,
 } from '@/lib/assignments';
@@ -25,27 +25,25 @@ import {
 } from '@/lib/exercise-swaps';
 import { getQuestionTypeDefinition, type AnswerValue } from '@/lib/question-types';
 import { getReadinessStatusForAssignment, submitReadinessResponses, type ReadinessStatus } from '@/lib/readiness';
+import {
+  clearLocalSetLogsIfFullySynced,
+  deleteSetLog,
+  flushPendingSetLogs,
+  getMergedSetLogs,
+  saveSetLog,
+  setLogKey,
+  type SetLogValues,
+} from '@/lib/set-logging';
+import { SET_TYPE_DESCRIPTIONS, setTypeLabel } from '@/lib/set-types';
 import { awardWorkoutXp } from '@/lib/xp';
 
-/** What's actually shown/logged for one exercise slot right now -- the
- * swap's replacement if this session has one for it, otherwise exactly
- * what the workout/programme originally prescribed. The slot's own id
- * (and therefore where workout_logs attaches) never changes either way. */
-function displayExercise(exercise: AssignmentDetail['exercises'][number], swap: ExerciseSwap | undefined) {
-  if (!swap) return { ...exercise, isSwapped: false as const, originalName: exercise.name };
-  return {
-    ...exercise,
-    name: swap.replacementName,
-    exerciseLibraryId: swap.replacementExerciseLibraryId,
-    isSwapped: true as const,
-    originalName: exercise.name,
-  };
-}
+const DEFAULT_REST_SECONDS = 90;
+const REST_STEP_SECONDS = 15;
+const FLUSH_INTERVAL_MS = 20000;
 
 /** A sensible starting value per answer kind for a not-yet-answered
- * readiness question -- same reasoning as checkins/[id].tsx's
- * blankAnswerFor: 0/blank would be a real (wrong) answer for a scale, so
- * that starts at null instead. */
+ * readiness question -- 0/blank would be a real (wrong) answer for a
+ * scale, so that starts at null instead. */
 function blankReadinessAnswer(question: ReadinessStatus['questions'][number]): AnswerValue {
   if (question.answer !== null) return question.answer as AnswerValue;
   const kind = getQuestionTypeDefinition(question.questionType).answerKind;
@@ -58,55 +56,78 @@ function todayISODate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-type ExerciseInput = {
+/** What's actually shown/logged for one exercise slot right now -- the
+ * swap's replacement if this session has one for it, otherwise exactly
+ * what the workout/programme originally prescribed. The slot's own id
+ * (and therefore where workout_logs attaches) never changes either way.
+ * Tagged set-types deliberately DO carry over through a swap -- a
+ * technique tag describes the session's structure ("set 3 here is a
+ * drop set"), not the specific exercise filling the slot, so it stays
+ * meaningful regardless of what got swapped in. */
+function displayExercise(exercise: AssignmentDetail['exercises'][number], swap: ExerciseSwap | undefined) {
+  if (!swap) {
+    return {
+      ...exercise,
+      isSwapped: false as const,
+      originalName: exercise.name,
+    };
+  }
+  return {
+    ...exercise,
+    name: swap.replacementName,
+    exerciseLibraryId: swap.replacementExerciseLibraryId,
+    isSwapped: true as const,
+    originalName: exercise.name,
+  };
+}
+
+type SetRowState = {
+  checked: boolean;
   weight: string;
   reps: string;
+  rpe: number | null;
 };
 
-/**
- * A resumed, already-logged exercise always shows exactly what the
- * client themselves entered -- the fallback chain (previous session /
- * coach baseline / nothing) only ever applies to an exercise THIS
- * assignment hasn't been logged for yet, which is the whole point: it's
- * a starting suggestion for a set that hasn't happened, not a
- * replacement for a real answer that already exists.
- */
-function buildInputsFromDetail(
-  detail: AssignmentDetail,
-  prefills: Record<string, ExercisePrefill>
-): Record<string, ExerciseInput> {
-  const inputs: Record<string, ExerciseInput> = {};
-  detail.exercises.forEach((exercise) => {
-    if (exercise.loggedWeight !== null || exercise.loggedReps !== null) {
-      inputs[exercise.id] = {
-        weight: exercise.loggedWeight !== null ? String(exercise.loggedWeight) : '',
-        reps: exercise.loggedReps !== null ? String(exercise.loggedReps) : '',
-      };
-      return;
-    }
+function round(value: number) {
+  return Math.round(value * 10) / 10;
+}
 
-    const prefill = prefills[exercise.id];
-    inputs[exercise.id] = {
-      weight: prefill && prefill.weight !== null ? String(prefill.weight) : '',
-      reps: prefill && prefill.reps !== null ? String(prefill.reps) : '',
-    };
-  });
-  return inputs;
+function blankSetRow(prefill: ExercisePrefill | undefined): SetRowState {
+  return {
+    checked: false,
+    weight: prefill && prefill.weight !== null ? String(prefill.weight) : '',
+    reps: prefill && prefill.reps !== null ? String(prefill.reps) : '',
+    rpe: null,
+  };
+}
+
+function loggedSetRow(logged: SetLogValues): SetRowState {
+  return {
+    checked: true,
+    weight: logged.weight !== null ? String(logged.weight) : '',
+    reps: logged.reps !== null ? String(logged.reps) : '',
+    rpe: logged.rpe,
+  };
 }
 
 export default function AssignedWorkoutDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const theme = useTheme();
   const { session } = useAuth();
+  const clientId = session?.user.id;
 
   const [detail, setDetail] = useState<AssignmentDetail | null>(null);
-  const [inputs, setInputs] = useState<Record<string, ExerciseInput>>({});
-  const [prefills, setPrefills] = useState<Record<string, ExercisePrefill>>({});
   const [swaps, setSwaps] = useState<Record<string, ExerciseSwap>>({});
+  const [libraryExercises, setLibraryExercises] = useState<ExerciseSummary[]>([]);
+  const [libraryById, setLibraryById] = useState<Record<string, ExerciseSummary>>({});
+  const [prefills, setPrefills] = useState<Record<string, ExercisePrefill>>({});
+  const [setRows, setSetRows] = useState<Record<string, SetRowState>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [setError_, setSetError] = useState<string | null>(null);
+
+  const [finishing, setFinishing] = useState(false);
+  const [finishError, setFinishError] = useState<string | null>(null);
 
   const [readiness, setReadiness] = useState<ReadinessStatus | null>(null);
   const [readinessAnswers, setReadinessAnswers] = useState<Record<string, AnswerValue>>({});
@@ -114,66 +135,135 @@ export default function AssignedWorkoutDetailScreen() {
   const [readinessError, setReadinessError] = useState<string | null>(null);
 
   const [swapPickerExerciseId, setSwapPickerExerciseId] = useState<string | null>(null);
-  const [libraryExercises, setLibraryExercises] = useState<ExerciseSummary[]>([]);
-  const [loadingLibrary, setLoadingLibrary] = useState(false);
-  const [libraryError, setLibraryError] = useState<string | null>(null);
   const [swapSearch, setSwapSearch] = useState('');
   const [swappingId, setSwappingId] = useState<string | null>(null);
   const [swapError, setSwapError] = useState<string | null>(null);
 
-  /** Re-derives prefills for every exercise using each one's EFFECTIVE
-   * exercise (the swap's replacement where one exists) -- a swap counts
-   * as "a new exercise for logging purposes," so its own previous-session
-   * history applies, but the original exercise's coach baseline does
-   * NOT (a baseline set for Bench Press is meaningless for whatever it
-   * got swapped to). */
-  const refreshPrefills = async (assignmentData: AssignmentDetail, swapMap: Record<string, ExerciseSwap>) => {
-    if (!session) return {};
-    const effectiveExercises = assignmentData.exercises.map((exercise) => {
-      const swap = swapMap[exercise.id];
-      return swap
-        ? { id: exercise.id, exerciseLibraryId: swap.replacementExerciseLibraryId, baselineWeight: null, baselineReps: null }
-        : { id: exercise.id, exerciseLibraryId: exercise.exerciseLibraryId, baselineWeight: exercise.baselineWeight, baselineReps: exercise.baselineReps };
-    });
-    return getExercisePrefills(session.user.id, assignmentData.id, effectiveExercises);
+  const [restDuration, setRestDuration] = useState(DEFAULT_REST_SECONDS);
+  const [restSecondsLeft, setRestSecondsLeft] = useState<number | null>(null);
+  const restIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const load = async () => {
+    if (!id || !clientId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const [assignmentData, readinessData, swapMap, library] = await Promise.all([
+        getAssignmentDetail(id),
+        getReadinessStatusForAssignment(id),
+        listExerciseSwapsForAssignment(id),
+        listExerciseLibrarySummaries(),
+      ]);
+
+      setDetail(assignmentData);
+      setReadiness(readinessData);
+      setSwaps(swapMap);
+      setLibraryExercises(library);
+      setLibraryById(Object.fromEntries(library.map((entry) => [entry.id, entry])));
+
+      const answers: Record<string, AnswerValue> = {};
+      readinessData.questions.forEach((question) => {
+        answers[question.id] = blankReadinessAnswer(question);
+      });
+      setReadinessAnswers(answers);
+
+      const effectiveExercises = assignmentData.exercises.map((exercise) => {
+        const swap = swapMap[exercise.id];
+        return swap
+          ? {
+              id: exercise.id,
+              exerciseLibraryId: swap.replacementExerciseLibraryId,
+              baselineWeight: null,
+              baselineReps: null,
+              totalSets: exercise.totalSets,
+            }
+          : {
+              id: exercise.id,
+              exerciseLibraryId: exercise.exerciseLibraryId,
+              baselineWeight: exercise.baselineWeight,
+              baselineReps: exercise.baselineReps,
+              totalSets: exercise.totalSets,
+            };
+      });
+
+      const [prefillMap, mergedLogs] = await Promise.all([
+        getSetPrefills(clientId, assignmentData.id, effectiveExercises),
+        getMergedSetLogs(assignmentData.id),
+      ]);
+      setPrefills(prefillMap);
+
+      const rows: Record<string, SetRowState> = {};
+      assignmentData.exercises.forEach((exercise) => {
+        for (let setNumber = 1; setNumber <= exercise.totalSets; setNumber++) {
+          const key = setLogKey(exercise.id, setNumber);
+          const logged = mergedLogs[key];
+          rows[key] = logged ? loggedSetRow(logged) : blankSetRow(prefillMap[key]);
+        }
+      });
+      setSetRows(rows);
+
+      // Best-effort retry of anything left over from a previous visit --
+      // never blocks rendering on this.
+      flushPendingSetLogs(assignmentData.id, clientId).catch((err) => console.error('Flush failed:', err));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load this workout.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    if (!id || !session) return;
-    let cancelled = false;
+    load();
+    // Deliberately only re-runs when the assignment or signed-in client
+    // changes -- `load` itself closes over plenty of state that would
+    // otherwise cause an infinite refetch loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, clientId]);
 
-    Promise.all([getAssignmentDetail(id), getReadinessStatusForAssignment(id), listExerciseSwapsForAssignment(id)])
-      .then(async ([assignmentData, readinessData, swapMap]) => {
-        if (cancelled) return;
-        setDetail(assignmentData);
-        setReadiness(readinessData);
-        setSwaps(swapMap);
-        const answers: Record<string, AnswerValue> = {};
-        readinessData.questions.forEach((question) => {
-          answers[question.id] = blankReadinessAnswer(question);
-        });
-        setReadinessAnswers(answers);
+  // Quiet periodic retry while this screen stays open, independent of
+  // any user action -- a queued set doesn't have to wait on the client
+  // doing something else to get another chance to sync.
+  useEffect(() => {
+    if (!id || !clientId) return;
+    const interval = setInterval(() => {
+      flushPendingSetLogs(id, clientId).catch((err) => console.error('Flush failed:', err));
+    }, FLUSH_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [id, clientId]);
 
-        const prefillMap = await refreshPrefills(assignmentData, swapMap);
-        if (cancelled) return;
-        setPrefills(prefillMap);
-        setInputs(buildInputsFromDetail(assignmentData, prefillMap));
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load this workout.');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
+  useEffect(() => {
     return () => {
-      cancelled = true;
+      if (restIntervalRef.current) clearInterval(restIntervalRef.current);
     };
-  }, [id, session]);
+  }, []);
+
+  const startRestTimer = () => {
+    if (restIntervalRef.current) clearInterval(restIntervalRef.current);
+    setRestSecondsLeft(restDuration);
+    restIntervalRef.current = setInterval(() => {
+      setRestSecondsLeft((current) => {
+        if (current === null || current <= 1) {
+          if (restIntervalRef.current) clearInterval(restIntervalRef.current);
+          return current === null ? null : 0;
+        }
+        return current - 1;
+      });
+    }, 1000);
+  };
+
+  const adjustRestTimer = (deltaSeconds: number) => {
+    setRestSecondsLeft((current) => (current === null ? current : Math.max(0, current + deltaSeconds)));
+    setRestDuration((current) => Math.max(REST_STEP_SECONDS, current + deltaSeconds));
+  };
+
+  const dismissRestTimer = () => {
+    if (restIntervalRef.current) clearInterval(restIntervalRef.current);
+    setRestSecondsLeft(null);
+  };
 
   const handleSubmitReadiness = async () => {
     setReadinessError(null);
-    if (!session || !readiness) return;
+    if (!session || !readiness || !id) return;
 
     for (let i = 0; i < readiness.questions.length; i++) {
       const question = readiness.questions[i];
@@ -204,48 +294,102 @@ export default function AssignedWorkoutDetailScreen() {
     }
   };
 
-  const updateInput = (exerciseId: string, field: keyof ExerciseInput, value: string) => {
-    setInputs((current) => ({
+  const updateSetField = (key: string, field: 'weight' | 'reps', value: string) => {
+    setSetRows((current) => ({ ...current, [key]: { ...current[key], [field]: value } }));
+  };
+
+  const updateSetRpe = (key: string, value: AnswerValue) => {
+    setSetRows((current) => ({
       ...current,
-      [exerciseId]: { ...current[exerciseId], [field]: value },
+      [key]: { ...current[key], rpe: typeof value === 'number' ? value : null },
     }));
+  };
+
+  const toggleSetComplete = async (exerciseId: string, setNumber: number) => {
+    setSetError(null);
+    if (!clientId || !id) return;
+    const key = setLogKey(exerciseId, setNumber);
+    const row = setRows[key];
+    if (!row) return;
+
+    if (row.checked) {
+      setSetRows((current) => ({ ...current, [key]: { ...current[key], checked: false } }));
+      await deleteSetLog(id, exerciseId, setNumber);
+      return;
+    }
+
+    const weight = row.weight.trim() === '' ? null : Number(row.weight);
+    const reps = row.reps.trim() === '' ? null : Number(row.reps);
+
+    if ((row.weight.trim() !== '' && Number.isNaN(weight)) || (row.reps.trim() !== '' && Number.isNaN(reps))) {
+      setSetError('Weight and reps must be numbers.');
+      return;
+    }
+    if (weight === null && reps === null) {
+      setSetError('Enter a weight or reps before checking a set complete.');
+      return;
+    }
+
+    setSetRows((current) => ({ ...current, [key]: { ...current[key], checked: true } }));
+    await saveSetLog(id, clientId, exerciseId, setNumber, { weight, reps, rpe: row.rpe });
+    startRestTimer();
+    flushPendingSetLogs(id, clientId).catch((err) => console.error('Flush failed:', err));
   };
 
   const openSwapPicker = (workoutExerciseId: string) => {
     setSwapPickerExerciseId(workoutExerciseId);
     setSwapSearch('');
     setSwapError(null);
-    if (libraryExercises.length === 0 && !loadingLibrary) {
-      setLoadingLibrary(true);
-      listExerciseLibrarySummaries()
-        .then(setLibraryExercises)
-        .catch((err) => setLibraryError(err instanceof Error ? err.message : 'Failed to load the exercise library.'))
-        .finally(() => setLoadingLibrary(false));
-    }
   };
 
   const closeSwapPicker = () => setSwapPickerExerciseId(null);
 
+  /** Clears any sets already checked off under one exercise identity --
+   * used both when swapping (the old numbers belonged to the exercise
+   * being replaced) and when undoing (whatever was logged during the
+   * swap belonged to the replacement, not the original). */
+  const clearLoggedSetsForExercise = async (exercise: AssignmentDetail['exercises'][number]) => {
+    if (!id) return;
+    for (let setNumber = 1; setNumber <= exercise.totalSets; setNumber++) {
+      const key = setLogKey(exercise.id, setNumber);
+      if (setRows[key]?.checked) {
+        await deleteSetLog(id, exercise.id, setNumber);
+      }
+    }
+  };
+
   const handleSelectReplacement = async (workoutExerciseId: string, replacement: ExerciseSummary) => {
     setSwapError(null);
-    if (!session || !detail) return;
+    if (!clientId || !detail || !id) return;
+    const exercise = detail.exercises.find((e) => e.id === workoutExerciseId);
+    if (!exercise) return;
 
     setSwappingId(workoutExerciseId);
     try {
-      await swapExerciseForSession(detail.id, session.user.id, workoutExerciseId, {
+      await clearLoggedSetsForExercise(exercise);
+      await swapExerciseForSession(id, clientId, workoutExerciseId, {
         exerciseLibraryId: replacement.id,
         name: replacement.name,
       });
-      const swapMap = await listExerciseSwapsForAssignment(detail.id);
+      const swapMap = await listExerciseSwapsForAssignment(id);
       setSwaps(swapMap);
-      // The swap is effectively a new exercise for logging purposes --
-      // whatever was typed for the old one no longer applies, so its
-      // fallback chain reruns fresh against the replacement.
-      const prefillMap = await refreshPrefills(detail, swapMap);
-      setPrefills(prefillMap);
-      setInputs((current) => {
-        const rebuilt = buildInputsFromDetail(detail, prefillMap);
-        return { ...current, [workoutExerciseId]: rebuilt[workoutExerciseId] };
+
+      const effective = {
+        id: exercise.id,
+        exerciseLibraryId: replacement.id,
+        baselineWeight: null,
+        baselineReps: null,
+        totalSets: exercise.totalSets,
+      };
+      const newPrefills = await getSetPrefills(clientId, id, [effective]);
+      setPrefills((current) => ({ ...current, ...newPrefills }));
+      setSetRows((current) => {
+        const next = { ...current };
+        for (let setNumber = 1; setNumber <= exercise.totalSets; setNumber++) {
+          const key = setLogKey(exercise.id, setNumber);
+          next[key] = blankSetRow(newPrefills[key]);
+        }
+        return next;
       });
       setSwapPickerExerciseId(null);
     } catch (err) {
@@ -256,17 +400,33 @@ export default function AssignedWorkoutDetailScreen() {
   };
 
   const handleUndoSwap = async (workoutExerciseId: string) => {
-    if (!detail) return;
+    if (!detail || !clientId || !id) return;
+    const exercise = detail.exercises.find((e) => e.id === workoutExerciseId);
+    if (!exercise) return;
+
     setSwappingId(workoutExerciseId);
     try {
-      await undoExerciseSwap(detail.id, workoutExerciseId);
-      const swapMap = await listExerciseSwapsForAssignment(detail.id);
+      await clearLoggedSetsForExercise(exercise);
+      await undoExerciseSwap(id, workoutExerciseId);
+      const swapMap = await listExerciseSwapsForAssignment(id);
       setSwaps(swapMap);
-      const prefillMap = await refreshPrefills(detail, swapMap);
-      setPrefills(prefillMap);
-      setInputs((current) => {
-        const rebuilt = buildInputsFromDetail(detail, prefillMap);
-        return { ...current, [workoutExerciseId]: rebuilt[workoutExerciseId] };
+
+      const effective = {
+        id: exercise.id,
+        exerciseLibraryId: exercise.exerciseLibraryId,
+        baselineWeight: exercise.baselineWeight,
+        baselineReps: exercise.baselineReps,
+        totalSets: exercise.totalSets,
+      };
+      const newPrefills = await getSetPrefills(clientId, id, [effective]);
+      setPrefills((current) => ({ ...current, ...newPrefills }));
+      setSetRows((current) => {
+        const next = { ...current };
+        for (let setNumber = 1; setNumber <= exercise.totalSets; setNumber++) {
+          const key = setLogKey(exercise.id, setNumber);
+          next[key] = blankSetRow(newPrefills[key]);
+        }
+        return next;
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to undo that swap.');
@@ -275,49 +435,28 @@ export default function AssignedWorkoutDetailScreen() {
     }
   };
 
-  const handleMarkComplete = async () => {
-    setSaveError(null);
-    if (!session || !detail) return;
-
-    const entries = detail.exercises.map((exercise) => {
-      const input = inputs[exercise.id] ?? { weight: '', reps: '' };
-      const weight = input.weight.trim() === '' ? null : Number(input.weight);
-      const reps = input.reps.trim() === '' ? null : Number(input.reps);
-      return { exerciseId: exercise.id, weight, reps };
-    });
-
-    const hasInvalidNumber = entries.some(
-      (entry) =>
-        (entry.weight !== null && Number.isNaN(entry.weight)) || (entry.reps !== null && Number.isNaN(entry.reps))
-    );
-    if (hasInvalidNumber) {
-      setSaveError('Weight and reps must be numbers.');
-      return;
-    }
-
-    setSaving(true);
+  const handleFinishSession = async () => {
+    if (!detail || !clientId) return;
+    setFinishing(true);
+    setFinishError(null);
     try {
-      await logWorkout(session.user.id, detail.id, entries);
-      // XP is a bonus layer on top of completion, not a requirement for
-      // it — if awarding XP hiccups, the workout still saved as
-      // complete, so we don't want that to surface as an error here.
+      await finishSession(detail.id);
       try {
-        await awardWorkoutXp(session.user.id, detail.id, todayISODate());
+        await awardWorkoutXp(clientId, detail.id, todayISODate());
       } catch (xpErr) {
         console.error('Failed to award workout XP:', xpErr);
       }
-      const refreshed = await getAssignmentDetail(detail.id);
-      setDetail(refreshed);
-      // Every exercise now has a real logged value, so the fallback
-      // chain no longer applies to any of them -- reusing the prefills
-      // already fetched for this screen is correct, not stale.
-      setInputs(buildInputsFromDetail(refreshed, prefills));
+      await flushPendingSetLogs(detail.id, clientId);
+      await clearLocalSetLogsIfFullySynced(detail.id);
+      await load();
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Something went wrong saving your log.');
+      setFinishError(err instanceof Error ? err.message : 'Something went wrong finishing this session.');
     } finally {
-      setSaving(false);
+      setFinishing(false);
     }
   };
+
+  const showingReadinessGate = readiness && !readiness.completed && detail?.status === 'pending';
 
   return (
     <ThemedView style={styles.container}>
@@ -328,7 +467,6 @@ export default function AssignedWorkoutDetailScreen() {
           </Pressable>
 
           {loading && <ActivityIndicator style={styles.loader} />}
-
           {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
           {!loading && detail && (
@@ -346,13 +484,13 @@ export default function AssignedWorkoutDetailScreen() {
                 </ThemedText>
               </ThemedText>
 
-              {readiness && !readiness.completed && detail.status === 'pending' ? (
+              {showingReadinessGate ? (
                 <>
                   <ThemedText themeColor="textSecondary" style={styles.readinessIntro}>
-                    Quick check before you start -- {readiness.formName}.
+                    Quick check before you start -- {readiness!.formName}.
                   </ThemedText>
 
-                  {readiness.questions.map((question, index) => {
+                  {readiness!.questions.map((question, index) => {
                     const typeDefinition = getQuestionTypeDefinition(question.questionType);
                     return (
                       <ThemedView key={question.id} type="backgroundElement" style={styles.exerciseCard}>
@@ -388,6 +526,26 @@ export default function AssignedWorkoutDetailScreen() {
                 </>
               ) : (
                 <>
+                  {restSecondsLeft !== null && (
+                    <ThemedView type="backgroundElement" style={styles.restTimerCard}>
+                      <ThemedText type="smallBold">Rest</ThemedText>
+                      <ThemedText type="title" style={styles.restTimerValue}>
+                        {Math.floor(restSecondsLeft / 60)}:{String(restSecondsLeft % 60).padStart(2, '0')}
+                      </ThemedText>
+                      <View style={styles.restTimerControls}>
+                        <Pressable onPress={() => adjustRestTimer(-REST_STEP_SECONDS)}>
+                          <ThemedText type="linkPrimary">-15s</ThemedText>
+                        </Pressable>
+                        <Pressable onPress={() => adjustRestTimer(REST_STEP_SECONDS)}>
+                          <ThemedText type="linkPrimary">+15s</ThemedText>
+                        </Pressable>
+                        <Pressable onPress={dismissRestTimer}>
+                          <ThemedText type="linkPrimary">Skip</ThemedText>
+                        </Pressable>
+                      </View>
+                    </ThemedView>
+                  )}
+
                   {detail.exercises.length === 0 && (
                     <ThemedText themeColor="textSecondary">This workout has no exercises.</ThemedText>
                   )}
@@ -395,16 +553,9 @@ export default function AssignedWorkoutDetailScreen() {
                   {detail.exercises.map((exercise, index) => {
                     const swap = swaps[exercise.id];
                     const shown = displayExercise(exercise, swap);
-                    const input = inputs[exercise.id] ?? { weight: '', reps: '' };
-                    const alreadyLogged = exercise.loggedWeight !== null || exercise.loggedReps !== null;
-                    const prefill = prefills[exercise.id];
-                    const prefillLabel =
-                      !alreadyLogged && prefill?.source === 'previous_session'
-                        ? 'Prefilled from your last session with this exercise -- edit if today is different.'
-                        : !alreadyLogged && prefill?.source === 'baseline'
-                          ? "Prefilled from your coach's suggested starting point -- edit if you know better."
-                          : null;
-                    const noSuggestion = !alreadyLogged && (!prefill || prefill.source === 'none');
+                    const description = shown.isSwapped
+                      ? (libraryById[shown.exerciseLibraryId ?? '']?.description ?? null)
+                      : exercise.description;
 
                     return (
                       <ThemedView key={exercise.id} type="backgroundElement" style={styles.exerciseCard}>
@@ -414,8 +565,16 @@ export default function AssignedWorkoutDetailScreen() {
                           </ThemedText>
                           <View style={styles.exerciseText}>
                             <ThemedText type="smallBold">{shown.name}</ThemedText>
+                            {description && (
+                              <ThemedText type="small" themeColor="textSecondary">
+                                {description}
+                              </ThemedText>
+                            )}
                             <ThemedText type="small" themeColor="textSecondary">
                               Target: {exercise.setsReps}
+                              {!shown.isSwapped && exercise.baselineWeight !== null
+                                ? ` · Suggested start: ${exercise.baselineWeight}kg`
+                                : ''}
                             </ThemedText>
                             {shown.isSwapped && (
                               <ThemedText type="small" style={styles.swappedNote}>
@@ -439,53 +598,105 @@ export default function AssignedWorkoutDetailScreen() {
                           )}
                         </View>
 
-                        {detail.status === 'completed' ? (
-                          <ThemedText type="small">
-                            Logged: {exercise.loggedWeight ?? '—'} weight · {exercise.loggedReps ?? '—'} reps
-                          </ThemedText>
-                        ) : (
-                          <>
-                            <View style={styles.inputsRow}>
-                              <TextInput
-                                value={input.weight}
-                                onChangeText={(value) => updateInput(exercise.id, 'weight', value)}
-                                placeholder={noSuggestion ? 'Enter your starting weight' : 'Weight'}
-                                placeholderTextColor={theme.textSecondary}
-                                keyboardType="numeric"
-                                style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                              />
-                              <TextInput
-                                value={input.reps}
-                                onChangeText={(value) => updateInput(exercise.id, 'reps', value)}
-                                placeholder={noSuggestion ? 'Enter your starting reps' : 'Reps'}
-                                placeholderTextColor={theme.textSecondary}
-                                keyboardType="numeric"
-                                style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                              />
-                            </View>
-                            {prefillLabel && (
-                              <ThemedText type="small" themeColor="textSecondary" style={styles.prefillLabel}>
-                                {prefillLabel}
+                        {Array.from({ length: exercise.totalSets }, (_, i) => i + 1).map((setNumber) => {
+                          const key = setLogKey(exercise.id, setNumber);
+                          const row = setRows[key] ?? { checked: false, weight: '', reps: '', rpe: null };
+                          const prefill = prefills[key];
+                          const tag = exercise.taggedSets.find((t) => t.setNumber === setNumber);
+                          const prefillLabel =
+                            !row.checked && prefill?.source === 'previous_session'
+                              ? 'From your last session with this exercise'
+                              : !row.checked && prefill?.source === 'baseline'
+                                ? "Coach's suggested starting point"
+                                : null;
+                          const noSuggestion = !row.checked && (!prefill || prefill.source === 'none');
+
+                          return (
+                            <View key={key} style={styles.setRow}>
+                              <View style={styles.setRowTop}>
+                                <Pressable
+                                  onPress={() => toggleSetComplete(exercise.id, setNumber)}
+                                  disabled={detail.status === 'completed'}
+                                  style={[styles.checkbox, row.checked && styles.checkboxChecked]}
+                                  hitSlop={8}>
+                                  {row.checked && (
+                                    <ThemedText type="smallBold" style={styles.checkboxMark}>
+                                      ✓
+                                    </ThemedText>
+                                  )}
+                                </Pressable>
+                                <ThemedText type="small" style={styles.setNumberLabel}>
+                                  Set {setNumber}
+                                </ThemedText>
+                                {tag && tag.setType !== 'normal' && (
+                                  <ThemedText type="small" style={styles.setTypeBadge}>
+                                    {setTypeLabel(tag.setType)}
+                                  </ThemedText>
+                                )}
+                              </View>
+
+                              {tag && tag.setType !== 'normal' && SET_TYPE_DESCRIPTIONS[tag.setType] && (
+                                <ThemedText type="small" themeColor="textSecondary" style={styles.setTypeDescription}>
+                                  {SET_TYPE_DESCRIPTIONS[tag.setType]}
+                                </ThemedText>
+                              )}
+
+                              <View style={styles.inputsRow}>
+                                <TextInput
+                                  value={row.weight}
+                                  onChangeText={(value) => updateSetField(key, 'weight', value)}
+                                  editable={detail.status !== 'completed'}
+                                  placeholder={noSuggestion ? 'Weight (kg)' : 'Weight'}
+                                  placeholderTextColor={theme.textSecondary}
+                                  keyboardType="numeric"
+                                  style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                                />
+                                <TextInput
+                                  value={row.reps}
+                                  onChangeText={(value) => updateSetField(key, 'reps', value)}
+                                  editable={detail.status !== 'completed'}
+                                  placeholder={noSuggestion ? 'Reps' : 'Reps'}
+                                  placeholderTextColor={theme.textSecondary}
+                                  keyboardType="numeric"
+                                  style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                                />
+                              </View>
+
+                              <ThemedText type="small" themeColor="textSecondary" style={styles.rpeLabel}>
+                                RPE
                               </ThemedText>
-                            )}
-                          </>
-                        )}
+                              <AnswerInput
+                                answerKind="scale"
+                                config={{ min: 1, max: 10 }}
+                                value={row.rpe}
+                                onChange={(value) => updateSetRpe(key, value)}
+                              />
+
+                              {prefillLabel && (
+                                <ThemedText type="small" themeColor="textSecondary" style={styles.prefillLabel}>
+                                  {prefillLabel}
+                                </ThemedText>
+                              )}
+                            </View>
+                          );
+                        })}
                       </ThemedView>
                     );
                   })}
 
-                  {saveError && <ThemedText style={styles.error}>{saveError}</ThemedText>}
+                  {setError_ && <ThemedText style={styles.error}>{setError_}</ThemedText>}
+                  {finishError && <ThemedText style={styles.error}>{finishError}</ThemedText>}
 
                   {detail.status === 'pending' && (
                     <Pressable
                       style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
-                      onPress={handleMarkComplete}
-                      disabled={saving}>
-                      {saving ? (
+                      onPress={handleFinishSession}
+                      disabled={finishing}>
+                      {finishing ? (
                         <ActivityIndicator color={Colors.text} />
                       ) : (
                         <ThemedText type="smallBold" style={styles.primaryButtonText}>
-                          Mark Complete
+                          Finish Session
                         </ThemedText>
                       )}
                     </Pressable>
@@ -507,61 +718,54 @@ export default function AssignedWorkoutDetailScreen() {
               For today's session only -- your programme doesn't change.
             </ThemedText>
 
-            {loadingLibrary && <ActivityIndicator style={styles.smallLoader} />}
-            {!loadingLibrary && libraryError && <ThemedText style={styles.error}>{libraryError}</ThemedText>}
-
-            {!loadingLibrary && !libraryError && (
-              <TextInput
-                value={swapSearch}
-                onChangeText={setSwapSearch}
-                placeholder="Search alternatives"
-                placeholderTextColor={theme.textSecondary}
-                autoFocus
-                style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-              />
-            )}
+            <TextInput
+              value={swapSearch}
+              onChangeText={setSwapSearch}
+              placeholder="Search alternatives"
+              placeholderTextColor={theme.textSecondary}
+              autoFocus
+              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+            />
 
             {swapError && <ThemedText style={styles.error}>{swapError}</ThemedText>}
 
-            {!loadingLibrary && !libraryError && (
-              <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
-                {(() => {
-                  const pickerExercise = detail?.exercises.find((e) => e.id === swapPickerExerciseId) ?? null;
-                  if (!pickerExercise) return null;
-                  const query = swapSearch.trim().toLowerCase();
-                  const candidates = libraryExercises.filter(
-                    (candidate) =>
-                      candidate.muscleGroup === pickerExercise.muscleGroup &&
-                      candidate.id !== pickerExercise.exerciseLibraryId &&
-                      (query === '' || candidate.name.toLowerCase().includes(query))
+            <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
+              {(() => {
+                const pickerExercise = detail?.exercises.find((e) => e.id === swapPickerExerciseId) ?? null;
+                if (!pickerExercise) return null;
+                const query = swapSearch.trim().toLowerCase();
+                const candidates = libraryExercises.filter(
+                  (candidate) =>
+                    candidate.muscleGroup === pickerExercise.muscleGroup &&
+                    candidate.id !== pickerExercise.exerciseLibraryId &&
+                    (query === '' || candidate.name.toLowerCase().includes(query))
+                );
+
+                if (candidates.length === 0) {
+                  return (
+                    <ThemedText type="small" themeColor="textSecondary" style={styles.noResults}>
+                      No other {pickerExercise.muscleGroup} exercises match.
+                    </ThemedText>
                   );
+                }
 
-                  if (candidates.length === 0) {
-                    return (
-                      <ThemedText type="small" themeColor="textSecondary" style={styles.noResults}>
-                        No other {pickerExercise.muscleGroup} exercises match.
+                return candidates.map((candidate) => (
+                  <Pressable
+                    key={candidate.id}
+                    onPress={() => handleSelectReplacement(pickerExercise.id, candidate)}
+                    disabled={swappingId === pickerExercise.id}>
+                    <View style={styles.resultRow}>
+                      <ThemedText type="small" style={styles.resultName}>
+                        {candidate.name}
                       </ThemedText>
-                    );
-                  }
-
-                  return candidates.map((candidate) => (
-                    <Pressable
-                      key={candidate.id}
-                      onPress={() => handleSelectReplacement(pickerExercise.id, candidate)}
-                      disabled={swappingId === pickerExercise.id}>
-                      <View style={styles.resultRow}>
-                        <ThemedText type="small" style={styles.resultName}>
-                          {candidate.name}
-                        </ThemedText>
-                        <ThemedText type="small" themeColor="textSecondary">
-                          {candidate.category}
-                        </ThemedText>
-                      </View>
-                    </Pressable>
-                  ));
-                })()}
-              </ScrollView>
-            )}
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {candidate.category}
+                      </ThemedText>
+                    </View>
+                  </Pressable>
+                ));
+              })()}
+            </ScrollView>
 
             <Pressable style={styles.cancelButton} onPress={closeSwapPicker}>
               <ThemedText themeColor="textSecondary">Cancel</ThemedText>
@@ -602,6 +806,20 @@ const styles = StyleSheet.create({
     color: Accent,
     textAlign: 'center',
   },
+  restTimerCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    alignItems: 'center',
+    gap: Spacing.one,
+  },
+  restTimerValue: {
+    fontSize: 36,
+  },
+  restTimerControls: {
+    flexDirection: 'row',
+    gap: Spacing.four,
+    marginTop: Spacing.one,
+  },
   exerciseCard: {
     borderRadius: Spacing.two,
     padding: Spacing.three,
@@ -609,16 +827,60 @@ const styles = StyleSheet.create({
   },
   exerciseHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: Spacing.two,
   },
   exerciseText: {
     flex: 1,
     gap: Spacing.half,
   },
+  swappedNote: {
+    color: Colors.tealBright,
+  },
+  setRow: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.backgroundSelected,
+    paddingTop: Spacing.two,
+    gap: Spacing.one,
+  },
+  setRowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: Spacing.one,
+    borderWidth: 2,
+    borderColor: Colors.backgroundSelected,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxChecked: {
+    ...Glow.oxblood,
+    backgroundColor: Accent,
+    borderColor: Accent,
+  },
+  checkboxMark: {
+    color: Colors.text,
+  },
+  setNumberLabel: {
+    fontWeight: '700',
+  },
+  setTypeBadge: {
+    color: Colors.tealBright,
+    fontWeight: '700',
+  },
+  setTypeDescription: {
+    marginLeft: Spacing.four,
+  },
   inputsRow: {
     flexDirection: 'row',
     gap: Spacing.two,
+  },
+  rpeLabel: {
+    marginTop: Spacing.half,
   },
   prefillLabel: {
     marginTop: Spacing.half,
@@ -646,9 +908,6 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: Colors.text,
   },
-  swappedNote: {
-    color: Colors.tealBright,
-  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -669,9 +928,6 @@ const styles = StyleSheet.create({
   },
   modalSubtitle: {
     marginBottom: Spacing.two,
-  },
-  smallLoader: {
-    marginVertical: Spacing.one,
   },
   resultsList: {
     maxHeight: 320,
