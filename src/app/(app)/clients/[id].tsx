@@ -352,6 +352,20 @@ export default function ClientDetailScreen() {
                 ))}
               </ThemedView>
             ))}
+
+            <ThemedText type="smallBold" style={styles.sectionLabel}>
+              Danger Zone
+            </ThemedText>
+            <ThemedView type="backgroundElement" style={styles.dangerCard}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Permanently deletes this client's account and all of their personal data. Irreversible.
+              </ThemedText>
+              <Pressable onPress={() => router.push(`/clients/${client.id}/delete`)}>
+                <ThemedText type="smallBold" style={styles.dangerText}>
+                  Delete this client…
+                </ThemedText>
+              </Pressable>
+            </ThemedView>
           </ScrollView>
         )}
       </SafeAreaView>
@@ -488,5 +502,15 @@ const styles = StyleSheet.create({
   },
   deleteText: {
     color: Colors.textSecondary,
+  },
+  dangerCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.two,
+    borderWidth: 1,
+    borderColor: Accent,
+  },
+  dangerText: {
+    color: Accent,
   },
 });

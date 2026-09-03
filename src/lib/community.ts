@@ -18,7 +18,11 @@ const SIGNED_URL_EXPIRY_SECONDS = 60 * 60;
 
 export type CommunityPost = {
   id: string;
-  authorId: string;
+  /** Null means the author's account has since been permanently deleted
+   * (see client-deletion.sql: community_posts.author_id is ON DELETE SET
+   * NULL, specifically so the post itself — and any replies/reactions on
+   * it — survive intact instead of vanishing with the account). */
+  authorId: string | null;
   authorName: string;
   tag: CommunityTag;
   body: string;
@@ -59,10 +63,12 @@ export async function listCommunityPosts(): Promise<CommunityPost[]> {
     const author = row.profiles as unknown as { full_name: string | null; email: string } | null;
     const imagePath = row.image_storage_path as string | null;
 
+    const authorId = row.author_id as string | null;
+
     return {
       id: row.id as string,
-      authorId: row.author_id as string,
-      authorName: author?.full_name || author?.email?.split('@')[0] || 'Unknown',
+      authorId,
+      authorName: authorId === null ? 'Deleted user' : author?.full_name || author?.email?.split('@')[0] || 'Unknown',
       tag: row.tag as CommunityTag,
       body: row.body as string,
       imageUrl: imagePath ? (urlByPath.get(imagePath) ?? null) : null,
@@ -197,7 +203,9 @@ export type ModerationReport = {
   postId: string;
   postBody: string;
   postTag: CommunityTag;
-  postAuthorId: string;
+  /** Null when the post's author has since been permanently deleted —
+   * see CommunityPost.authorId. */
+  postAuthorId: string | null;
   postAuthorName: string;
   reporterName: string;
   reason: string | null;
@@ -230,7 +238,7 @@ export async function getOpenReports(): Promise<ModerationReport[]> {
       id: string;
       body: string;
       tag: CommunityTag;
-      author_id: string;
+      author_id: string | null;
       post_author: { full_name: string | null; email: string } | null;
     } | null;
     const reporter = row.reporter as unknown as { full_name: string | null; email: string } | null;
@@ -240,8 +248,11 @@ export async function getOpenReports(): Promise<ModerationReport[]> {
       postId: post?.id ?? (row.post_id as string),
       postBody: post?.body ?? '(post no longer exists)',
       postTag: (post?.tag ?? 'question') as CommunityTag,
-      postAuthorId: post?.author_id ?? '',
-      postAuthorName: post?.post_author?.full_name || post?.post_author?.email?.split('@')[0] || 'Unknown',
+      postAuthorId: post?.author_id ?? null,
+      postAuthorName:
+        post && post.author_id === null
+          ? 'Deleted user'
+          : post?.post_author?.full_name || post?.post_author?.email?.split('@')[0] || 'Unknown',
       reporterName: reporter?.full_name || reporter?.email?.split('@')[0] || 'Unknown',
       reason: row.reason as string | null,
       createdAt: row.created_at as string,

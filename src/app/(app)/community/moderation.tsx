@@ -105,7 +105,7 @@ export default function CommunityModerationScreen() {
   };
 
   const handleConfirmBlock = async () => {
-    if (!blockTarget) return;
+    if (!blockTarget || blockTarget.postAuthorId === null) return;
     setBlockError(null);
     setBlocking(true);
     try {
@@ -183,11 +183,13 @@ export default function CommunityModerationScreen() {
                       Delete post
                     </ThemedText>
                   </Pressable>
-                  <Pressable onPress={() => setBlockTarget(report)}>
-                    <ThemedText type="small" style={styles.deleteText}>
-                      Block author
-                    </ThemedText>
-                  </Pressable>
+                  {report.postAuthorId !== null && (
+                    <Pressable onPress={() => setBlockTarget(report)}>
+                      <ThemedText type="small" style={styles.deleteText}>
+                        Block author
+                      </ThemedText>
+                    </Pressable>
+                  )}
                 </View>
               </ThemedView>
             ))}
