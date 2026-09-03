@@ -9,6 +9,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
+import { getErrorMessage } from '@/lib/errors';
 import {
   finishSession,
   getAssignmentDetail,
@@ -206,7 +207,7 @@ export default function AssignedWorkoutDetailScreen() {
       // never blocks rendering on this.
       flushPendingSetLogs(assignmentData.id, clientId).catch((err) => console.error('Flush failed:', err));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load this workout.');
+      setError(getErrorMessage(err, 'Failed to load this workout.'));
     } finally {
       setLoading(false);
     }
@@ -288,7 +289,7 @@ export default function AssignedWorkoutDetailScreen() {
       const refreshed = await getReadinessStatusForAssignment(id);
       setReadiness(refreshed);
     } catch (err) {
-      setReadinessError(err instanceof Error ? err.message : 'Something went wrong submitting your answers.');
+      setReadinessError(getErrorMessage(err, 'Something went wrong submitting your answers.'));
     } finally {
       setSubmittingReadiness(false);
     }
@@ -393,7 +394,7 @@ export default function AssignedWorkoutDetailScreen() {
       });
       setSwapPickerExerciseId(null);
     } catch (err) {
-      setSwapError(err instanceof Error ? err.message : 'Something went wrong swapping this exercise.');
+      setSwapError(getErrorMessage(err, 'Something went wrong swapping this exercise.'));
     } finally {
       setSwappingId(null);
     }
@@ -429,7 +430,7 @@ export default function AssignedWorkoutDetailScreen() {
         return next;
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to undo that swap.');
+      setError(getErrorMessage(err, 'Failed to undo that swap.'));
     } finally {
       setSwappingId(null);
     }
@@ -450,7 +451,7 @@ export default function AssignedWorkoutDetailScreen() {
       await clearLocalSetLogsIfFullySynced(detail.id);
       await load();
     } catch (err) {
-      setFinishError(err instanceof Error ? err.message : 'Something went wrong finishing this session.');
+      setFinishError(getErrorMessage(err, 'Something went wrong finishing this session.'));
     } finally {
       setFinishing(false);
     }
