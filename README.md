@@ -1736,6 +1736,29 @@ On reopening the screen, that snapshot is checked: for any set that's still *unc
 3. Confirm XP and the streak reflect the session the same way they already did before this chunk — no separate step needed to "trigger" either.
 4. For the snapshot: open a different pending session, type a weight/reps into a set WITHOUT checking it off, and leave the screen open at least 10 minutes (or force it sooner for testing by temporarily lowering `SNAPSHOT_INTERVAL_MS` in `assigned/[id].tsx`). Force-close the app and reopen that same session. Confirm the unchecked set still shows what you typed. Confirm a checked set's values always come from the server/per-set cache regardless — this mechanism never overrides those.
 
+## The completion scorecard: PBs, total weight lifted, and duration
+
+No new migration — everything this needs (`workout_logs.weight/reps/created_at`, `assignment_exercise_swaps`, `assignments.session_rpe`) already existed. Tapping **Mark Workout Complete** now lands on a new screen, `/assigned/complete/[id]`, instead of just reloading the same screen read-only.
+
+**A PB is "this session's heaviest weight for an exercise beats every weight this client has ever logged for that exercise, in any other session"** — matched by the exercise's real library identity, not by which `workout_exercises` row it happened to be logged against (a fresh row every time an exercise is added to any workout), the same matching rule the weight/reps prefill chunk already established. A swapped exercise is compared as whatever was actually performed (the replacement), never the originally-prescribed one it replaced. An exercise with no previous logged weight at all is **never** flagged as a PB — there's nothing for a first attempt to beat, so "personal best" wouldn't mean anything there. One accepted, documented limitation carries over from that same prefill feature: matching a *past* session's exercise identity reads straight from that old `workout_exercises` row, without re-checking whether a swap was active on it too at the time — consistent with how "previous session" already works everywhere else in this app, not a more precise version nothing else here has either.
+
+**Total weight lifted is `sum(weight × reps)` across every logged set this session** — 0 for an all-bodyweight session, not hidden, since that's a real, honest answer, not a missing one.
+
+**Duration is an honest approximation, not a tracked fact.** Nothing today records when a session actually starts, so this reads the timestamp range already sitting on the session's own logged sets — first set checked to last set checked. It undercounts any time spent before the first set and after the last one before tapping Complete, but it's a genuine measurement rather than an invented one. A session logged in one quick pass (or during testing) can come back as "&lt;1m" — shown as-is, not smoothed over.
+
+**The screen is computed fresh every time it's opened, not a stored snapshot.** Reopening a completed session later from Training or the Calendar still shows the ordinary read-only `/assigned/[id]` view exactly as before this chunk — this scorecard is a one-time landing screen right after finishing, not the permanent detail view for a finished session.
+
+**A new `<StatRing>` component** (`src/components/stat-ring.tsx`) draws the ring gauges — an SVG circle with a teal arc on a carbon-black track, soft teal glow behind it, sized to fit whatever number lands in the middle. A stat with a real 0–10 (or similar) ceiling — session RPE — passes a real 0–1 `progress` fraction, and an unrated one renders as a genuinely **empty** ring, never a misleadingly full one that would look like a maxed-out rating nobody actually gave. A stat with no natural ceiling — total weight lifted — omits `progress` entirely and renders as a full ring, used purely as a frame around the number rather than a fabricated percentage. Oxblood appears exactly once on the whole screen: the **Done** button, per this app's own color rule that oxblood is for buttons and active states only, never decoration.
+
+**Verify the whole scorecard, using your own real logged history:**
+1. Pick (or set up) a client with at least one already-completed session logging a specific exercise at a known weight.
+2. Assign them a new workout with that same exercise, have them log a **heavier** weight on it this time, and a **second** exercise they've done before at a **lighter** weight than their previous best, and (optionally) a **third**, brand-new exercise they've never logged. Rate the session and tap **Mark Workout Complete**.
+3. Confirm the scorecard shows: a PB card for the heavier exercise (with "up from Xkg"), no PB card for the lighter one, and no PB card for the brand-new one either.
+4. Confirm the total weight lifted number matches `select sum(weight*reps) from workout_logs where assignment_id = '<this assignment id>';` run in Supabase.
+5. Confirm the session RPE ring matches what was actually rated (or renders empty if skipped), and the duration is a plausible span given how long logging actually took.
+6. If this session included a mid-session swap, confirm any PB check on that slot compared against the swapped-in exercise's own history, not the originally-prescribed exercise's.
+7. Tap **Done**, then reopen the same (now completed) assignment from Training or the Calendar — confirm it shows the ordinary read-only logged-sets view, not the scorecard again.
+
 ## Project structure reference
 
 ```
@@ -1803,7 +1826,9 @@ src/
         [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
         assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
       assigned/
-        [id].tsx          # client's live session screen — readiness gate first if unanswered, then per-SET checkboxes (weight/reps/RPE, prefilled: previous session > coach baseline > empty with a hint, always editable), tagged sets show their technique label + instructions, checking a set auto-starts an editable rest timer, a Swap link opens same-muscle-group alternatives (session-only), an overall session-RPE selector near the bottom, Mark Workout Complete saves it and locks the screen read-only — every set is cached to on-device storage the instant it's checked and synced to Supabase in the background (see set-logging.ts), with a 10-minute full-screen snapshot (session-snapshot.ts) as a second safety net underneath that, so nothing is lost to a dropped connection or an app crash mid-set
+        [id].tsx          # client's live session screen — readiness gate first if unanswered, then per-SET checkboxes (weight/reps/RPE, prefilled: previous session > coach baseline > empty with a hint, always editable), tagged sets show their technique label + instructions, checking a set auto-starts an editable rest timer, a Swap link opens same-muscle-group alternatives (session-only), an overall session-RPE selector near the bottom, Mark Workout Complete saves it and navigates to the completion scorecard — every set is cached to on-device storage the instant it's checked and synced to Supabase in the background (see set-logging.ts), with a 10-minute full-screen snapshot (session-snapshot.ts) as a second safety net underneath that, so nothing is lost to a dropped connection or an app crash mid-set; reopening an already-completed session later (Training/Calendar) shows this same screen read-only, not the scorecard again
+        complete/
+          [id].tsx          # the post-completion scorecard — PBs (this session's heaviest per exercise beating every previous session's, swap-aware), total weight lifted, an approximate duration, and the session RPE, all computed fresh on every open, never stored
       checkins/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
@@ -1835,6 +1860,7 @@ src/
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
     question-answer-input.tsx    # <AnswerInput> — one render branch per answer kind (short_text/numeric/single_choice/multi_choice/scale), same reasoning; used by the check-in fill-out screen
     nutri-score-badge.tsx         # <NutriScoreBadge grade size> — official Nutri-Score A-E colors, small (list/search rows) or large (recipe hero) size
+    stat-ring.tsx                   # <StatRing value label progress? size?> — SVG ring gauge (teal arc + glow on a carbon-black track), used by the completion scorecard; a real 0-1 progress renders a genuine partial/empty arc, omitting it renders a full ring as a plain frame for an open-ended number
     workout-form.tsx               # <WorkoutForm workoutId? weekId?> — the coach's whole workout builder, shared by /workouts/new (blank, or a programme-week session) and /workouts/[id] (preloaded for editing); which mode it's in is just whether workoutId was passed
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
@@ -1874,6 +1900,7 @@ src/
     exercise-swaps.ts                # listExerciseSwapsForAssignment() / swapExerciseForSession() / undoExerciseSwap() -- session-only substitutions in assignment_exercise_swaps; never touches workout_exercises or the underlying programme
     set-logging.ts                    # saveSetLog() / deleteSetLog() — write to AsyncStorage first (the only thing the caller awaits), then best-effort push to Supabase, silently queuing on failure; flushPendingSetLogs() retries anything still queued (idempotent upsert, safe to retry); getMergedSetLogs() — server-confirmed logs overridden by anything still unsynced locally
     session-snapshot.ts                # saveSessionSnapshot() / loadSessionSnapshot() / clearSessionSnapshot() — a 10-minute-interval safety net ON TOP of set-logging.ts: snapshots every set's typed values (checked or not) plus the session RPE to AsyncStorage, restoring only into still-UNCHECKED sets on reopen; never overrides anything the per-set system already has
+    session-scorecard.ts                # getSessionScorecard() — PBs (per-exercise heaviest this session vs. every prior session, swap-aware, matched by exercise_library_id same as getSetPrefills), total weight lifted (sum of weight x reps), and an approximate duration (first logged set's timestamp to the last)
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once

@@ -510,7 +510,7 @@ export default function AssignedWorkoutDetailScreen() {
       await flushPendingSetLogs(detail.id, clientId);
       await clearLocalSetLogsIfFullySynced(detail.id);
       await clearSessionSnapshot(detail.id);
-      await load();
+      router.replace(`/assigned/complete/${detail.id}`);
     } catch (err) {
       setFinishError(getErrorMessage(err, 'Something went wrong finishing this session.'));
     } finally {
