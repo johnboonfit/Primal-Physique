@@ -22,7 +22,7 @@ const NEUTRAL = Colors.backgroundSelected;
 const OUTLINE = Colors.background;
 
 const WIDTH = 200;
-const HEIGHT = 440;
+const HEIGHT = 480;
 
 /** Zero logged sets gets no color at all (a neutral, untouched region) --
  * distinct from the "low" tier, which still means SOME real work was
@@ -34,23 +34,23 @@ export function colorForCount(count: number): string {
 // Right-half path data for the paired, mirrored regions -- authored once
 // per region and reflected across the centerline (x=100) with a <G>
 // transform, rather than hand-duplicating coordinates for the left side.
-const SHOULDER_D = 'M120 66 C138 62 160 72 166 92 C170 106 162 120 146 122 C132 124 120 112 118 96 Z';
+const SHOULDER_D = 'M114 56 C130 52 150 60 153 80 C155 94 148 104 135 105 C122 106 112 96 111 82 Z';
 const ARM_D =
-  'M148 96 C166 104 172 126 168 150 C165 170 156 182 148 186 C144 206 142 226 146 246 C148 258 146 270 138 278 L126 278 C122 264 124 246 128 228 C122 212 120 192 126 172 C116 158 114 134 122 114 C128 104 138 98 148 96 Z';
+  'M116 58 C134 63 144 80 142 102 C141 118 136 132 130 140 C129 164 129 188 131 210 C132 226 130 242 125 256 L112 256 C110 240 111 224 112 208 C108 184 107 160 110 138 C104 124 105 102 110 84 C112 74 114 65 116 58 Z';
 const LEG_D =
-  'M102 215 L124 215 C128 240 126 264 121 288 C119 306 116 322 112 334 L102 334 C101 306 100 278 100 250 C100 238 101 226 102 215 Z';
+  'M101 188 L121 188 C125 218 123 250 118 282 C116 304 112 324 107 342 L100 342 C99 308 99 272 99 236 C99 220 100 203 101 188 Z';
 const CALF_D =
-  'M102 336 L112 336 C116 352 115 368 110 384 C108 394 105 402 100 406 L98 406 C96 396 95 384 96 370 C97 358 99 346 102 336 Z';
+  'M101 344 L113 344 C117 366 116 388 110 408 C108 422 104 434 100 440 L97 440 C94 430 93 416 95 400 C96 382 98 362 101 344 Z';
 const LAT_D =
-  'M118 98 C136 104 148 122 146 146 C144 168 134 190 120 208 L106 202 C110 182 113 162 112 142 C111 126 113 110 118 98 Z';
+  'M114 82 C130 88 140 104 138 126 C136 146 128 166 116 182 L104 176 C107 158 110 140 110 122 C110 108 111 94 114 82 Z';
 
 // Symmetric, single-piece regions that straddle the centerline.
 const CHEST_D =
-  'M74 100 C78 84 92 74 100 78 C108 74 122 84 126 100 C130 112 124 126 112 132 C104 136 100 130 100 122 C100 130 96 136 88 132 C76 126 70 112 74 100 Z';
+  'M79 84 C82 70 92 63 100 66 C108 63 118 70 121 84 C123 94 118 104 109 109 C103 112 100 108 100 101 C100 108 97 112 91 109 C82 104 77 94 79 84 Z';
 const CORE_D =
-  'M80 134 L120 134 C122 158 121 182 118 200 C117 208 115 214 112 216 L88 216 C85 214 83 208 82 200 C79 182 78 158 80 134 Z';
-const TRAPS_D = 'M90 66 L110 66 L124 96 L100 146 L76 96 Z';
-const SPINE_D = 'M92 146 L108 146 L106 216 L94 216 Z';
+  'M81 110 L119 110 C121 130 119 152 115 168 C113 178 110 184 105 186 L95 186 C90 184 87 178 85 168 C81 152 79 130 81 110 Z';
+const TRAPS_D = 'M92 56 L108 56 L120 82 L100 128 L80 82 Z';
+const SPINE_D = 'M93 128 L107 128 L105 186 L95 186 Z';
 
 function MirroredRegion({ d, color }: { d: string; color: string }) {
   return (
@@ -66,10 +66,10 @@ function MirroredRegion({ d, color }: { d: string; color: string }) {
 function CoreDividers() {
   return (
     <G stroke={OUTLINE} strokeWidth={1} strokeOpacity={0.5}>
-      <Path d="M100 134 L100 216" />
-      <Path d="M84 156 L116 156" />
-      <Path d="M83 178 L117 178" />
-      <Path d="M82 198 L118 198" />
+      <Path d="M100 110 L100 186" />
+      <Path d="M85 130 L115 130" />
+      <Path d="M84 150 L116 150" />
+      <Path d="M83 168 L117 168" />
     </G>
   );
 }
@@ -96,12 +96,12 @@ export function MuscleHeatmap({ counts }: MuscleHeatmapProps) {
     <Pressable onPress={() => setShowingBack((current) => !current)} style={styles.container}>
       <Svg width={WIDTH} height={HEIGHT} viewBox={`0 0 ${WIDTH} ${HEIGHT}`}>
         {/* Head, neck, hands, feet -- decorative outline only, not tracked. */}
-        <Circle cx={100} cy={30} r={22} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
-        <Path d="M90 50 L88 66 L112 66 L110 50 Z" fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
-        <Ellipse cx={64} cy={281} rx={9} ry={12} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
-        <Ellipse cx={136} cy={281} rx={9} ry={12} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
-        <Ellipse cx={88} cy={412} rx={13} ry={9} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
-        <Ellipse cx={112} cy={412} rx={13} ry={9} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
+        <Circle cx={100} cy={24} r={18} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
+        <Path d="M92 42 L90 56 L110 56 L108 42 Z" fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
+        <Ellipse cx={82} cy={259} rx={8} ry={11} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
+        <Ellipse cx={118} cy={259} rx={8} ry={11} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
+        <Ellipse cx={88} cy={452} rx={12} ry={8} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
+        <Ellipse cx={112} cy={452} rx={12} ry={8} fill={NEUTRAL} stroke={OUTLINE} strokeWidth={1.5} />
 
         {showingBack ? (
           <>
