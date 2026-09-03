@@ -7,9 +7,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { WorkoutAnalyserCard } from '@/components/workout-analyser-card';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
+import { getWeeklyMuscleGroupSetCounts, type MuscleGroupCounts } from '@/lib/muscle-group-analysis';
 import { getClientProgramme, GOAL_TYPES, type ClientProgrammeView } from '@/lib/programmes';
 
 const DAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -115,6 +117,8 @@ export default function ClientTrainingScreen() {
   const [programmeLoading, setProgrammeLoading] = useState(true);
   const [programmeError, setProgrammeError] = useState<string | null>(null);
 
+  const [muscleCounts, setMuscleCounts] = useState<MuscleGroupCounts | null>(null);
+
   useFocusEffect(
     useCallback(() => {
       if (!session) return;
@@ -161,6 +165,25 @@ export default function ClientTrainingScreen() {
     }, [session])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+
+      getWeeklyMuscleGroupSetCounts(session.user.id)
+        .then((data) => {
+          if (!cancelled) setMuscleCounts(data.counts);
+        })
+        .catch(() => {
+          // Non-critical stat card -- fail quietly rather than blocking the rest of the tab.
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [session])
+  );
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -195,6 +218,15 @@ export default function ClientTrainingScreen() {
                 <ThemedText themeColor="textSecondary" style={styles.noProgramme}>
                   No programme assigned yet — check back once your coach assigns one.
                 </ThemedText>
+              )}
+
+              {muscleCounts && (
+                <>
+                  <ThemedText type="smallBold" style={styles.sectionLabel}>
+                    This Week
+                  </ThemedText>
+                  <WorkoutAnalyserCard counts={muscleCounts} />
+                </>
               )}
 
               <ThemedText type="smallBold" style={styles.sectionLabel}>

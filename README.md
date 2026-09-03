@@ -1759,6 +1759,42 @@ No new migration — everything this needs (`workout_logs.weight/reps/created_at
 6. If this session included a mid-session swap, confirm any PB check on that slot compared against the swapped-in exercise's own history, not the originally-prescribed exercise's.
 7. Tap **Done**, then reopen the same (now completed) assignment from Training or the Calendar — confirm it shows the ordinary read-only logged-sets view, not the scorecard again.
 
+## Workout Analyser: a weekly per-muscle-group heat-map on the Training tab
+
+No new migration — this reads data that already exists (`workout_logs`, `workout_exercises`, `assignment_exercise_swaps`, `exercise_library`), it's just never been aggregated by muscle group before.
+
+**"This week" is the exact same Monday–Sunday window Momentum Score and the Leaderboard already use** — `getCurrentWeekRange()` from `momentum.ts`, reused rather than a second copy of the date math, so "this week" means the same thing everywhere in the app.
+
+**Every logged set counts, including ones from a still-in-progress session.** A `workout_logs` row only ever exists because a set was actually checked off, so counting rows already means "sets actually done" — it's not waiting for the whole session to be marked complete first.
+
+**Swap-aware, same rule as PBs and the scorecard**: a set logged against a slot that was swapped mid-session counts toward the *replacement* exercise's muscle group, not the originally-prescribed one — that's what was actually performed. The one accepted limitation carried over from the same prefill/scorecard logic: a swap is only checked for the assignment the set belongs to, not re-verified for consistency with any other session.
+
+**Tiers: green under 10 sets, yellow 10–19, red 20+**, per muscle group. These are real, deliberately non-brand colors (a universal traffic-light convention for a training-load warning) — the same reasoning `NutriScoreBadge` already established for using the real Nutri-Score palette instead of remapping into carbon/teal/oxblood. The **overall status badge** (Low/Moderate/High) takes the *worst* tier reached by any single muscle group, not an average — one muscle group pushed into the red is worth flagging on its own, and averaging it against several quiet ones would hide exactly what this card exists to catch.
+
+**The heat-map is a simplified geometric body silhouette, not anatomical art** — rounded shapes standing in for chest/back/shoulders/arms/core/legs/calves, tap anywhere on it to flip between front and back. Chest and core only appear on the front (not visible from behind); back only appears on the back; shoulders/arms/legs/calves appear identically on both since they're visible either way and always carry the same count.
+
+**New files**: `src/lib/muscle-group-analysis.ts` (`getWeeklyMuscleGroupSetCounts()`, `tierForSetCount()`, `overallVolumeStatus()`), `src/components/muscle-heatmap.tsx` (`<MuscleHeatmap>`, the tap-to-flip SVG diagram), `src/components/workout-analyser-card.tsx` (`<WorkoutAnalyserCard>` — the whole card: heatmap + exact-count list + status badge), wired into `client/training.tsx` between the Programme section and the assignment list.
+
+**Verify the set counts are correct against real logged data:**
+1. Note today's Monday–Sunday window (Monday's date through the following Sunday).
+2. In Supabase, run a query resolving each of this week's logged sets to its real muscle group, swap-aware:
+   ```sql
+   select coalesce(el2.muscle_group, el1.muscle_group) as muscle_group, count(*) as sets
+   from workout_logs wl
+   join assignments a on a.id = wl.assignment_id
+   join workout_exercises we on we.id = wl.exercise_id
+   join exercise_library el1 on el1.id = we.exercise_library_id
+   left join assignment_exercise_swaps s on s.assignment_id = wl.assignment_id and s.workout_exercise_id = wl.exercise_id
+   left join exercise_library el2 on el2.id = s.replacement_exercise_library_id
+   where a.client_id = '<this client's id>'
+     and a.assigned_date >= '<this Monday>' and a.assigned_date <= '<this Sunday>'
+   group by 1;
+   ```
+3. Compare each row's count against what the Workout Analyser card shows for that muscle group, and confirm the tier color (green/yellow/red) matches the 10/20 thresholds.
+4. Confirm a set logged on a date **outside** this window (last week, or a session dated for later) is **not** included in either the app's numbers or the query above.
+5. If a session included a mid-session swap, confirm its sets are counted under the swapped-in exercise's muscle group, not the one it replaced.
+6. Confirm the overall badge reads the worst tier among all seven muscle groups, not an average.
+
 ## Project structure reference
 
 ```
@@ -1834,7 +1870,7 @@ src/
       client/
         _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
         index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
-        training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
+        training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + Workout Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
         chat.tsx             # Chat tab — real messaging now: resolves/creates this client's conversation with "the coach", then renders <ChatThread>
@@ -1862,6 +1898,8 @@ src/
     nutri-score-badge.tsx         # <NutriScoreBadge grade size> — official Nutri-Score A-E colors, small (list/search rows) or large (recipe hero) size
     stat-ring.tsx                   # <StatRing value label progress? size?> — SVG ring gauge (teal arc + glow on a carbon-black track), used by the completion scorecard; a real 0-1 progress renders a genuine partial/empty arc, omitting it renders a full ring as a plain frame for an open-ended number
     workout-form.tsx               # <WorkoutForm workoutId? weekId?> — the coach's whole workout builder, shared by /workouts/new (blank, or a programme-week session) and /workouts/[id] (preloaded for editing); which mode it's in is just whether workoutId was passed
+    muscle-heatmap.tsx               # <MuscleHeatmap counts> — tap-to-flip SVG body silhouette, front/back, color-coded per region by tierForSetCount(); exports TIER_COLORS (real green/yellow/red, the NutriScoreBadge exception) so the analyser card's list/badge use the exact same colors
+    workout-analyser-card.tsx        # <WorkoutAnalyserCard counts> — the Training tab card: title + status badge (worst tier wins) + <MuscleHeatmap> + exact per-muscle-group set count list
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
   context/
@@ -1901,6 +1939,7 @@ src/
     set-logging.ts                    # saveSetLog() / deleteSetLog() — write to AsyncStorage first (the only thing the caller awaits), then best-effort push to Supabase, silently queuing on failure; flushPendingSetLogs() retries anything still queued (idempotent upsert, safe to retry); getMergedSetLogs() — server-confirmed logs overridden by anything still unsynced locally
     session-snapshot.ts                # saveSessionSnapshot() / loadSessionSnapshot() / clearSessionSnapshot() — a 10-minute-interval safety net ON TOP of set-logging.ts: snapshots every set's typed values (checked or not) plus the session RPE to AsyncStorage, restoring only into still-UNCHECKED sets on reopen; never overrides anything the per-set system already has
     session-scorecard.ts                # getSessionScorecard() — PBs (per-exercise heaviest this session vs. every prior session, swap-aware, matched by exercise_library_id same as getSetPrefills), total weight lifted (sum of weight x reps), and an approximate duration (first logged set's timestamp to the last)
+    muscle-group-analysis.ts            # getWeeklyMuscleGroupSetCounts() — this week's logged sets grouped by muscle group, swap-aware, using getCurrentWeekRange(); tierForSetCount() (green/yellow/red at 10/20) and overallVolumeStatus() (worst tier wins, not an average)
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
