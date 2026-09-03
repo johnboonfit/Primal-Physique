@@ -46,7 +46,7 @@ export default function ChatScreen() {
         )}
 
         {!loading && !error && conversationId && coach && (
-          <ChatThread conversationId={conversationId} otherPartyId={coach.id} otherPartyName={coach.name} />
+          <ChatThread conversationId={conversationId} otherPartyId={coach.id} otherPartyName={`Coach: ${coach.name}`} />
         )}
       </SafeAreaView>
     </ThemedView>
