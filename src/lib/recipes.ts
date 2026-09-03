@@ -1,6 +1,7 @@
 import { decode } from 'base64-arraybuffer';
 
 import type { FoodSource } from '@/lib/food-logs';
+import { computeRecipeNutriScore, type NutriScoreResult } from '@/lib/nutri-score';
 import { supabase } from '@/lib/supabase';
 
 export const RECIPE_TAGS = [
@@ -25,6 +26,11 @@ export type RecipeIngredient = {
   protein: number | null;
   carbs: number | null;
   fat: number | null;
+  sugars: number | null;
+  saturatedFat: number | null;
+  sodiumMg: number | null;
+  fiber: number | null;
+  fruitVegLegumeNutPercent: number | null;
   source: FoodSource;
   sourceId: string | null;
 };
@@ -41,6 +47,14 @@ export type RecipeIngredientDraft = {
   protein: number | null;
   carbs: number | null;
   fat: number | null;
+  sugars: number | null;
+  saturatedFat: number | null;
+  sodiumMg: number | null;
+  fiber: number | null;
+  /** Not scaled by quantity -- a percentage of the ingredient itself,
+   * same figure regardless of how many grams are used. Always a real
+   * number (see FoodSearchResult.fruitVegLegumeNutPercent). */
+  fruitVegLegumeNutPercent: number;
   source: FoodSource;
   sourceId: string | null;
 };
@@ -95,6 +109,11 @@ export type RecipeSummary = {
   ingredientCount: number;
   photoUrl: string | null;
   photoStoragePath: string | null;
+  /** Null once there are no ingredients yet -- there's nothing
+   * meaningful to score. See computeRecipeNutriScore in nutri-score.ts
+   * for how this is derived from the summed, per-serving,
+   * re-normalized-to-100g ingredient totals. */
+  nutriScore: NutriScoreResult | null;
 } & MacroTotals;
 
 export type RecipeDetail = RecipeSummary & {
@@ -102,6 +121,11 @@ export type RecipeDetail = RecipeSummary & {
   prepMinutes: number;
   cookMinutes: number;
   ingredients: RecipeIngredient[];
+  /** Grams per serving the Nutri-Score above was normalized against --
+   * shown next to the badge so "per 100g" has a concrete meaning for
+   * this specific recipe. Null alongside nutriScore when there are no
+   * ingredients yet. */
+  nutriScoreGramsPerServing: number | null;
 };
 
 const BUCKET = 'recipe-photos';
@@ -118,9 +142,21 @@ function mapIngredientRow(row: Record<string, unknown>): RecipeIngredient {
     protein: row.protein as number | null,
     carbs: row.carbs as number | null,
     fat: row.fat as number | null,
+    sugars: row.sugars as number | null,
+    saturatedFat: row.saturated_fat as number | null,
+    sodiumMg: row.sodium_mg as number | null,
+    fiber: row.fiber as number | null,
+    fruitVegLegumeNutPercent: row.fruit_veg_legume_nut_percent as number | null,
     source: row.source as FoodSource,
     sourceId: row.source_id as string | null,
   };
+}
+
+/** Null once there's nothing to score yet -- see RecipeSummary.nutriScore. */
+function recipeNutriScore(ingredients: RecipeIngredient[], servings: number) {
+  if (ingredients.length === 0) return { nutriScore: null, gramsPerServing: null };
+  const { result, gramsPerServing } = computeRecipeNutriScore(ingredients, servings);
+  return { nutriScore: result, gramsPerServing };
 }
 
 async function signPhotoUrl(path: string | null): Promise<string | null> {
@@ -133,10 +169,39 @@ async function signPhotoUrl(path: string | null): Promise<string | null> {
   return data.signedUrl;
 }
 
+const RECIPE_INGREDIENT_NUTRIENT_COLUMNS =
+  'quantity_grams, calories, protein, carbs, fat, sugars, saturated_fat, sodium_mg, fiber, fruit_veg_legume_nut_percent';
+
+type RecipeIngredientNutrientRow = {
+  quantity_grams: number;
+  calories: number;
+  protein: number | null;
+  carbs: number | null;
+  fat: number | null;
+  sugars: number | null;
+  saturated_fat: number | null;
+  sodium_mg: number | null;
+  fiber: number | null;
+  fruit_veg_legume_nut_percent: number | null;
+};
+
+function toNutriScoreIngredient(row: RecipeIngredientNutrientRow) {
+  return {
+    quantityGrams: row.quantity_grams,
+    calories: row.calories,
+    protein: row.protein,
+    sugars: row.sugars,
+    saturatedFat: row.saturated_fat,
+    sodiumMg: row.sodium_mg,
+    fiber: row.fiber,
+    fruitVegLegumeNutPercent: row.fruit_veg_legume_nut_percent,
+  };
+}
+
 export async function listRecipes(coachId: string): Promise<RecipeSummary[]> {
   const { data, error } = await supabase
     .from('recipes')
-    .select('id, name, servings, tags, photo_storage_path, recipe_ingredients (calories, protein, carbs, fat)')
+    .select(`id, name, servings, tags, photo_storage_path, recipe_ingredients (${RECIPE_INGREDIENT_NUTRIENT_COLUMNS})`)
     .eq('coach_id', coachId)
     .order('created_at', { ascending: false });
 
@@ -144,16 +209,24 @@ export async function listRecipes(coachId: string): Promise<RecipeSummary[]> {
 
   return Promise.all(
     (data ?? []).map(async (row) => {
-      const ingredients = (row.recipe_ingredients as { calories: number; protein: number | null; carbs: number | null; fat: number | null }[]) ?? [];
+      const ingredientRows = (row.recipe_ingredients as RecipeIngredientNutrientRow[]) ?? [];
+      const servings = row.servings as number;
+      const nutriScoreIngredients = ingredientRows.map(toNutriScoreIngredient);
+      const { nutriScore } =
+        ingredientRows.length === 0
+          ? { nutriScore: null }
+          : { nutriScore: computeRecipeNutriScore(nutriScoreIngredients, servings).result };
+
       return {
         id: row.id as string,
         name: row.name as string,
-        servings: row.servings as number,
+        servings,
         tags: (row.tags as string[]) ?? [],
-        ingredientCount: ingredients.length,
+        ingredientCount: ingredientRows.length,
         photoUrl: await signPhotoUrl(row.photo_storage_path as string | null),
         photoStoragePath: row.photo_storage_path as string | null,
-        ...computeMacroTotals(ingredients, row.servings as number),
+        nutriScore,
+        ...computeMacroTotals(ingredientRows, servings),
       };
     })
   );
@@ -170,18 +243,22 @@ export async function getRecipeDetail(recipeId: string): Promise<RecipeDetail> {
 
   const { data: ingredientRows, error: ingredientsError } = await supabase
     .from('recipe_ingredients')
-    .select('id, name, quantity_grams, calories, protein, carbs, fat, source, source_id')
+    .select(
+      `id, name, source, source_id, ${RECIPE_INGREDIENT_NUTRIENT_COLUMNS}`
+    )
     .eq('recipe_id', recipeId)
     .order('sort_order', { ascending: true });
 
   if (ingredientsError) throw ingredientsError;
 
   const ingredients = (ingredientRows ?? []).map(mapIngredientRow);
+  const servings = recipe.servings as number;
+  const { nutriScore, gramsPerServing } = recipeNutriScore(ingredients, servings);
 
   return {
     id: recipe.id as string,
     name: recipe.name as string,
-    servings: recipe.servings as number,
+    servings,
     tags: (recipe.tags as string[]) ?? [],
     instructions: recipe.instructions as string,
     prepMinutes: recipe.prep_minutes as number,
@@ -190,7 +267,9 @@ export async function getRecipeDetail(recipeId: string): Promise<RecipeDetail> {
     photoUrl: await signPhotoUrl(recipe.photo_storage_path as string | null),
     photoStoragePath: recipe.photo_storage_path as string | null,
     ingredients,
-    ...computeMacroTotals(ingredients, recipe.servings as number),
+    nutriScore,
+    nutriScoreGramsPerServing: gramsPerServing,
+    ...computeMacroTotals(ingredients, servings),
   };
 }
 
@@ -305,6 +384,11 @@ export async function addRecipeIngredient(recipeId: string, ingredient: RecipeIn
     protein: ingredient.protein,
     carbs: ingredient.carbs,
     fat: ingredient.fat,
+    sugars: ingredient.sugars,
+    saturated_fat: ingredient.saturatedFat,
+    sodium_mg: ingredient.sodiumMg,
+    fiber: ingredient.fiber,
+    fruit_veg_legume_nut_percent: ingredient.fruitVegLegumeNutPercent,
     source: ingredient.source,
     source_id: ingredient.sourceId,
     sort_order: sortOrder,

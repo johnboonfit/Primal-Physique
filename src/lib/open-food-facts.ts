@@ -5,6 +5,8 @@
  * this app writes back to it.
  */
 
+import { estimateFruitVegLegumeNutPercentFromCategory } from '@/lib/nutri-score';
+
 const SEARCH_URL = 'https://world.openfoodfacts.org/cgi/search.pl';
 const PRODUCT_URL = 'https://world.openfoodfacts.org/api/v2/product';
 
@@ -23,11 +25,50 @@ export type FoodSearchResult = {
   proteinPer100g: number | null;
   carbsPer100g: number | null;
   fatPer100g: number | null;
+  /** The remaining inputs the Nutri-Score formula needs beyond the four
+   * basic macros above — see nutri-score.ts for how they're combined. */
+  sugarsPer100g: number | null;
+  saturatedFatPer100g: number | null;
+  sodiumMgPer100g: number | null;
+  fiberPer100g: number | null;
+  /** Always a number (0 or 100 from the category-based estimate, or
+   * whatever Open Food Facts itself computed) -- never null, unlike the
+   * other Nutri-Score inputs above, since both search sources always
+   * fall back to a category guess rather than leaving this unset. */
+  fruitVegLegumeNutPercent: number;
 };
 
 function toNumberOrNull(value: unknown): number | null {
   const num = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+/**
+ * Open Food Facts sometimes only has salt (g), not sodium — salt is
+ * 2.5x sodium by mass (table salt is sodium chloride; the conversion
+ * factor comes from the atomic weight ratio), so sodium(mg) =
+ * salt(g) * 1000 / 2.5 = salt(g) * 400.
+ */
+function sodiumMgFromNutriments(nutriments: Record<string, unknown>): number | null {
+  const sodium = toNumberOrNull(nutriments['sodium_100g']);
+  if (sodium !== null) return sodium * 1000; // OFF reports sodium_100g in grams
+
+  const salt = toNumberOrNull(nutriments['salt_100g']);
+  if (salt === null) return null;
+  return salt * 400;
+}
+
+/**
+ * Open Food Facts occasionally has this exact estimate pre-computed from
+ * a product's ingredient list — when it's there, it's a better number
+ * than our own category-based guess, so it's used first.
+ */
+function fruitVegLegumeNutPercent(nutriments: Record<string, unknown>, categoriesTags: string[]): number {
+  const estimate = toNumberOrNull(nutriments['fruits-vegetables-nuts-estimate-from-ingredients_100g']);
+  if (estimate !== null) return estimate;
+
+  const categoryText = categoriesTags.join(' ');
+  return estimateFruitVegLegumeNutPercentFromCategory(categoryText || null);
 }
 
 /**
@@ -68,7 +109,7 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
     // "chicken" with nothing usable in the top results.
     sort_by: 'unique_scans_n',
     page_size: '50',
-    fields: 'code,product_name,brands,nutriments',
+    fields: 'code,product_name,brands,nutriments,categories_tags',
   });
 
   const response = await fetch(`${SEARCH_URL}?${params.toString()}`, {
@@ -90,6 +131,7 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
   return (data.products ?? [])
     .map((product) => {
       const nutriments = (product.nutriments as Record<string, unknown> | undefined) ?? {};
+      const categoriesTags = (product.categories_tags as string[] | undefined) ?? [];
       return {
         id: (product.code as string | undefined) || (product.product_name as string | undefined) || '',
         name: (product.product_name as string | undefined)?.trim() ?? '',
@@ -98,6 +140,11 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
         proteinPer100g: toNumberOrNull(nutriments['proteins_100g']),
         carbsPer100g: toNumberOrNull(nutriments['carbohydrates_100g']),
         fatPer100g: toNumberOrNull(nutriments['fat_100g']),
+        sugarsPer100g: toNumberOrNull(nutriments['sugars_100g']),
+        saturatedFatPer100g: toNumberOrNull(nutriments['saturated-fat_100g']),
+        sodiumMgPer100g: sodiumMgFromNutriments(nutriments),
+        fiberPer100g: toNumberOrNull(nutriments['fiber_100g']),
+        fruitVegLegumeNutPercent: fruitVegLegumeNutPercent(nutriments, categoriesTags),
       };
     })
     // A result with no name or no calorie figure isn't useful to log
@@ -124,7 +171,7 @@ export async function getProductByBarcode(barcode: string): Promise<FoodSearchRe
   const trimmed = barcode.trim();
   if (!trimmed) return null;
 
-  const params = new URLSearchParams({ fields: 'code,product_name,brands,nutriments' });
+  const params = new URLSearchParams({ fields: 'code,product_name,brands,nutriments,categories_tags' });
 
   const response = await fetch(`${PRODUCT_URL}/${encodeURIComponent(trimmed)}.json?${params.toString()}`, {
     headers: {
@@ -141,6 +188,7 @@ export async function getProductByBarcode(barcode: string): Promise<FoodSearchRe
   if (data.status !== 1 || !data.product) return null;
 
   const nutriments = (data.product.nutriments as Record<string, unknown> | undefined) ?? {};
+  const categoriesTags = (data.product.categories_tags as string[] | undefined) ?? [];
   const name = (data.product.product_name as string | undefined)?.trim() ?? '';
   const caloriesPer100g = caloriesFromNutriments(nutriments);
 
@@ -154,5 +202,10 @@ export async function getProductByBarcode(barcode: string): Promise<FoodSearchRe
     proteinPer100g: toNumberOrNull(nutriments['proteins_100g']),
     carbsPer100g: toNumberOrNull(nutriments['carbohydrates_100g']),
     fatPer100g: toNumberOrNull(nutriments['fat_100g']),
+    sugarsPer100g: toNumberOrNull(nutriments['sugars_100g']),
+    saturatedFatPer100g: toNumberOrNull(nutriments['saturated-fat_100g']),
+    sodiumMgPer100g: sodiumMgFromNutriments(nutriments),
+    fiberPer100g: toNumberOrNull(nutriments['fiber_100g']),
+    fruitVegLegumeNutPercent: fruitVegLegumeNutPercent(nutriments, categoriesTags),
   };
 }

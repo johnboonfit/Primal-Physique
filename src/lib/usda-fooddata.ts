@@ -1,4 +1,5 @@
 import type { FoodSearchResult } from '@/lib/open-food-facts';
+import { estimateFruitVegLegumeNutPercentFromCategory } from '@/lib/nutri-score';
 
 /**
  * A thin client for USDA FoodData Central's public search API — the
@@ -34,6 +35,17 @@ function findNutrient(nutrients: UsdaNutrient[], name: string, unit?: string): n
     return true;
   });
   return typeof match?.value === 'number' ? match.value : null;
+}
+
+/** Tries each name in turn and returns the first match — USDA's data
+ * types don't all name the same nutrient identically (e.g. some report
+ * "Sugars, total including NLEA", older records just "Sugars, total"). */
+function findNutrientAny(nutrients: UsdaNutrient[], names: string[], unit?: string): number | null {
+  for (const name of names) {
+    const value = findNutrient(nutrients, name, unit);
+    if (value !== null) return value;
+  }
+  return null;
 }
 
 export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
@@ -90,6 +102,16 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
         proteinPer100g: findNutrient(nutrients, 'Protein'),
         carbsPer100g: findNutrient(nutrients, 'Carbohydrate, by difference'),
         fatPer100g: findNutrient(nutrients, 'Total lipid (fat)'),
+        sugarsPer100g: findNutrientAny(nutrients, ['Sugars, total including NLEA', 'Sugars, total']),
+        saturatedFatPer100g: findNutrient(nutrients, 'Fatty acids, total saturated'),
+        sodiumMgPer100g: findNutrient(nutrients, 'Sodium, Na', 'mg'),
+        fiberPer100g: findNutrientAny(nutrients, ['Fiber, total dietary', 'Fiber, total dietary (AOAC 2011.25)']),
+        // USDA has no ready percentage either — same foodCategory-based
+        // estimate as Open Food Facts' category-tag fallback, see
+        // nutri-score.ts.
+        fruitVegLegumeNutPercent: estimateFruitVegLegumeNutPercentFromCategory(
+          (food.foodCategory as string | undefined) ?? null
+        ),
       };
     })
     .filter((result): result is FoodSearchResult => result.name.length > 0 && result.caloriesPer100g !== null);

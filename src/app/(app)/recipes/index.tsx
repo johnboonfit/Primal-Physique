@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { HeroStat } from '@/components/hero-stat';
+import { NutriScoreBadge } from '@/components/nutri-score-badge';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
@@ -100,7 +101,10 @@ export default function RecipesListScreen() {
                     </View>
                   )}
                   <View style={styles.cardInfo}>
-                    <ThemedText type="smallBold">{item.name}</ThemedText>
+                    <View style={styles.cardTitleRow}>
+                      <ThemedText type="smallBold">{item.name}</ThemedText>
+                      {item.nutriScore && <NutriScoreBadge grade={item.nutriScore.grade} size="small" />}
+                    </View>
                     <ThemedText type="small" themeColor="textSecondary">
                       {item.servings} serving{item.servings === 1 ? '' : 's'} · {item.ingredientCount} ingredient
                       {item.ingredientCount === 1 ? '' : 's'}
@@ -207,6 +211,11 @@ const styles = StyleSheet.create({
   cardInfo: {
     flex: 1,
     gap: Spacing.half,
+  },
+  cardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
   },
   deleteButton: {
     paddingHorizontal: Spacing.two,

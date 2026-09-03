@@ -1,17 +1,19 @@
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import { NutriScoreBadge } from '@/components/nutri-score-badge';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import type { FoodSource } from '@/lib/food-logs';
+import { computeNutriScore } from '@/lib/nutri-score';
 import {
   addRecipeIngredient,
   deleteRecipe,
@@ -47,6 +49,22 @@ function scaleMacro(per100g: number | null, grams: number): number | null {
 
 type SearchResult = Awaited<ReturnType<typeof searchFoods>>[number];
 
+/** Nutri-Score is a per-100g property of the food itself, independent of
+ * how much of it ends up in the recipe -- so a search result's grade is
+ * computed straight off its per-100g figures, before any quantity is
+ * even chosen. */
+function nutriScoreForResult(result: SearchResult) {
+  return computeNutriScore({
+    caloriesPer100g: result.caloriesPer100g,
+    sugarsPer100g: result.sugarsPer100g,
+    saturatedFatPer100g: result.saturatedFatPer100g,
+    sodiumMgPer100g: result.sodiumMgPer100g,
+    fiberPer100g: result.fiberPer100g,
+    proteinPer100g: result.proteinPer100g,
+    fruitVegLegumeNutPercent: result.fruitVegLegumeNutPercent,
+  });
+}
+
 export default function RecipeDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const theme = useTheme();
@@ -73,6 +91,7 @@ export default function RecipeDetailScreen() {
   const [quantityInput, setQuantityInput] = useState('100');
   const [savingIngredient, setSavingIngredient] = useState(false);
   const [ingredientError, setIngredientError] = useState<string | null>(null);
+  const [sortByNutriScore, setSortByNutriScore] = useState(false);
 
   const searchRequestId = useRef(0);
 
@@ -124,6 +143,21 @@ export default function RecipeDetailScreen() {
     return () => clearTimeout(timeout);
   }, [search, selected, pickerVisible]);
 
+  // Each result's grade is a fixed property of the food (per-100g),
+  // computed once per results list rather than recomputed on every
+  // render or every sort toggle flip.
+  const scoredResults = useMemo(
+    () => results.map((result) => ({ result, nutriScore: nutriScoreForResult(result) })),
+    [results]
+  );
+
+  const displayedResults = useMemo(() => {
+    if (!sortByNutriScore) return scoredResults;
+    // Best grade first (lowest score wins); USDA's own relevance order
+    // is the tiebreaker, since Array.prototype.sort is stable.
+    return [...scoredResults].sort((a, b) => a.nutriScore.score - b.nutriScore.score);
+  }, [scoredResults, sortByNutriScore]);
+
   const openIngredientPicker = () => {
     setSearch('');
     setResults([]);
@@ -131,6 +165,7 @@ export default function RecipeDetailScreen() {
     setSelected(null);
     setQuantityInput('100');
     setIngredientError(null);
+    setSortByNutriScore(false);
     setPickerVisible(true);
   };
 
@@ -220,6 +255,12 @@ export default function RecipeDetailScreen() {
           protein: scaleMacro(selected.proteinPer100g, parsedQuantity),
           carbs: scaleMacro(selected.carbsPer100g, parsedQuantity),
           fat: scaleMacro(selected.fatPer100g, parsedQuantity),
+          sugars: scaleMacro(selected.sugarsPer100g, parsedQuantity),
+          saturatedFat: scaleMacro(selected.saturatedFatPer100g, parsedQuantity),
+          sodiumMg: scaleMacro(selected.sodiumMgPer100g, parsedQuantity),
+          fiber: scaleMacro(selected.fiberPer100g, parsedQuantity),
+          // Not scaled -- see RecipeIngredientDraft.fruitVegLegumeNutPercent.
+          fruitVegLegumeNutPercent: selected.fruitVegLegumeNutPercent,
           source,
           sourceId: selected.id || null,
         },
@@ -287,7 +328,14 @@ export default function RecipeDetailScreen() {
               )}
 
               <ThemedView type="backgroundElement" style={styles.macroCard}>
-                <ThemedText type="smallBold">Per serving (calculated)</ThemedText>
+                <View style={styles.macroCardHeaderRow}>
+                  <ThemedText type="smallBold">Per serving (calculated)</ThemedText>
+                  {recipe.nutriScore && (
+                    <View style={styles.nutriScoreRow}>
+                      <NutriScoreBadge grade={recipe.nutriScore.grade} size="large" />
+                    </View>
+                  )}
+                </View>
                 {recipe.ingredients.length === 0 ? (
                   <ThemedText type="small" themeColor="textSecondary">
                     Add ingredients below to see this.
@@ -306,6 +354,13 @@ export default function RecipeDetailScreen() {
                       {round(recipe.totalProtein)}g protein · {round(recipe.totalCarbs)}g carbs ·{' '}
                       {round(recipe.totalFat)}g fat
                     </ThemedText>
+                    {recipe.nutriScoreGramsPerServing !== null && (
+                      <ThemedText type="small" themeColor="textSecondary" style={styles.macroTotalsHint}>
+                        Nutri-Score {recipe.nutriScore?.grade} is graded per 100g of this recipe (each serving is
+                        ~{Math.round(recipe.nutriScoreGramsPerServing)}g) -- the same basis every real product's
+                        badge uses.
+                      </ThemedText>
+                    )}
                   </>
                 )}
               </ThemedView>
@@ -391,17 +446,28 @@ export default function RecipeDetailScreen() {
                   </ThemedText>
                 )}
 
+                {results.length > 0 && (
+                  <Pressable onPress={() => setSortByNutriScore((current) => !current)} style={styles.sortToggle}>
+                    <ThemedText type="small" style={styles.sortToggleText}>
+                      {sortByNutriScore ? '✓ Sorted by Nutri-Score (best first)' : 'Sort by Nutri-Score'}
+                    </ThemedText>
+                  </Pressable>
+                )}
+
                 <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
-                  {results.map((result) => (
+                  {displayedResults.map(({ result, nutriScore }) => (
                     <Pressable key={result.id || result.name} onPress={() => selectResult(result)}>
                       <View style={styles.resultRow}>
-                        <ThemedText type="small" style={styles.resultName}>
-                          {result.name}
-                          {result.brand ? ` (${result.brand})` : ''}
-                        </ThemedText>
-                        <ThemedText type="small" themeColor="textSecondary">
-                          {Math.round(result.caloriesPer100g)} cal / 100g
-                        </ThemedText>
+                        <NutriScoreBadge grade={nutriScore.grade} size="small" />
+                        <View style={styles.resultInfo}>
+                          <ThemedText type="small" style={styles.resultName}>
+                            {result.name}
+                            {result.brand ? ` (${result.brand})` : ''}
+                          </ThemedText>
+                          <ThemedText type="small" themeColor="textSecondary">
+                            {Math.round(result.caloriesPer100g)} cal / 100g
+                          </ThemedText>
+                        </View>
                       </View>
                     </Pressable>
                   ))}
@@ -409,10 +475,13 @@ export default function RecipeDetailScreen() {
               </>
             ) : (
               <>
-                <ThemedText type="smallBold">
-                  {selected.name}
-                  {selected.brand ? ` (${selected.brand})` : ''}
-                </ThemedText>
+                <View style={styles.selectedHeaderRow}>
+                  <NutriScoreBadge grade={nutriScoreForResult(selected).grade} size="small" />
+                  <ThemedText type="smallBold">
+                    {selected.name}
+                    {selected.brand ? ` (${selected.brand})` : ''}
+                  </ThemedText>
+                </View>
                 <ThemedText type="small" themeColor="textSecondary">
                   Per 100g: {Math.round(selected.caloriesPer100g)} cal
                   {selected.proteinPer100g !== null ? ` · ${round(selected.proteinPer100g)}g protein` : ''}
@@ -547,6 +616,15 @@ const styles = StyleSheet.create({
     marginTop: Spacing.three,
     gap: Spacing.half,
   },
+  macroCardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  nutriScoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   macroHero: {
     fontSize: 22,
   },
@@ -621,13 +699,31 @@ const styles = StyleSheet.create({
     maxHeight: 280,
   },
   resultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingVertical: Spacing.two,
     borderBottomWidth: 1,
     borderBottomColor: Colors.backgroundSelected,
+    gap: Spacing.two,
+  },
+  resultInfo: {
+    flex: 1,
     gap: Spacing.half,
+  },
+  selectedHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
   },
   resultName: {
     fontWeight: '700',
+  },
+  sortToggle: {
+    alignSelf: 'flex-start',
+    marginBottom: Spacing.one,
+  },
+  sortToggleText: {
+    color: Accent,
   },
   primaryButton: {
     ...Glow.oxblood,

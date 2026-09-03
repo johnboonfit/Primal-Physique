@@ -1486,6 +1486,27 @@ Run `supabase/recipes.sql` in the SQL Editor after `chat-read-receipts.sql`. A c
 6. Change the **Edit → Servings** number and save. Confirm the per-serving figures on the detail screen change immediately (same totals, different divisor) — and that removing or adding an ingredient changes the totals, not the per-serving math itself.
 7. In Supabase, run `select name, calories, protein, carbs, fat from recipe_ingredients where recipe_id = '<id>';` and confirm every row matches what you hand-calculated in step 3 — this is the actual snapshot the app is reading from, not a live lookup.
 
+## Nutri-Score: computed from scratch, not read off anyone's badge
+
+Run `supabase/nutri-score.sql` in the SQL Editor after `recipes.sql`. Every ingredient and every recipe now carries a real A–E Nutri-Score grade — but it's calculated by this app's own implementation of the public formula, not copied from Open Food Facts' badge (which USDA FoodData Central, our primary generic-food source, doesn't have at all).
+
+**The formula, in plain terms.** Four "bad" nutrients (energy, sugar, saturated fat, sodium) each score 0–10 negative points from a fixed table of thresholds — the worse the number, the more points. Three "good" ones (fibre, protein, and % fruit/vegetable/legume/nut content) each score 0–5 positive points the same way. `score = negative − positive`, and the score maps to a grade: A (≤−1), B (0–2), C (3–10), D (11–18), E (≥19). One special rule: if a food is bad enough on the negative side (≥11 points) and isn't essentially all fruit/veg/nuts, its protein points get zeroed out — this is what stops something like a processed meat from using high protein to buy its way to a better grade.
+
+**The real gap this exposed: we weren't fetching most of the inputs.** USDA and Open Food Facts both have sugars, saturated fat, sodium, and fibre — this app just wasn't asking either one for them (only calories/protein/carbs/fat, since that's all food logging needed). `usda-fooddata.ts` and `open-food-facts.ts` now pull all four. Sodium sometimes only exists as "salt" in Open Food Facts data — converted at 1g salt = 400mg sodium (salt is sodium chloride; the ratio comes from their atomic weights).
+
+**The percentage neither source actually has: fruit/veg/legume/nut %.** Getting the *true* figure means parsing a product's ingredient list and estimating each ingredient's share — something neither database does for arbitrary foods. Instead, this app treats a food's own category as the estimate: if USDA's `foodCategory` or Open Food Facts' `categories_tags` says the food *is* a fruit, vegetable, legume, or nut/seed product, it counts as 100%; otherwise 0%. This is an approximation, clearly documented as one in `nutri-score.ts` — it's the same practical stand-in most Nutri-Score implementations outside the official EU/Open Food Facts tooling use. One deliberate fix worth calling out: this match is whole-word, not substring — a naive `.includes('nut')` check would wrongly call Nutella (which contains "hazelnut") 100% nuts.
+
+**Per-ingredient, in the Recipe Builder's "+ Add ingredient" search.** Every search result now shows its own Nutri-Score badge, computed straight from its per-100g figures (a food's grade doesn't depend on how much of it you're using). A "Sort by Nutri-Score" toggle re-ranks the same results best-grade-first.
+
+**Per-recipe, on the recipe's own view.** There's no client-facing recipe screen in this app yet — recipes aren't assigned to or visible to clients at all, that's a separate future chunk — so this badge is on the one recipe view that exists today (the coach's recipe detail screen and its list cards), ready to carry over the moment a client-facing view exists. The recipe's grade is calculated by summing every ingredient's already-cached, quantity-scaled nutrient snapshot (calories, sugars, saturated fat, sodium, fibre, protein — the fruit/veg/nut % weighted by ingredient mass), dividing by servings, then **re-normalizing to a per-100g basis** before running the same formula. That last step matters: Nutri-Score only ever means anything per 100g — every real product's badge is computed that way — so grading raw per-serving totals directly would make a 600g serving and a 150g serving incomparable, and wouldn't match how any real badge actually works. The detail screen shows exactly how many grams-per-serving the badge was normalized against, so "per 100g" has a concrete meaning for that specific recipe.
+
+**Verify a known food's computed score matches its real-world Nutri-Score grade:**
+1. Pick a food with a genuinely well-known, publicly documented Nutri-Score — e.g. Nutella (E) or a can of chickpeas (A). Avoid drinks: beverages use a different official points table this app doesn't implement, so they won't match.
+2. Look up that food's own published nutrition label (the manufacturer's site or the physical label) for per-100g: calories, sugar, saturated fat, salt (convert to sodium: mg = grams × 400), fibre, protein.
+3. Search for it in the Recipe Builder's ingredient picker and check the badge it's showing.
+4. If it doesn't match, the most likely reason is the fruit/veg/nut % estimate — check what category USDA/Open Food Facts filed it under; a miscategorized product is the one part of this calculation that's an approximation rather than exact.
+5. For the recipe-level badge: build a small recipe, hand-sum every ingredient's cached sugars/saturated fat/sodium/fibre/protein (visible via `select * from recipe_ingredients where recipe_id = '<id>';` in Supabase), divide by servings, then multiply by `100 / (total grams ÷ servings)` to get the per-100g figures the badge is actually graded on — run those through the point tables above by hand and confirm the grade matches.
+
 ## Project structure reference
 
 ```
@@ -1575,6 +1596,7 @@ src/
     emoji-picker.tsx             # <EmojiPicker> — fixed curated grid, not a full emoji-keyboard library
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
     question-answer-input.tsx    # <AnswerInput> — one render branch per answer kind (short_text/numeric/single_choice/multi_choice/scale), same reasoning; used by the check-in fill-out screen
+    nutri-score-badge.tsx         # <NutriScoreBadge grade size> — official Nutri-Score A-E colors, small (list/search rows) or large (recipe hero) size
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
   context/
@@ -1601,6 +1623,7 @@ src/
     community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file
     leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products (Club shown in the app as "Base")
     recipes.ts                    # createRecipe() / listRecipes() / getRecipeDetail() / updateRecipeDetails() / deleteRecipe() / addRecipeIngredient() / removeRecipeIngredient() / uploadRecipePhoto() / computeMacroTotals() — the one place recipe macros are summed and divided by servings, pure and reused by both the list and detail screens
+    nutri-score.ts                # computeNutriScore() — the public Nutri-Score formula from scratch (energy/sugar/sat-fat/sodium negative points, fruit-veg-nut%/fibre/protein positive points) / computeRecipeNutriScore() (sums ingredients, divides by servings, re-normalizes to per-100g before scoring) / estimateFruitVegLegumeNutPercentFromCategory() (category-based estimate, since neither data source has a real % for arbitrary foods)
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
@@ -1642,4 +1665,5 @@ supabase/
   chat.sql                                                                     # paste in after community-leaderboards.sql — conversations, messages (+ edit trigger, delete-for-everyone time window), message_hidden_for, chat-audio bucket, realtime publication, profiles.last_seen_at
   chat-read-receipts.sql                                                         # paste in after chat.sql — conversation_reads (one "read up to" cursor per person per conversation), added to the realtime publication too
   recipes.sql                                                                       # paste in after chat-read-receipts.sql — recipes + recipe_ingredients (coach-owned, macros always calculated not stored), recipe-photos bucket
+  nutri-score.sql                                                                     # paste in after recipes.sql — adds sugars/saturated_fat/sodium_mg/fiber/fruit_veg_legume_nut_percent columns to recipe_ingredients, no RLS changes needed
 ```
