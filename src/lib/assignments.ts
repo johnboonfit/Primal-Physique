@@ -41,6 +41,10 @@ export type AssignmentDetail = {
   workoutName: string;
   assignedDate: string;
   status: AssignmentStatus;
+  /** The client's own rating of how the WHOLE session felt, saved once
+   * at the end -- separate from the per-set RPE captured on each
+   * exercise's last set. Null until they've rated it. */
+  sessionRpe: number | null;
   exercises: {
     id: string;
     name: string;
@@ -85,6 +89,9 @@ export type CoachAssignmentDetail = {
   clientEmail: string;
   assignedDate: string;
   status: AssignmentStatus;
+  /** The client's own overall rating of the whole session -- null until
+   * they've rated it (or if the session isn't finished yet). */
+  sessionRpe: number | null;
   exercises: {
     id: string;
     name: string;
@@ -309,7 +316,7 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
   const { data, error } = await supabase
     .from('assignments')
     .select(
-      'id, assigned_date, status, workouts(name, workout_exercises(id, name, sets_reps, position, exercise_library_id, baseline_weight, baseline_reps, exercise_library(muscle_group, description), workout_exercise_sets(set_number, set_type)))'
+      'id, assigned_date, status, session_rpe, workouts(name, workout_exercises(id, name, sets_reps, position, exercise_library_id, baseline_weight, baseline_reps, exercise_library(muscle_group, description), workout_exercise_sets(set_number, set_type)))'
     )
     .eq('id', assignmentId)
     .single();
@@ -358,6 +365,7 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
     workoutName: workout?.name ?? 'Unknown workout',
     assignedDate: data.assigned_date as string,
     status: data.status as AssignmentStatus,
+    sessionRpe: data.session_rpe as number | null,
     exercises,
   };
 }
@@ -467,11 +475,17 @@ export async function getSetPrefills(
   return prefills;
 }
 
-/** Flips the assignment to 'completed' -- logging itself already
- * happened incrementally, set by set, via set-logging.ts as each one was
- * checked off, so there's nothing left to save here. */
-export async function finishSession(assignmentId: string) {
-  const { error } = await supabase.from('assignments').update({ status: 'completed' }).eq('id', assignmentId);
+/** Flips the assignment to 'completed' and saves the session-level RPE
+ * in the same write -- per-set logging already happened incrementally,
+ * set by set, via set-logging.ts as each one was checked off, so there's
+ * nothing else left to save here. sessionRpe is optional (null if the
+ * client skipped rating the session, same as any other RPE in this app
+ * -- never fabricated to fill the gap). */
+export async function finishSession(assignmentId: string, sessionRpe: number | null) {
+  const { error } = await supabase
+    .from('assignments')
+    .update({ status: 'completed', session_rpe: sessionRpe })
+    .eq('id', assignmentId);
   if (error) throw error;
 }
 
@@ -479,7 +493,7 @@ export async function getCoachAssignmentDetail(assignmentId: string): Promise<Co
   const { data, error } = await supabase
     .from('assignments')
     .select(
-      'id, assigned_date, status, profiles!client_id(email), workouts(name, workout_exercises(id, name, sets_reps, position))'
+      'id, assigned_date, status, session_rpe, profiles!client_id(email), workouts(name, workout_exercises(id, name, sets_reps, position))'
     )
     .eq('id', assignmentId)
     .single();
@@ -534,6 +548,7 @@ export async function getCoachAssignmentDetail(assignmentId: string): Promise<Co
     clientEmail: (data.profiles as unknown as { email: string } | null)?.email ?? 'Unknown client',
     assignedDate: data.assigned_date as string,
     status: data.status as AssignmentStatus,
+    sessionRpe: data.session_rpe as number | null,
     exercises,
   };
 }

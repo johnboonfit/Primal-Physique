@@ -36,11 +36,13 @@ import {
   type SetLogValues,
 } from '@/lib/set-logging';
 import { SET_TYPE_DESCRIPTIONS, setTypeLabel } from '@/lib/set-types';
+import { clearSessionSnapshot, loadSessionSnapshot, saveSessionSnapshot } from '@/lib/session-snapshot';
 import { awardWorkoutXp } from '@/lib/xp';
 
 const DEFAULT_REST_SECONDS = 90;
 const REST_STEP_SECONDS = 15;
 const FLUSH_INTERVAL_MS = 20000;
+const SNAPSHOT_INTERVAL_MS = 10 * 60 * 1000;
 
 /** A sensible starting value per answer kind for a not-yet-answered
  * readiness question -- 0/blank would be a real (wrong) answer for a
@@ -144,6 +146,23 @@ export default function AssignedWorkoutDetailScreen() {
   const [restSecondsLeft, setRestSecondsLeft] = useState<number | null>(null);
   const restIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // The client's own rating of how the WHOLE session felt -- separate
+  // from the per-set RPE captured on each exercise's last set, saved
+  // once, at the same time the session is marked complete.
+  const [sessionRpe, setSessionRpe] = useState<number | null>(null);
+
+  // Kept in sync via effects below so the 10-minute snapshot timer
+  // always reads the LATEST values, without resetting the timer itself
+  // every time a set row or the session RPE changes.
+  const setRowsRef = useRef(setRows);
+  const sessionRpeRef = useRef(sessionRpe);
+  useEffect(() => {
+    setRowsRef.current = setRows;
+  }, [setRows]);
+  useEffect(() => {
+    sessionRpeRef.current = sessionRpe;
+  }, [sessionRpe]);
+
   const load = async () => {
     if (!id || !clientId) return;
     setLoading(true);
@@ -157,6 +176,7 @@ export default function AssignedWorkoutDetailScreen() {
       ]);
 
       setDetail(assignmentData);
+      setSessionRpe(assignmentData.sessionRpe);
       setReadiness(readinessData);
       setSwaps(swapMap);
       setLibraryExercises(library);
@@ -201,6 +221,25 @@ export default function AssignedWorkoutDetailScreen() {
           rows[key] = logged ? loggedSetRow(logged) : blankSetRow(prefillMap[key]);
         }
       });
+
+      // Restore anything the 10-minute snapshot caught that the per-set
+      // system never did -- ONLY for sets still unchecked. A checked set
+      // is already authoritative from the server/local per-set cache
+      // above; this is strictly a safety net under that, never a
+      // replacement for it, and never touches a finished session.
+      if (assignmentData.status === 'pending') {
+        const snapshot = await loadSessionSnapshot(assignmentData.id);
+        if (snapshot) {
+          for (const [key, snapshotRow] of Object.entries(snapshot.setRows)) {
+            if (rows[key] && !rows[key].checked) {
+              rows[key] = { ...rows[key], weight: snapshotRow.weight, reps: snapshotRow.reps, rpe: snapshotRow.rpe };
+            }
+          }
+          if (assignmentData.sessionRpe === null && snapshot.sessionRpe !== null) {
+            setSessionRpe(snapshot.sessionRpe);
+          }
+        }
+      }
       setSetRows(rows);
 
       // Best-effort retry of anything left over from a previous visit --
@@ -231,6 +270,27 @@ export default function AssignedWorkoutDetailScreen() {
     }, FLUSH_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [id, clientId]);
+
+  // Belt-and-braces on top of the per-set system above: every 10 minutes
+  // while the session is still open and pending, snapshot EVERYTHING
+  // currently on screen (typed values on sets that haven't even been
+  // checked yet, which the per-set system never captures at all) to its
+  // own local storage spot, and give the per-set sync queue another
+  // chance to retry beyond its own more frequent loop. Reads the refs,
+  // not the state directly, so this doesn't reset the 10-minute clock
+  // every time a field changes.
+  useEffect(() => {
+    if (!id || !clientId || detail?.status !== 'pending') return;
+    const interval = setInterval(() => {
+      saveSessionSnapshot(id, {
+        setRows: setRowsRef.current,
+        sessionRpe: sessionRpeRef.current,
+        savedAt: new Date().toISOString(),
+      }).catch((err) => console.error('Session snapshot failed:', err));
+      flushPendingSetLogs(id, clientId).catch((err) => console.error('Flush failed:', err));
+    }, SNAPSHOT_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [id, clientId, detail?.status]);
 
   useEffect(() => {
     return () => {
@@ -441,7 +501,7 @@ export default function AssignedWorkoutDetailScreen() {
     setFinishing(true);
     setFinishError(null);
     try {
-      await finishSession(detail.id);
+      await finishSession(detail.id, sessionRpe);
       try {
         await awardWorkoutXp(clientId, detail.id, todayISODate());
       } catch (xpErr) {
@@ -449,6 +509,7 @@ export default function AssignedWorkoutDetailScreen() {
       }
       await flushPendingSetLogs(detail.id, clientId);
       await clearLocalSetLogsIfFullySynced(detail.id);
+      await clearSessionSnapshot(detail.id);
       await load();
     } catch (err) {
       setFinishError(getErrorMessage(err, 'Something went wrong finishing this session.'));
@@ -690,6 +751,27 @@ export default function AssignedWorkoutDetailScreen() {
                     );
                   })}
 
+                  {detail.exercises.length > 0 && (
+                    <ThemedView type="backgroundElement" style={styles.sessionRpeCard}>
+                      <ThemedText type="smallBold">How did the whole session feel?</ThemedText>
+                      <ThemedText type="small" themeColor="textSecondary" style={styles.sessionRpeSubtitle}>
+                        Your overall rating for the session -- separate from each exercise's own RPE above.
+                      </ThemedText>
+                      {detail.status === 'pending' ? (
+                        <AnswerInput
+                          answerKind="scale"
+                          config={{ min: 1, max: 10 }}
+                          value={sessionRpe}
+                          onChange={(value) => setSessionRpe(typeof value === 'number' ? value : null)}
+                        />
+                      ) : (
+                        <ThemedText type="smallBold">
+                          {sessionRpe !== null ? `${sessionRpe}/10` : 'Not rated'}
+                        </ThemedText>
+                      )}
+                    </ThemedView>
+                  )}
+
                   {setError_ && <ThemedText style={styles.error}>{setError_}</ThemedText>}
                   {finishError && <ThemedText style={styles.error}>{finishError}</ThemedText>}
 
@@ -702,7 +784,7 @@ export default function AssignedWorkoutDetailScreen() {
                         <ActivityIndicator color={Colors.text} />
                       ) : (
                         <ThemedText type="smallBold" style={styles.primaryButtonText}>
-                          Finish Session
+                          Mark Workout Complete
                         </ThemedText>
                       )}
                     </Pressable>
@@ -817,6 +899,15 @@ const styles = StyleSheet.create({
     padding: Spacing.three,
     alignItems: 'center',
     gap: Spacing.one,
+  },
+  sessionRpeCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.two,
+    marginTop: Spacing.three,
+  },
+  sessionRpeSubtitle: {
+    marginTop: -Spacing.one,
   },
   restTimerValue: {
     fontSize: 36,

@@ -1712,6 +1712,30 @@ No new migration — every table and RLS policy this needed already existed (`wo
 3. As that client, confirm the pending session is gone from Up Next and the Calendar, but the completed one still shows in their history exactly as before.
 4. Run `select archived from programme_blocks where id = '<programme id>';` — confirm `true`, and confirm the row (and its weeks/workouts/logs) still exist rather than being gone.
 
+## Session-level RPE, Mark Workout Complete, and a 10-minute background snapshot
+
+Run `supabase/session-rpe.sql` in the SQL Editor after `readiness-client-access.sql`. Three small additions on top of the live session screen, all client-facing.
+
+**Session-level RPE is one number per session, not per set.** It lives directly on `assignments.session_rpe` — a single column, not a new table, since there's exactly one of it per session, same reasoning as `assigned_date` or `status` living there. It's a completely separate value from the per-exercise RPE the live session screen already asks for after each exercise's last set: that one is "how hard did THIS exercise feel," this one is "how did the WHOLE session feel," asked once, at the bottom of the screen. `assignments` already had its `UPDATE` privilege locked down to an explicit column allow-list (`reschedule.sql`'s fix for the same kind of gap `lock-coach-role.sql` and others closed elsewhere) — this migration adds `session_rpe` to that list; skipping it would make the save fail with a real Postgres permission error the moment it's used.
+
+**"Mark Workout Complete" is the existing finish button, not a new one.** `finishSession()` now takes the session RPE as a second argument and saves it in the exact same database write that flips `status` to `completed` — one write, not two. XP and streaks needed no new "trigger": XP was already awarded right there in the same handler, and the streak (`src/lib/streak.ts`) is a pure calculation read fresh from completed assignments wherever it's shown, so it reflects a just-finished session the instant that write lands, automatically. The rating is optional — skipping it saves `null`, same as this app's standing rule against fabricating a number nobody actually gave it.
+
+**The 10-minute snapshot is a safety net layered ON TOP of the live session screen's existing local-cache system, not a replacement for it.** That system (from the live session screen chunk) only ever saves a set's values the instant it's *checked complete* — a weight typed into a box that's never been checked was never captured anywhere before this. Every 10 minutes while a session is open and still pending, a separate timer:
+1. Writes a full snapshot of everything currently on screen — every set's typed weight/reps/RPE, checked or not, plus the session-level RPE if started — to its own spot in on-device storage (`src/lib/session-snapshot.ts`), independent of any check action.
+2. Also re-triggers the existing per-set sync retry, as an extra, less-frequent chance for anything stuck to get pushed, on top of that system's own 20-second loop.
+
+On reopening the screen, that snapshot is checked: for any set that's still *unchecked*, whatever was in its boxes at the last snapshot is restored into the form. A set that's already checked is left alone — the per-set system is the authority there; this only ever fills the specific gap that system doesn't cover. The snapshot is deleted the moment a session is actually marked complete, same as the per-set cache already is.
+
+**Verify all three, in one session:**
+1. Open a pending workout as a client. Confirm a "How did the whole session feel?" 1–10 selector appears near the bottom, below the exercises — and confirm it's visually distinct from any per-exercise RPE row above it (those only appear on an exercise's last set).
+2. Log at least one set normally, rate the session, and tap **Mark Workout Complete**. Confirm the screen flips to Completed, the session RPE becomes read-only showing what you picked, and:
+   ```sql
+   select status, session_rpe from assignments where id = '<this assignment id>';
+   ```
+   shows both saved together.
+3. Confirm XP and the streak reflect the session the same way they already did before this chunk — no separate step needed to "trigger" either.
+4. For the snapshot: open a different pending session, type a weight/reps into a set WITHOUT checking it off, and leave the screen open at least 10 minutes (or force it sooner for testing by temporarily lowering `SNAPSHOT_INTERVAL_MS` in `assigned/[id].tsx`). Force-close the app and reopen that same session. Confirm the unchecked set still shows what you typed. Confirm a checked set's values always come from the server/per-set cache regardless — this mechanism never overrides those.
+
 ## Project structure reference
 
 ```
@@ -1763,7 +1787,7 @@ src/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of assignments, with status
         new.tsx          # pick workout + client + date, save
-        [id].tsx          # coach's view of one assignment — prescribed vs. actual, one row per logged SET now, not one per exercise
+        [id].tsx          # coach's view of one assignment — prescribed vs. actual, one row per logged SET, plus the client's own overall session RPE once completed
       habits/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of habits the coach has created, with Archive
@@ -1779,7 +1803,7 @@ src/
         [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
         assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
       assigned/
-        [id].tsx          # client's live session screen — readiness gate first if unanswered, then per-SET checkboxes (weight/reps/RPE, prefilled: previous session > coach baseline > empty with a hint, always editable), tagged sets show their technique label + instructions, checking a set auto-starts an editable rest timer, a Swap link opens same-muscle-group alternatives (session-only), Finish Session locks it read-only — every set is cached to on-device storage the instant it's checked and synced to Supabase in the background, so nothing is lost to a dropped connection
+        [id].tsx          # client's live session screen — readiness gate first if unanswered, then per-SET checkboxes (weight/reps/RPE, prefilled: previous session > coach baseline > empty with a hint, always editable), tagged sets show their technique label + instructions, checking a set auto-starts an editable rest timer, a Swap link opens same-muscle-group alternatives (session-only), an overall session-RPE selector near the bottom, Mark Workout Complete saves it and locks the screen read-only — every set is cached to on-device storage the instant it's checked and synced to Supabase in the background (see set-logging.ts), with a 10-minute full-screen snapshot (session-snapshot.ts) as a second safety net underneath that, so nothing is lost to a dropped connection or an app crash mid-set
       checkins/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
@@ -1822,7 +1846,7 @@ src/
     set-types.ts           # SET_TYPES / SET_TYPE_DESCRIPTIONS -- the four set-tagging options and their fixed, built-in technique explanations (Drop Set/Rest-Pause/FST-7; Normal has none)
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() (excludes an archived/unassigned instance) / updateProgrammeName() / archiveProgramme() (a coach's own template) / unassignProgramme() (a client's assigned instance -- archives it and its own workouts) / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app; both now include each exercise's description
-    assignments.ts         # coach + client assignment database calls; getAssignmentDetail() (prescribed exercises + tagged sets, no logged data — see set-logging.ts) / getSetPrefills() — the per-SET weight/reps fallback chain (that exact set number's previous session by exercise_library_id, then coach baseline, then nothing fabricated) / finishSession() (just flips status — logging already happened incrementally) / getCoachAssignmentDetail() (per-set loggedSets[] now, not one logged value per exercise) / listClientStandaloneAssignments() (one client's one-off workouts, excludes programme sessions) / unassignWorkout() (deletes a pending assignment outright -- refuses one with logged sets)
+    assignments.ts         # coach + client assignment database calls; getAssignmentDetail() (prescribed exercises + tagged sets + sessionRpe, no per-set logged data — see set-logging.ts) / getSetPrefills() — the per-SET weight/reps fallback chain (that exact set number's previous session by exercise_library_id, then coach baseline, then nothing fabricated) / finishSession() (flips status AND saves the session-level RPE in one write — per-set logging already happened incrementally) / getCoachAssignmentDetail() (per-set loggedSets[] + sessionRpe) / listClientStandaloneAssignments() (one client's one-off workouts, excludes programme sessions) / unassignWorkout() (deletes a pending assignment outright -- refuses one with logged sets)
     clients.ts               # listClients() / getClient() — coach-facing client roster, single-coach app so any coach sees any client
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() / listFoodLogHistory() / deleteFoodLog() — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
@@ -1849,6 +1873,7 @@ src/
     readiness.ts                    # getReadinessFormId() / setReadinessFormId() (app_settings.readiness_form_id, the one active questionnaire) / getReadinessStatusForAssignment() (the active form's questions + whatever THIS session has answered so far) / submitReadinessResponses() -- deliberately not built on form_assignments/form_check_ins, see readiness.sql
     exercise-swaps.ts                # listExerciseSwapsForAssignment() / swapExerciseForSession() / undoExerciseSwap() -- session-only substitutions in assignment_exercise_swaps; never touches workout_exercises or the underlying programme
     set-logging.ts                    # saveSetLog() / deleteSetLog() — write to AsyncStorage first (the only thing the caller awaits), then best-effort push to Supabase, silently queuing on failure; flushPendingSetLogs() retries anything still queued (idempotent upsert, safe to retry); getMergedSetLogs() — server-confirmed logs overridden by anything still unsynced locally
+    session-snapshot.ts                # saveSessionSnapshot() / loadSessionSnapshot() / clearSessionSnapshot() — a 10-minute-interval safety net ON TOP of set-logging.ts: snapshots every set's typed values (checked or not) plus the session RPE to AsyncStorage, restoring only into still-UNCHECKED sets on reopen; never overrides anything the per-set system already has
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
@@ -1892,4 +1917,5 @@ supabase/
   exercise-swaps.sql                                                                          # paste in after readiness.sql — assignment_exercise_swaps (session-only exercise substitution, never mutates workout_exercises)
   live-session.sql                                                                              # paste in after exercise-swaps.sql — workout_logs.set_number/rpe + a unique (assignment_id, exercise_id, set_number) constraint (what makes the local-cache sync idempotent), client update/delete policies for editing/unchecking a set
   readiness-client-access.sql                                                                     # paste in after live-session.sql — fixes a real RLS gap: a client never had read access to the active readiness form itself (only to ones reached via form_assignments/form_check_ins, which the readiness feature deliberately bypasses) — every workout failed to load with "Cannot coerce the result to a single JSON object" until this ran
+  session-rpe.sql                                                                                   # paste in after readiness-client-access.sql — assignments.session_rpe (the client's overall rating of the whole session) + the column-level grant a client needs to actually save it
 ```

@@ -68,6 +68,12 @@ export default function CoachAssignmentDetailScreen() {
                 </ThemedText>
               )}
 
+              {detail.status === 'completed' && detail.sessionRpe !== null && (
+                <ThemedText type="smallBold" style={styles.sessionRpe}>
+                  Overall session RPE: {detail.sessionRpe}/10
+                </ThemedText>
+              )}
+
               {detail.exercises.map((exercise) => (
                 <ThemedView key={exercise.id} type="backgroundElement" style={styles.exerciseCard}>
                   <ThemedText type="smallBold">{exercise.name}</ThemedText>
@@ -116,6 +122,9 @@ const styles = StyleSheet.create({
     color: Colors.tealBright,
   },
   pendingNote: {
+    marginBottom: Spacing.two,
+  },
+  sessionRpe: {
     marginBottom: Spacing.two,
   },
   loader: {
