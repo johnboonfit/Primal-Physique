@@ -1404,6 +1404,51 @@ Run `supabase/community-leaderboards.sql` in the SQL Editor after `community-mod
 3. As the coach, set that same client to Accelerator. As that client, reopen Leaderboards — confirm the real ranking now shows.
 4. As the coach, open Leaderboards yourself — confirm you always see the real ranking regardless of any tier, since tiers are a client-only concept.
 
+## Real-time Chat, from scratch: text, voice, edit, delete, presence
+
+Run `supabase/chat.sql` in the SQL Editor after `community-leaderboards.sql`. Worth knowing up front: **there was no existing messaging system at all** — the Chat tab was a placeholder ("coming soon") since the tab bar was first built. This chunk is the whole thing: conversations, messages, real-time delivery, and presence, plus voice messages, an emoji picker, edit, and two genuinely different delete modes on top.
+
+**One conversation per client**, not per (coach, client) pair — this is a single-coach app, so "the coach" doesn't need to be named; every other feature here already assumes the same thing. A client's Chat tab and the coach's per-client thread (`/messages/[clientId]`, reached from a new "Messages" inbox link on the coach's Home) are the same `<ChatThread>` component underneath — only which "other party" gets passed in differs.
+
+**Real-time delivery** is genuine Postgres realtime (`supabase.channel(...).on('postgres_changes', ...)`), not polling — new messages, edits, and deletes all reach the other side live because `chat.sql` adds `messages` to the `supabase_realtime` publication. **Presence** is deliberately *not* a realtime presence channel — it's a heartbeat: `profiles.last_seen_at` gets written every ~45 seconds while a chat screen is open (same "check while active, no background job" shape the weekly TDEE recalculation and missed-workout checks already use), and "online" is just "last seen within about 90 seconds," computed in the app, not stored anywhere.
+
+**Voice messages** are capped at exactly 15 minutes by passing `forDuration: 900` straight to `expo-audio`'s `recorder.record()` — the native recorder auto-stops itself at that mark, so there's no JS timer that could drift or get throttled in the background. They're stored the same way progress photos are: a private Storage bucket (`chat-audio`) plus signed URLs at read time, uploaded via the same base64-read-then-decode-to-ArrayBuffer approach already proven for photos and Community images (React Native's Blob/File upload path isn't reliable against Supabase Storage). New dependencies: `expo-audio` (recording + playback) and `expo-file-system` (reading the local recording as base64 before upload).
+
+**Emoji picker** is a fixed, curated grid (32 common emoji), not a full emoji-keyboard library — it's a composer accent, not a replacement for the OS keyboard's own emoji support, which still works fine on its own.
+
+**Edit** captures the pre-edit text automatically via a database trigger (`track_message_edit`) the first time a message's body actually changes — the app just writes new text with a plain update; it never has to check "is this the first edit?" itself. "Original isn't silently lost" means it's sitting right there in `original_body`, not that every subsequent edit is versioned.
+
+**Delete, both modes, genuinely different mechanisms, not just different labels:**
+- **Delete for me** — always available, either side, no time limit, and never touches the shared message row at all. It's a row in a separate `message_hidden_for` table (`message_id`, `user_id`). The message still exists, in full, for the other person; it's purely a per-viewer suppression, filtered out in the app when building the list.
+- **Delete for everyone** — sender-only, within 30 minutes of sending, and it actually clears the content (`body`/`audio_storage_path` set to null, `deleted_for_everyone_at` stamped) — genuinely gone for both sides, not hidden by a flag the UI happens to check. The 30-minute rule is enforced by `messages`' own update policy, evaluated against the row's real `created_at`, which a client can never rewrite (see the column-grant lockdown below) — so it's a real database rule, not a UI suggestion that stops asking after 30 minutes.
+
+**Why the 30-minute check is trustworthy:** the same column-level lockdown `xp.sql` first established gets applied to `messages` too — `authenticated` only ever has UPDATE on `(body, original_body, edited_at, deleted_for_everyone_at, audio_storage_path)`, never `created_at`, `sender_id`, `conversation_id`, or `kind`. Without that, a client could in principle rewrite their own message's `created_at` to a fresh timestamp and delete-for-everyone something from last week.
+
+**One access gap closed in passing:** clients have never been able to see the coach's own profile row (only the reverse existed). Needed now so a client's Chat screen can show the coach's name and online status — added as its own policy, using a new `is_client()` SECURITY DEFINER helper (mirroring `is_coach()`) rather than an inline subquery, since a policy on `profiles` querying `profiles` directly inside itself causes infinite recursion.
+
+**What's deliberately not built:** read receipts and an unread-message count. Nothing in this chunk's request needed them, and they're a genuinely separate feature (per-message read tracking) rather than a side effect of anything above — flagging the boundary rather than let it be a surprise later.
+
+**Verify text messaging and real-time delivery:**
+1. As a client, open Chat, send a message.
+2. As the coach, open Messages → that client — confirm it appears without needing to refresh (this is the realtime subscription, not a lucky refetch — leave the coach's screen open and send a second message from the client's side to be sure).
+3. Confirm the coach's Messages inbox shows that client with the right last-message preview and timestamp.
+
+**Verify voice messages and the 15-minute cap:**
+1. Record a short voice message (a few seconds) and send it — confirm it appears as a playable bubble with a duration, and that tapping play/pause actually plays it back for the other party too.
+2. To verify the cap without literally waiting 15 minutes, temporarily change `MAX_VOICE_MESSAGE_SECONDS` in `src/lib/chat.ts` to something like `10`, reload, record past 10 seconds, and confirm it auto-stops and sends by itself at exactly that mark, with no button press. Revert the change afterward — this is a temporary test hook, not something to ship changed.
+
+**Verify the emoji picker:** tap the 😊 button in the composer, pick a few emoji, confirm they land in the text field, send the message, confirm they render normally in the bubble (they're just Unicode characters).
+
+**Verify edit:** send a message, edit it, confirm the bubble now shows the new text with a small "edited" label, and confirm in Supabase (`select body, original_body, edited_at from messages where id = '<id>';`) that `original_body` holds the pre-edit text.
+
+**Verify the two delete modes are genuinely different — this is the one worth being careful about:**
+1. As the client, send a message. As the coach, delete it **for me** (long-press → Delete for me). Confirm: gone from the coach's view, but as the client, it's still sitting there completely unaffected.
+2. As the client, send another message. This time, as the **client** (the sender), delete it **for everyone**. Confirm it now shows "This message was deleted" on *both* sides.
+3. In Supabase, compare the two: `select id, body, deleted_for_everyone_at from messages where id in ('<id1>', '<id2>');` — the delete-for-me message still has its real `body` and `deleted_for_everyone_at` is null (only a row in `message_hidden_for` exists for the coach); the delete-for-everyone message has `body = null` and a real `deleted_for_everyone_at` timestamp.
+4. **The real proof the 30-minute window is a database rule:** send a message, then in Supabase's SQL Editor backdate it — `update messages set created_at = now() - interval '31 minutes' where id = '<id>';` — then, using **Impersonate user** as that message's sender, try `update messages set deleted_for_everyone_at = now(), body = null where id = '<id>';` directly. Confirm it's **rejected**. The app's UI would already have hidden the option by then anyway, but this proves the wall is real, the same way the Announcement and Block checks were proven earlier.
+
+**Verify presence:** open the app as a client and leave the Chat tab open — as the coach, open that client's thread and confirm it shows "🟢 Online." Background the client's app (or navigate away from Chat) and wait about 90 seconds — confirm it flips to "Offline" for the coach without either side needing to do anything.
+
 ## Project structure reference
 
 ```
@@ -1414,7 +1459,10 @@ src/
       login.tsx
       signup.tsx        # name/email/password only — no role choice; every signup is a client
     (app)/
-      home.tsx          # coach's home screen only; redirects clients to /client — includes a Community link
+      home.tsx          # coach's home screen only; redirects clients to /client — includes Community and Messages links
+      messages/
+        index.tsx        # coach-only inbox — every client, most-recently-messaged first, with a last-message preview and an online dot
+        [clientId].tsx     # coach's per-client thread — same <ChatThread> the client's own Chat tab uses
       community/
         index.tsx        # Posts/Leaderboards sub-tabs; Posts = shared feed + coach-only app-wide on/off switch + Moderation link + Report/Delete actions per post
         new.tsx           # compose a post — tag picker excludes Announcement entirely for a client account; shows a plain message instead of the form if this client is blocked
@@ -1462,7 +1510,7 @@ src/
         training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
-        chat.tsx             # Chat tab — placeholder ("coming soon"); no messaging system built yet
+        chat.tsx             # Chat tab — real messaging now: resolves/creates this client's conversation with "the coach", then renders <ChatThread>
         calendar.tsx        # Not a tab anymore, still a real route — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />, reached via Training's "View Calendar" link
   components/
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used by Momentum Score)
@@ -1480,6 +1528,8 @@ src/
     confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt — archive actions, Community's Delete/Block
     report-post-modal.tsx    # <ReportPostModal> — same Modal shape as ConfirmDialog plus a free-text optional reason field, kept separate since ConfirmDialog's callers all expect its fixed message-only shape
     leaderboard-panel.tsx     # Community → Leaderboards sub-tab content — This week/Lifetime toggle, ranked rows with a placeholder initials avatar, self-highlight; shows the locked/upsell state instead when the viewing client's tier doesn't have access
+    chat-thread.tsx             # <ChatThread> — the whole conversation view (messages, composer, voice recording, emoji picker, edit/delete actions, presence), shared identically by the client's Chat tab and the coach's per-client thread
+    emoji-picker.tsx             # <EmojiPicker> — fixed curated grid, not a full emoji-keyboard library
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
     question-answer-input.tsx    # <AnswerInput> — one render branch per answer kind (short_text/numeric/single_choice/multi_choice/scale), same reasoning; used by the check-in fill-out screen
   constants/
@@ -1503,6 +1553,7 @@ src/
     tdee.ts                   # calculateAndSaveTdee() (gated) / checkAndRecalculateTdeeIfDue() (weekly, on app open) / getLatestTdeeEstimate() / getTdeeConfidence() / getCalorieTarget()
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables; getCurrentWeekRange() exported so other "this week" features (the Leaderboard's weekly XP ranking) share the exact same Monday, not a second copy of the date math
+    chat.ts                      # getOrCreateConversation() / listMessages() / sendTextMessage() / sendVoiceMessage() / editMessage() / deleteMessageForMe() / deleteMessageForEveryone() / subscribeToConversation() (realtime) / updateLastSeen() / getLastSeen() / isOnline() / listCoachConversations() / getAnyCoach()
     compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
     community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file
     leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products (Club shown in the app as "Base")
@@ -1544,4 +1595,5 @@ supabase/
   community.sql                                                           # paste in after progress-photos.sql — app_settings singleton, profiles.community_hidden, community_posts, community-images bucket
   community-moderation.sql                                                 # paste in after community.sql — community_reports, community_posts delete policies, community_blocks + the blocked-can't-post insert check
   community-leaderboards.sql                                                 # paste in after community-moderation.sql — client_tiers (Club/Accelerator/Precision) + get_weekly_xp_leaderboard()/get_lifetime_xp_leaderboard() SECURITY DEFINER functions
+  chat.sql                                                                     # paste in after community-leaderboards.sql — conversations, messages (+ edit trigger, delete-for-everyone time window), message_hidden_for, chat-audio bucket, realtime publication, profiles.last_seen_at
 ```

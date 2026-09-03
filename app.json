@@ -34,7 +34,8 @@
         }
       ],
       "expo-camera",
-      "expo-image-picker"
+      "expo-image-picker",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true,
