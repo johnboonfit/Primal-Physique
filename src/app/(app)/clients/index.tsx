@@ -7,7 +7,8 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { complianceColor, getComplianceScore } from '@/lib/compliance';
-import { listClients, type ClientSummary } from '@/lib/clients';
+import { listClients, setClientStatus, type ClientSummary } from '@/lib/clients';
+import { getErrorMessage } from '@/lib/errors';
 import { CLIENT_TIERS, listClientTiers, setClientTier, type ClientTier } from '@/lib/leaderboard';
 
 export default function ClientsListScreen() {
@@ -18,6 +19,8 @@ export default function ClientsListScreen() {
   const [tiersByClient, setTiersByClient] = useState<Record<string, ClientTier>>({});
   const [savingTierId, setSavingTierId] = useState<string | null>(null);
   const [tierError, setTierError] = useState<string | null>(null);
+  const [savingStatusId, setSavingStatusId] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -83,6 +86,22 @@ export default function ClientsListScreen() {
     }
   };
 
+  // Fully reversible either direction -- pausing and reactivating are
+  // the exact same one-column write, just with the other value.
+  const handleToggleStatus = async (clientId: string, currentStatus: ClientSummary['status']) => {
+    setStatusError(null);
+    setSavingStatusId(clientId);
+    const nextStatus = currentStatus === 'active' ? 'paused' : 'active';
+    try {
+      await setClientStatus(clientId, nextStatus);
+      setClients((current) => current.map((client) => (client.id === clientId ? { ...client, status: nextStatus } : client)));
+    } catch (err) {
+      setStatusError(getErrorMessage(err, "Failed to update that client's status."));
+    } finally {
+      setSavingStatusId(null);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -95,6 +114,8 @@ export default function ClientsListScreen() {
         {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
         {tierError && <ThemedText style={styles.error}>{tierError}</ThemedText>}
+
+        {statusError && <ThemedText style={styles.error}>{statusError}</ThemedText>}
 
         {!loading && !error && clients.length === 0 && (
           <ThemedText themeColor="textSecondary" style={styles.empty}>
@@ -114,7 +135,18 @@ export default function ClientsListScreen() {
                 <ThemedView type="backgroundElement" style={styles.card}>
                   <Pressable style={styles.cardTouchable} onPress={() => router.push(`/clients/${item.id}`)}>
                     <View style={styles.cardInfo}>
-                      <ThemedText type="smallBold">{item.fullName || item.email}</ThemedText>
+                      <View style={styles.nameRow}>
+                        <ThemedText type="smallBold" style={item.status === 'paused' ? styles.pausedText : undefined}>
+                          {item.fullName || item.email}
+                        </ThemedText>
+                        {item.status === 'paused' && (
+                          <View style={styles.pausedBadge}>
+                            <ThemedText type="small" style={styles.pausedBadgeText}>
+                              Paused
+                            </ThemedText>
+                          </View>
+                        )}
+                      </View>
                       {item.fullName && (
                         <ThemedText type="small" themeColor="textSecondary">
                           {item.email}
@@ -145,6 +177,18 @@ export default function ClientsListScreen() {
                       );
                     })}
                   </View>
+                  <Pressable
+                    style={styles.statusRow}
+                    onPress={() => handleToggleStatus(item.id, item.status)}
+                    disabled={savingStatusId === item.id}>
+                    {savingStatusId === item.id ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <ThemedText type="small" style={item.status === 'active' ? styles.pauseAction : styles.reactivateAction}>
+                        {item.status === 'active' ? 'Pause client' : 'Reactivate client'}
+                      </ThemedText>
+                    )}
+                  </Pressable>
                 </ThemedView>
               );
             }}
@@ -196,6 +240,24 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: Spacing.half,
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  pausedText: {
+    color: Colors.textSecondary,
+  },
+  pausedBadge: {
+    borderWidth: 1,
+    borderColor: Accent,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 1,
+  },
+  pausedBadgeText: {
+    color: Accent,
+  },
   tierRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -206,6 +268,17 @@ const styles = StyleSheet.create({
   },
   tierInactive: {
     color: Colors.textSecondary,
+  },
+  statusRow: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.backgroundSelected,
+    paddingTop: Spacing.two,
+  },
+  pauseAction: {
+    color: Accent,
+  },
+  reactivateAction: {
+    color: Colors.tealBright,
   },
   backButton: {
     alignItems: 'center',

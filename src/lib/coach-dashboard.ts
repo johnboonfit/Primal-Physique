@@ -4,6 +4,11 @@ import { getOpenReports } from '@/lib/community';
 import { supabase } from '@/lib/supabase';
 
 export type CoachDashboardStats = {
+  /** Clients with status 'active' only -- a paused client is
+   * deliberately excluded from this specific count (it's the one place
+   * "Active" is a literal, displayed claim), but still appears
+   * everywhere else (roster, messaging, assigning) exactly as before;
+   * pausing never removes a client from the app, only from this number. */
   activeClients: number;
   /** Average Compliance Score across every client, same 0-28-day
    * calculation the Clients list already shows per client -- null only
@@ -44,7 +49,7 @@ export async function getCoachDashboardStats(): Promise<CoachDashboardStats> {
     validScores.length > 0 ? Math.round(validScores.reduce((sum, score) => sum + score, 0) / validScores.length) : null;
 
   return {
-    activeClients: clients.length,
+    activeClients: clients.filter((client) => client.status === 'active').length,
     avgCompliance,
     overdueCheckIns: overdueResult.count ?? 0,
     openReports: openReports.length,

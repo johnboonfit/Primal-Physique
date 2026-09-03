@@ -1838,6 +1838,26 @@ The client's Home tab had one full-width Momentum Score block and nothing else a
 2. Log a meal or two as a test client, confirm Calories Today updates to match `select sum(calories) from food_logs where client_id = '<id>' and log_date = current_date;` on reopening Home.
 3. Confirm the Steps tile always shows "--" / "Sync a wearable" in its own muted, dashed-border style — never a number, never styled like the other two.
 
+## Pausing a client — reversible, and it touches nothing else
+
+Added a `status` field to clients (`active` | `paused`) and the coach-side action to change it. Worth being upfront about: the user asked for this assuming the status field already existed in the data model — it didn't (`profiles` only ever had `role`), so this chunk adds the column and its RLS from scratch, not just a UI wired to something already there.
+
+**Pausing changes exactly one thing: the `status` column on that client's own profile row.** No workout, log, assignment, or message is touched, archived, or hidden — the client keeps full app access and every screen works for them exactly as before. The only visible effect anywhere in the app is cosmetic: a "Paused" badge next to their name on the Clients screen, and the coach dashboard's **Active Clients** count no longer includes them. Reactivating is the identical write with the other value — there's no separate "restore" path to get wrong.
+
+**Deliberately scoped narrow.** `listClients()` — the one function every coach screen shares (assigning workouts, messaging, the roster itself) — still returns every client regardless of status, unchanged. A paused client stays fully reachable everywhere except the one place "Active" is a literal, displayed claim (the dashboard count). Compliance scoring, Needs Attention, and the Recent Activity feed are also untouched — pausing doesn't hide a client's history from the coach, only from that one headline number. If you'd rather paused clients disappear from more places (the assign-workout picker, say), that's a follow-up, not a hidden side effect of this one.
+
+**A real gap closed while adding this, not left as a loose end**: Postgres column grants apply to every signed-in user, not "just coaches" — a bare `grant update (status)` would have technically let a client flip their *own* status via a direct API call (bypassing the app, which never shows them this control). A small trigger (`enforce_status_change_by_coach`) closes it: any actual change to `status` is rejected unless the person making it is a coach, no matter which row policy let the UPDATE statement through in the first place.
+
+**New migration**: `supabase/client-status.sql` — the `status` column, the coach's update policy (reusing `is_coach()` from `assignments.sql`), and that trigger. **Changed**: `clients.ts` (`ClientSummary.status`, new `setClientStatus()`), `coach-dashboard.ts` (Active Clients now actually filters on status), `clients/index.tsx` (the "Paused" badge + Pause/Reactivate action per row).
+
+**Verify it's genuinely non-destructive:**
+1. Note a client's row counts before pausing: `select (select count(*) from workout_logs where client_id = '<id>') as sets, (select count(*) from food_logs where client_id = '<id>') as meals, (select count(*) from assignments where client_id = '<id>') as assignments;`
+2. Pause them from the Clients screen. Re-run the exact same query — every count should be identical, because pausing never touches any of those tables.
+3. Confirm the paused client can still log in and use the app completely normally (log a set, send a message) — pausing is not a lockout.
+4. Confirm the coach dashboard's Active Clients count drops by exactly one, and the client now shows the "Paused" badge on the Clients screen.
+5. Reactivate them. Confirm the badge disappears and the dashboard count goes back up — same one-column write, opposite value.
+6. Optional, confirms the trigger: as the *client's own* logged-in session, try `update profiles set status = 'paused' where id = auth.uid();` directly in Supabase — it should fail with "Only a coach can change a client's status," even though that client can normally update other columns (like `full_name`) on their own row.
+
 ## Project structure reference
 
 ```
@@ -1896,7 +1916,7 @@ src/
         new.tsx          # pick client + habit name, save
       clients/
         _layout.tsx      # coach-only guard for everything below
-        index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge and a Tier: Base/Accelerator/Precision picker (coach-set, gates that client's Leaderboards access)
+        index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge, a Tier: Base/Accelerator/Precision picker (coach-set, gates that client's Leaderboards access), a "Paused" badge when relevant, and a Pause/Reactivate action
         [id].tsx          # one client's detail page — Programme section (Unassign) + Assigned Workouts section (one-off workouts, Unassign) + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete)
       forms/
         _layout.tsx      # coach-only guard for everything below
@@ -1955,7 +1975,7 @@ src/
     programmes.ts          # createProgramme() / listProgrammes() / getProgrammeDetail() / addProgrammeWeek() / duplicateProgramme() / assignProgrammeToClient() / getClientProgramme() (excludes an archived/unassigned instance) / updateProgrammeName() / archiveProgramme() (a coach's own template) / unassignProgramme() (a client's assigned instance -- archives it and its own workouts) / getActiveGoalModifier() / setGoalModifierPercent() / listClientPhases() / getPhaseForDate()
     exercise-library.ts     # listExerciseLibrarySummaries() / getExerciseDetail() — read-only, table seeded by SQL, not the app; both now include each exercise's description
     assignments.ts         # coach + client assignment database calls; getAssignmentDetail() (prescribed exercises + tagged sets + sessionRpe, no per-set logged data — see set-logging.ts) / getSetPrefills() — the per-SET weight/reps fallback chain (that exact set number's previous session by exercise_library_id, then coach baseline, then nothing fabricated) / finishSession() (flips status AND saves the session-level RPE in one write — per-set logging already happened incrementally) / getCoachAssignmentDetail() (per-set loggedSets[] + sessionRpe) / listClientStandaloneAssignments() (one client's one-off workouts, excludes programme sessions) / unassignWorkout() (deletes a pending assignment outright -- refuses one with logged sets)
-    clients.ts               # listClients() / getClient() — coach-facing client roster, single-coach app so any coach sees any client
+    clients.ts               # listClients() (every client regardless of status — every other coach screen still needs a paused client reachable) / getClient() / setClientStatus() (pause/reactivate — one column, fully reversible) — single-coach app so any coach sees any client
     food-logs.ts            # addFoodLog() / listFoodLogsForDate() / listFoodLogHistory() / deleteFoodLog() — stores a quantity-scaled macro snapshot, not a live link
     open-food-facts.ts       # getProductByBarcode() — live barcode lookup, used by the scanner; searchFoods() built but unused (USDA handles typed search)
     usda-fooddata.ts          # searchFoods() — live query against USDA FoodData Central; the active source for typed search
@@ -2029,4 +2049,5 @@ supabase/
   live-session.sql                                                                              # paste in after exercise-swaps.sql — workout_logs.set_number/rpe + a unique (assignment_id, exercise_id, set_number) constraint (what makes the local-cache sync idempotent), client update/delete policies for editing/unchecking a set
   readiness-client-access.sql                                                                     # paste in after live-session.sql — fixes a real RLS gap: a client never had read access to the active readiness form itself (only to ones reached via form_assignments/form_check_ins, which the readiness feature deliberately bypasses) — every workout failed to load with "Cannot coerce the result to a single JSON object" until this ran
   session-rpe.sql                                                                                   # paste in after readiness-client-access.sql — assignments.session_rpe (the client's overall rating of the whole session) + the column-level grant a client needs to actually save it
+  client-status.sql                                                                                   # paste in after session-rpe.sql — profiles.status ('active'/'paused'), the coach-only update policy, and a trigger closing the column-grant gap it would otherwise open (a client could flip their own status via a direct API call)
 ```
