@@ -204,6 +204,15 @@ export default function ClientTrainingScreen() {
           contentContainerStyle={styles.listContent}
           ListHeaderComponent={
             <>
+              {muscleCounts && (
+                <>
+                  <ThemedText type="smallBold" style={styles.sectionLabel}>
+                    This Week
+                  </ThemedText>
+                  <WorkoutAnalyserCard counts={muscleCounts} />
+                </>
+              )}
+
               {programmeLoading && <ActivityIndicator style={styles.loader} />}
               {!programmeLoading && programmeError && <ThemedText style={styles.error}>{programmeError}</ThemedText>}
               {!programmeLoading && !programmeError && programme && (
@@ -218,15 +227,6 @@ export default function ClientTrainingScreen() {
                 <ThemedText themeColor="textSecondary" style={styles.noProgramme}>
                   No programme assigned yet — check back once your coach assigns one.
                 </ThemedText>
-              )}
-
-              {muscleCounts && (
-                <>
-                  <ThemedText type="smallBold" style={styles.sectionLabel}>
-                    This Week
-                  </ThemedText>
-                  <WorkoutAnalyserCard counts={muscleCounts} />
-                </>
               )}
 
               <ThemedText type="smallBold" style={styles.sectionLabel}>

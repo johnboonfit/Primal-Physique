@@ -1759,7 +1759,7 @@ No new migration — everything this needs (`workout_logs.weight/reps/created_at
 6. If this session included a mid-session swap, confirm any PB check on that slot compared against the swapped-in exercise's own history, not the originally-prescribed exercise's.
 7. Tap **Done**, then reopen the same (now completed) assignment from Training or the Calendar — confirm it shows the ordinary read-only logged-sets view, not the scorecard again.
 
-## Workout Analyser: a weekly per-muscle-group heat-map on the Training tab
+## Volume Analyser: a weekly per-muscle-group heat-map on the Training tab
 
 No new migration — this reads data that already exists (`workout_logs`, `workout_exercises`, `assignment_exercise_swaps`, `exercise_library`), it's just never been aggregated by muscle group before.
 
@@ -1769,11 +1769,13 @@ No new migration — this reads data that already exists (`workout_logs`, `worko
 
 **Swap-aware, same rule as PBs and the scorecard**: a set logged against a slot that was swapped mid-session counts toward the *replacement* exercise's muscle group, not the originally-prescribed one — that's what was actually performed. The one accepted limitation carried over from the same prefill/scorecard logic: a swap is only checked for the assignment the set belongs to, not re-verified for consistency with any other session.
 
-**Tiers: green under 10 sets, yellow 10–19, red 20+**, per muscle group. These are real, deliberately non-brand colors (a universal traffic-light convention for a training-load warning) — the same reasoning `NutriScoreBadge` already established for using the real Nutri-Score palette instead of remapping into carbon/teal/oxblood. The **overall status badge** (Low/Moderate/High) takes the *worst* tier reached by any single muscle group, not an average — one muscle group pushed into the red is worth flagging on its own, and averaging it against several quiet ones would hide exactly what this card exists to catch.
+**Tiers: green under 10 sets, yellow 10–19, red 20+**, per muscle group — and **zero sets logged gets no color at all**, a plain neutral region, rather than being lumped in with "green" as if some real (if light) work had been done there. These are real, deliberately non-brand colors (a universal traffic-light convention for a training-load warning) — the same reasoning `NutriScoreBadge` already established for using the real Nutri-Score palette instead of remapping into carbon/teal/oxblood. The **overall status badge** (Low/Moderate/High) takes the *worst* tier reached by any single muscle group, not an average — one muscle group pushed into the red is worth flagging on its own, and averaging it against several quiet ones would hide exactly what this card exists to catch.
 
-**The heat-map is a simplified geometric body silhouette, not anatomical art** — rounded shapes standing in for chest/back/shoulders/arms/core/legs/calves, tap anywhere on it to flip between front and back. Chest and core only appear on the front (not visible from behind); back only appears on the back; shoulders/arms/legs/calves appear identically on both since they're visible either way and always carry the same count.
+**The heat-map is a proper muscular body silhouette, built from SVG paths** — shaped regions for chest/back/shoulders/arms/core/legs/calves (deltoid caps, pecs, a segmented six-pack, tapered biceps-to-forearms, quads, calves, and a back view with a trapezius/lat V-taper), each region mirrored left-right off a single authored path rather than hand-duplicated, with a thin dark outline separating adjacent regions the way a muscle-map diagram would. Tap anywhere on it to flip between front and back. Chest and core only appear on the front (not visible from behind); back only appears on the back; shoulders/arms/legs/calves appear identically on both since they're visible either way and always carry the same count.
 
-**New files**: `src/lib/muscle-group-analysis.ts` (`getWeeklyMuscleGroupSetCounts()`, `tierForSetCount()`, `overallVolumeStatus()`), `src/components/muscle-heatmap.tsx` (`<MuscleHeatmap>`, the tap-to-flip SVG diagram), `src/components/workout-analyser-card.tsx` (`<WorkoutAnalyserCard>` — the whole card: heatmap + exact-count list + status badge), wired into `client/training.tsx` between the Programme section and the assignment list.
+**The card sits directly beneath the "Workouts Assigned" hero stat** — the first thing in the Training tab's scrollable content, above even the Programme section — since this week's training load is the thing worth seeing first.
+
+**New files**: `src/lib/muscle-group-analysis.ts` (`getWeeklyMuscleGroupSetCounts()`, `tierForSetCount()`, `overallVolumeStatus()`), `src/components/muscle-heatmap.tsx` (`<MuscleHeatmap>`, the tap-to-flip SVG diagram, plus `colorForCount()` — the shared zero-aware tier color, so the diagram and the list below it never disagree), `src/components/workout-analyser-card.tsx` (`<WorkoutAnalyserCard>` — the whole card: heatmap + exact-count list + status badge), wired into `client/training.tsx` right after the hero stat.
 
 **Verify the set counts are correct against real logged data:**
 1. Note today's Monday–Sunday window (Monday's date through the following Sunday).
@@ -1790,7 +1792,7 @@ No new migration — this reads data that already exists (`workout_logs`, `worko
      and a.assigned_date >= '<this Monday>' and a.assigned_date <= '<this Sunday>'
    group by 1;
    ```
-3. Compare each row's count against what the Workout Analyser card shows for that muscle group, and confirm the tier color (green/yellow/red) matches the 10/20 thresholds.
+3. Compare each row's count against what the Volume Analyser card shows for that muscle group, and confirm the tier color (neutral at 0, then green/yellow/red at the 10/20 thresholds) matches.
 4. Confirm a set logged on a date **outside** this window (last week, or a session dated for later) is **not** included in either the app's numbers or the query above.
 5. If a session included a mid-session swap, confirm its sets are counted under the swapped-in exercise's muscle group, not the one it replaced.
 6. Confirm the overall badge reads the worst tier among all seven muscle groups, not an average.
@@ -1870,7 +1872,7 @@ src/
       client/
         _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
         index.tsx        # Home tab — greeting, streak, daily logging nudge, weekly TDEE recalculation check, Level/XP, Momentum Score, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
-        training.tsx      # Training tab — Your Programme card (week counter, day row, next workout) + Workout Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) + full assignment history + "View Calendar →" link
+        training.tsx      # Training tab — Volume Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) directly under the hero stat, then Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — ‹›date navigator, 4 meal sections, USDA search + camera barcode scan, calories vs. real calorie target
         progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
         chat.tsx             # Chat tab — real messaging now: resolves/creates this client's conversation with "the coach", then renders <ChatThread>
@@ -1898,8 +1900,8 @@ src/
     nutri-score-badge.tsx         # <NutriScoreBadge grade size> — official Nutri-Score A-E colors, small (list/search rows) or large (recipe hero) size
     stat-ring.tsx                   # <StatRing value label progress? size?> — SVG ring gauge (teal arc + glow on a carbon-black track), used by the completion scorecard; a real 0-1 progress renders a genuine partial/empty arc, omitting it renders a full ring as a plain frame for an open-ended number
     workout-form.tsx               # <WorkoutForm workoutId? weekId?> — the coach's whole workout builder, shared by /workouts/new (blank, or a programme-week session) and /workouts/[id] (preloaded for editing); which mode it's in is just whether workoutId was passed
-    muscle-heatmap.tsx               # <MuscleHeatmap counts> — tap-to-flip SVG body silhouette, front/back, color-coded per region by tierForSetCount(); exports TIER_COLORS (real green/yellow/red, the NutriScoreBadge exception) so the analyser card's list/badge use the exact same colors
-    workout-analyser-card.tsx        # <WorkoutAnalyserCard counts> — the Training tab card: title + status badge (worst tier wins) + <MuscleHeatmap> + exact per-muscle-group set count list
+    muscle-heatmap.tsx               # <MuscleHeatmap counts> — tap-to-flip SVG muscular body silhouette (path-based regions, mirrored left/right off one authored side), front/back, color-coded per region by colorForCount() (zero = neutral, no tier color); exports TIER_COLORS (real green/yellow/red, the NutriScoreBadge exception) and colorForCount() so the analyser card's list/badge use the exact same colors
+    workout-analyser-card.tsx        # <WorkoutAnalyserCard counts> — the Training tab's "Volume Analyser" card: title + status badge (worst tier wins) + <MuscleHeatmap> + exact per-muscle-group set count list
   constants/
     theme.ts             # single source of truth: Colors, Glow, Spacing, typography
   context/

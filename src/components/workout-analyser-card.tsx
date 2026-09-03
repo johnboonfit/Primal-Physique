@@ -1,11 +1,11 @@
 import { StyleSheet, View } from 'react-native';
 
-import { MuscleHeatmap, TIER_COLORS } from '@/components/muscle-heatmap';
+import { colorForCount, MuscleHeatmap, TIER_COLORS } from '@/components/muscle-heatmap';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { MUSCLE_GROUPS } from '@/lib/exercise-library';
-import { overallVolumeStatus, tierForSetCount, type MuscleGroupCounts, type VolumeTier } from '@/lib/muscle-group-analysis';
+import { overallVolumeStatus, type MuscleGroupCounts, type VolumeTier } from '@/lib/muscle-group-analysis';
 
 const STATUS_LABEL: Record<VolumeTier, string> = {
   low: 'LOW VOLUME',
@@ -40,7 +40,7 @@ export function WorkoutAnalyserCard({ counts }: WorkoutAnalyserCardProps) {
   return (
     <ThemedView type="backgroundElement" style={styles.card}>
       <View style={styles.headerRow}>
-        <ThemedText type="smallBold">Workout Analyser</ThemedText>
+        <ThemedText type="smallBold">Volume Analyser</ThemedText>
         <StatusBadge status={status} />
       </View>
       <ThemedText type="small" themeColor="textSecondary">
@@ -52,7 +52,7 @@ export function WorkoutAnalyserCard({ counts }: WorkoutAnalyserCardProps) {
       <View style={styles.list}>
         {MUSCLE_GROUPS.map((group) => {
           const count = counts[group.key];
-          const color = TIER_COLORS[tierForSetCount(count)];
+          const color = colorForCount(count);
           return (
             <View key={group.key} style={styles.listRow}>
               <View style={styles.listLabelGroup}>
