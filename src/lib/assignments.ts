@@ -206,18 +206,29 @@ export async function listAssignments(coachId: string): Promise<AssignmentSummar
 export async function listMyAssignments(clientId: string): Promise<ClientAssignmentSummary[]> {
   const { data, error } = await supabase
     .from('assignments')
-    .select('id, assigned_date, status, workouts(name)')
+    .select('id, assigned_date, status, workouts(name, archived)')
     .eq('client_id', clientId)
     .order('assigned_date', { ascending: false });
 
   if (error) throw error;
 
-  return (data ?? []).map((row) => ({
-    id: row.id as string,
-    workoutName: (row.workouts as unknown as { name: string } | null)?.name ?? 'Unknown workout',
-    assignedDate: row.assigned_date as string,
-    status: row.status as AssignmentStatus,
-  }));
+  return (data ?? [])
+    .filter((row) => {
+      const workout = row.workouts as unknown as { archived: boolean } | null;
+      // Archiving a workout is meant to pull it out from under a client
+      // who hasn't done it yet -- a coach archives something because it's
+      // outdated or wrong, and wouldn't want it still sitting in Up Next
+      // or the Calendar. It must NOT touch anything already completed,
+      // though: that's real logged history, and archive-content.sql's
+      // whole point is that archiving never breaks a historical read.
+      return row.status !== 'pending' || !workout?.archived;
+    })
+    .map((row) => ({
+      id: row.id as string,
+      workoutName: (row.workouts as unknown as { name: string } | null)?.name ?? 'Unknown workout',
+      assignedDate: row.assigned_date as string,
+      status: row.status as AssignmentStatus,
+    }));
 }
 
 /**
