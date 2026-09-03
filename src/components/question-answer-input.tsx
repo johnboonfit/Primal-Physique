@@ -10,6 +10,10 @@ type Props = {
   config: QuestionConfig;
   value: AnswerValue;
   onChange: (value: AnswerValue) => void;
+  /** Smaller chips for a scale answer -- used where the same 1-10 picker
+   * shows up once per exercise instead of once per whole check-in, and
+   * doesn't need to be as prominent. Only affects answerKind 'scale'. */
+  compact?: boolean;
 };
 
 function optionsFrom(config: QuestionConfig): string[] {
@@ -23,7 +27,7 @@ function optionsFrom(config: QuestionConfig): string[] {
  * `config.unit` happens to be set, read generically here rather than
  * because of which type this is.
  */
-export function AnswerInput({ answerKind, config, value, onChange }: Props) {
+export function AnswerInput({ answerKind, config, value, onChange, compact }: Props) {
   const theme = useTheme();
 
   if (answerKind === 'short_text') {
@@ -117,8 +121,12 @@ export function AnswerInput({ answerKind, config, value, onChange }: Props) {
           <Pressable
             key={step}
             onPress={() => onChange(step)}
-            style={[styles.scaleChip, { borderColor: theme.backgroundSelected }, selected && styles.chipSelected]}>
-            <ThemedText type="smallBold" style={selected ? styles.chipTextSelected : undefined}>
+            style={[
+              compact ? styles.scaleChipCompact : styles.scaleChip,
+              { borderColor: theme.backgroundSelected },
+              selected && styles.chipSelected,
+            ]}>
+            <ThemedText type={compact ? 'small' : 'smallBold'} style={selected ? styles.chipTextSelected : undefined}>
               {step}
             </ThemedText>
           </Pressable>
@@ -162,6 +170,14 @@ const styles = StyleSheet.create({
     minWidth: 40,
     alignItems: 'center',
     paddingVertical: Spacing.two,
+  },
+  scaleChipCompact: {
+    borderWidth: 1,
+    borderRadius: 999,
+    minWidth: 28,
+    alignItems: 'center',
+    paddingVertical: Spacing.half,
+    paddingHorizontal: Spacing.half,
   },
   chipSelected: {
     backgroundColor: Accent,

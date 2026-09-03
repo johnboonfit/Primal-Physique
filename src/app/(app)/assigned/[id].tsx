@@ -663,15 +663,20 @@ export default function AssignedWorkoutDetailScreen() {
                                 />
                               </View>
 
-                              <ThemedText type="small" themeColor="textSecondary" style={styles.rpeLabel}>
-                                RPE
-                              </ThemedText>
-                              <AnswerInput
-                                answerKind="scale"
-                                config={{ min: 1, max: 10 }}
-                                value={row.rpe}
-                                onChange={(value) => updateSetRpe(key, value)}
-                              />
+                              {setNumber === exercise.totalSets && (
+                                <>
+                                  <ThemedText type="small" themeColor="textSecondary" style={styles.rpeLabel}>
+                                    RPE for this exercise
+                                  </ThemedText>
+                                  <AnswerInput
+                                    answerKind="scale"
+                                    config={{ min: 1, max: 10 }}
+                                    value={row.rpe}
+                                    onChange={(value) => updateSetRpe(key, value)}
+                                    compact
+                                  />
+                                </>
+                              )}
 
                               {prefillLabel && (
                                 <ThemedText type="small" themeColor="textSecondary" style={styles.prefillLabel}>
@@ -888,6 +893,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
+    minWidth: 0,
     borderWidth: 1,
     borderRadius: Spacing.two,
     paddingHorizontal: Spacing.three,
