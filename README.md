@@ -1797,6 +1797,30 @@ No new migration — this reads data that already exists (`workout_logs`, `worko
 5. If a session included a mid-session swap, confirm its sets are counted under the swapped-in exercise's muscle group, not the one it replaced.
 6. Confirm the overall badge reads the worst tier among all seven muscle groups, not an average.
 
+## A real coach home screen — dashboard, not a link list
+
+The coach's `/home` used to be one card of plain text links to every section, no actual information on it. Replaced with a real dashboard built entirely from data this app already has — nothing here is a placeholder or an invented number.
+
+**Deliberately missing two things a template coaching dashboard would have**: a revenue card and an appointments/calendar card. This app has no billing integration and no session-booking feature, so there's nothing genuine to put in either one — a fake number there would be actively misleading, not just decorative, so neither exists.
+
+**Four real stat tiles**: Active Clients (`listClients().length`), Avg Compliance (the average of every client's own Compliance Score — the exact same 28-day calculation the Clients list already shows per client, not a new metric), Overdue Check-ins (check-ins still `pending` and already past their `due_at`, excluding ones already auto-archived as `missed` — those already have their outcome recorded, this is specifically the ones a nudge could still save), and Open Reports (the same open-reports count the Community moderation screen uses). The compliance-color coding (`complianceColor()`, now shared out of `compliance.ts` so the Clients list and this dashboard never disagree on what "red" means) carries over to the Avg Compliance tile.
+
+**Needs Attention** lists every client below 50% compliance, worst first, tap through to their detail page — or a plain "every client is above 50%" line when nobody qualifies, not an empty gap.
+
+**Recent Activity is a genuine merged feed** of logged meals and completed workout sessions across every client, most recent first. Two real constraints worth knowing: habit-log and weight-log activity are left out on purpose — coaches don't have read access to either table yet (no RLS policy grants it, unlike `food_logs` and `workout_logs`), so including them would silently show nothing or fail outright; and a completed workout's timestamp is approximated the same way the completion scorecard already does, from that session's most recently logged set, since `assignments` has no `completed_at` column of its own.
+
+**Every other coach destination is still one tap away**, just organized into two real groups instead of one long list: **Manage** (Clients, Messages, Assignments, Community, Check-in Forms) and **Coaching Hub** (Programmes, Workouts, Exercise Library, Habits, Recipes, Meal Plans) — the same eleven screens as before, grouped by how a coach actually uses them.
+
+**New file**: `src/lib/coach-dashboard.ts` — `getCoachDashboardStats()`, `getClientsNeedingAttention()`, `getRecentClientActivity()`.
+
+**Verify against real data:**
+1. Confirm Active Clients matches `select count(*) from profiles where role = 'client';`.
+2. Confirm Avg Compliance is the mean of what the Clients list shows for every individual client (open a few to check).
+3. Confirm Overdue Check-ins matches `select count(*) from form_check_ins where status = 'pending' and archived = false and due_at < now();`.
+4. Confirm Open Reports matches the count on the Community moderation screen.
+5. Log a meal and complete a workout as a test client — confirm both appear at the top of Recent Activity within a few seconds of reopening the dashboard, in the correct order (most recent first), with the right client name.
+6. Drop a client's compliance below 50% (or find one already there) and confirm they appear in Needs Attention; confirm a client sitting at exactly 50% or above does not.
+
 ## Project structure reference
 
 ```
@@ -1807,7 +1831,7 @@ src/
       login.tsx
       signup.tsx        # name/email/password only — no role choice; every signup is a client
     (app)/
-      home.tsx          # coach's home screen only; redirects clients to /client — includes Community and Messages links
+      home.tsx          # coach's home screen — a real dashboard (stat tiles, Needs Attention, a merged real Recent Activity feed) plus Manage/Coaching Hub nav grids covering every coach screen; redirects clients to /client
       messages/
         index.tsx        # coach-only inbox — every client, most-recently-messaged first, with a last-message preview and an online dot
         [clientId].tsx     # coach's per-client thread — same <ChatThread> the client's own Chat tab uses
@@ -1925,7 +1949,8 @@ src/
     habits.ts                 # coach + client habit + habit-log database calls, including archiveHabit()
     momentum.ts                # getMomentumScore() — pure calculation, no new tables; getCurrentWeekRange() exported so other "this week" features (the Leaderboard's weekly XP ranking) share the exact same Monday, not a second copy of the date math
     chat.ts                      # getOrCreateConversation() / listMessages() / sendTextMessage() / sendVoiceMessage() / editMessage() / deleteMessageForMe() / deleteMessageForEveryone() / subscribeToConversation() (realtime) / updateLastSeen() / getLastSeen() / isOnline() / listCoachConversations() / getAnyCoach() / markConversationRead() / getReadReceipts()
-    compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window
+    compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window; complianceColor() — the shared red/neutral/teal scale, used by the Clients list and the coach dashboard alike
+    coach-dashboard.ts            # getCoachDashboardStats() (active clients, avg Compliance Score, overdue check-ins, open community reports) / getClientsNeedingAttention() (sub-50% compliance, worst first) / getRecentClientActivity() (logged meals + completed workouts, merged and sorted, real data only)
     community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file
     leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products (Club shown in the app as "Base")
     recipes.ts                    # createRecipe() / listRecipes() / getRecipeDetail() / updateRecipeDetails() / deleteRecipe() / addRecipeIngredient() / removeRecipeIngredient() / uploadRecipePhoto() / computeMacroTotals() — the one place recipe macros are summed and divided by servings, pure and reused by both the list and detail screens

@@ -6,15 +6,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
-import { getComplianceScore } from '@/lib/compliance';
+import { complianceColor, getComplianceScore } from '@/lib/compliance';
 import { listClients, type ClientSummary } from '@/lib/clients';
 import { CLIENT_TIERS, listClientTiers, setClientTier, type ClientTier } from '@/lib/leaderboard';
-
-function complianceColor(score: number) {
-  if (score >= 80) return Colors.tealBright;
-  if (score < 50) return Accent;
-  return Colors.textSecondary;
-}
 
 export default function ClientsListScreen() {
   const [clients, setClients] = useState<ClientSummary[]>([]);

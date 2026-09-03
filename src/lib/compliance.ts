@@ -1,5 +1,15 @@
+import { Accent, Colors } from '@/constants/theme';
 import { getCalorieTarget } from '@/lib/tdee';
 import { supabase } from '@/lib/supabase';
+
+/** Shared red/neutral/teal coding for a Compliance Score, wherever one is
+ * shown -- the Clients list and the coach dashboard both use this exact
+ * scale so "below 50%" always means the same thing. */
+export function complianceColor(score: number): string {
+  if (score >= 80) return Colors.tealBright;
+  if (score < 50) return Accent;
+  return Colors.textSecondary;
+}
 
 /** 4 weeks, trailing, ending today. */
 const COMPLIANCE_WINDOW_DAYS = 28;
