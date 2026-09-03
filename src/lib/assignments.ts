@@ -43,6 +43,10 @@ export type AssignmentDetail = {
      * without it, same as an exercise no coach has ever set a baseline
      * for. */
     exerciseLibraryId: string | null;
+    /** Null right alongside exerciseLibraryId -- there's nothing to look
+     * up a muscle group from without a library link, so no same-group
+     * alternatives can be offered for that exercise either. */
+    muscleGroup: string | null;
     baselineWeight: number | null;
     baselineReps: number | null;
   }[];
@@ -182,7 +186,7 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
   const { data, error } = await supabase
     .from('assignments')
     .select(
-      'id, assigned_date, status, workouts(name, workout_exercises(id, name, sets_reps, position, exercise_library_id, baseline_weight, baseline_reps))'
+      'id, assigned_date, status, workouts(name, workout_exercises(id, name, sets_reps, position, exercise_library_id, baseline_weight, baseline_reps, exercise_library(muscle_group)))'
     )
     .eq('id', assignmentId)
     .single();
@@ -199,6 +203,7 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
       exercise_library_id: string | null;
       baseline_weight: number | null;
       baseline_reps: number | null;
+      exercise_library: { muscle_group: string } | null;
     }[];
   } | null;
 
@@ -229,6 +234,7 @@ export async function getAssignmentDetail(assignmentId: string): Promise<Assignm
         loggedWeight: logged?.weight ?? null,
         loggedReps: logged?.reps ?? null,
         exerciseLibraryId: exercise.exercise_library_id,
+        muscleGroup: exercise.exercise_library?.muscle_group ?? null,
         baselineWeight: exercise.baseline_weight,
         baselineReps: exercise.baseline_reps,
       };

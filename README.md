@@ -1621,6 +1621,26 @@ No new migration — this is entirely app code, since every field it needs (`wor
 4. **Editability**: in any of the three cases, change the pre-filled number before saving, then mark the workout complete. Confirm what's actually stored (`select weight, reps from workout_logs where assignment_id = '<id>';`) matches what you typed, not the original suggestion.
 5. **Priority check**: reopen a workout you already partially logged (don't mark it complete). Confirm the fields show what you entered then — not a fresh pull from the fallback chain — proving case 0 (resuming your own session) always wins over cases 1–3.
 
+## Mid-session exercise swap, for today only
+
+Run `supabase/exercise-swaps.sql` in the SQL Editor after `readiness.sql`. A client can swap any exercise in a live session for a same-muscle-group alternative from the Exercise Library — "the bench is taken, I'll do incline dumbbell press instead" — without touching the coach's actual programme.
+
+**Why this can't be a direct edit.** `workout_exercises` rows are shared by reference, not copied, across every assignment that points at them — assigning a workout just creates an `assignments` row linking to the existing `workout_id`; it never duplicates the workout or its exercises. The same "Push Day" and its exact exercise rows can be attached to many clients, or the same client on many recurring dates. Editing a `workout_exercises` row directly to "swap" it would silently change that exercise for every other assignment referencing it too — every other client, every other date, and the coach's original design. So swapping is a brand new, purely additive table instead: `assignment_exercise_swaps` records "for THIS one assignment, THIS one exercise slot was actually performed as something else" — nothing else ever reads or writes it, and `workout_exercises` itself is never touched.
+
+**The exercise "slot" and what's actually performed are different things.** `workout_logs.exercise_id` still points at the original `workout_exercises` row regardless of a swap — that row represents *position* #3 in the workout, not a locked-in exercise. A swap changes what was actually performed in that position for one session; it doesn't change which position a logged set belongs to. The client's session screen is what overlays a swap's replacement name onto the display (and onto the prefill logic below) — the database's own foreign keys never move.
+
+**The swapped exercise goes through last chunk's full 3-tier prefill logic, fresh — and the original exercise's baseline does NOT carry over.** A swap is "effectively a new exercise for logging purposes," so: (1) this client's own previous-session history for the *replacement* exercise, if any: (2) the coach's baseline, but only if this exercise was never swapped — a baseline of 40kg set for Bench Press is meaningless for whatever it got swapped to, so it's deliberately suppressed the instant a swap is active; (3) otherwise, empty with a hint, same as always. Undoing a swap reverts all of this back to the original exercise's own numbers.
+
+**Verify the swap is session-only and doesn't quietly alter the programme:**
+1. Note a workout's exercise and its `workout_exercises.id` (call it `<slot-id>`) — `select id, name, exercise_library_id from workout_exercises where id = '<slot-id>';`.
+2. As the client, open that session and swap that exercise for an alternative.
+3. Re-run the exact same query from step 1 — confirm it returns **identical** results. The swap changed nothing about the row itself.
+4. Run `select * from assignment_exercise_swaps where assignment_id = '<this assignment id>';` — confirm the swap is recorded there, scoped to this one assignment.
+5. If this same workout is assigned to another client, or to this same client on a different date, open that *other* assignment and confirm it still shows the original, un-swapped exercise — proving the swap never leaked into the shared workout definition.
+6. If this workout belongs to a Programme Builder week, reopen the programme and confirm the week's session still lists the original exercise, untouched.
+7. Tap **Undo** on the swapped exercise and confirm it reverts to the original name and its coach baseline (if one was set) — then confirm `assignment_exercise_swaps` no longer has a row for that slot.
+8. Log the swapped exercise and mark the workout complete — confirm `workout_logs.exercise_id` still equals `<slot-id>` (the original slot), not some new id — the log belongs to the position in the workout, exactly as before this chunk.
+
 ## Project structure reference
 
 ```
@@ -1687,7 +1707,7 @@ src/
         [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
         assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
       assigned/
-        [id].tsx          # client's workout view — the active readiness questionnaire first if this session hasn't answered it yet, then logs performance (weight/reps prefilled: previous session > coach baseline > empty with a hint, always editable) or shows it once completed
+        [id].tsx          # client's workout view — the active readiness questionnaire first if this session hasn't answered it yet, then logs performance (weight/reps prefilled: previous session > coach baseline > empty with a hint, always editable; a Swap link opens same-muscle-group alternatives, session-only) or shows it once completed
       checkins/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
@@ -1754,6 +1774,7 @@ src/
     form-assignments.ts            # createFormAssignment() / listClientFormAssignments() / archiveFormAssignment() database calls + listUpcomingCheckInDates() — pure, computes future dates from a recurrence rule, nothing stored per-occurrence
     form-check-ins.ts              # ensureCheckInsUpToDate() (lazy materialize + archive-as-missed sweep, run on client app open) / listUpNextCheckIns() / listVisibleCheckIns() / getCheckInDetail() / submitCheckIn() / listClientCheckInInstances() / archiveOrDeleteCheckIn() database calls
     readiness.ts                    # getReadinessFormId() / setReadinessFormId() (app_settings.readiness_form_id, the one active questionnaire) / getReadinessStatusForAssignment() (the active form's questions + whatever THIS session has answered so far) / submitReadinessResponses() -- deliberately not built on form_assignments/form_check_ins, see readiness.sql
+    exercise-swaps.ts                # listExerciseSwapsForAssignment() / swapExerciseForSession() / undoExerciseSwap() -- session-only substitutions in assignment_exercise_swaps; never touches workout_exercises or the underlying programme
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
 supabase/
   schema.sql              # paste into Supabase SQL Editor once
@@ -1794,4 +1815,5 @@ supabase/
   meal-plan-templates.sql                                                               # paste in after nutri-score.sql — meal_plan_templates + meal_plan_template_items (coach-owned, references recipes) + meal_plan_assignments (a template+client pointer, is_coach()-gated like assignments.sql)
   workout-set-types.sql                                                                   # paste in after meal-plan-templates.sql — workout_exercises.baseline_weight/baseline_reps + workout_exercise_sets (per-set technique tagging), client read access already included
   readiness.sql                                                                             # paste in after workout-set-types.sql — app_settings.readiness_form_id, readiness_responses (linked to assignments, not form_check_ins), seeds one default 4-question form if none is configured yet
+  exercise-swaps.sql                                                                          # paste in after readiness.sql — assignment_exercise_swaps (session-only exercise substitution, never mutates workout_exercises)
 ```

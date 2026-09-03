@@ -1,6 +1,6 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AnswerInput } from '@/components/question-answer-input';
@@ -16,9 +16,31 @@ import {
   type AssignmentDetail,
   type ExercisePrefill,
 } from '@/lib/assignments';
+import { listExerciseLibrarySummaries, type ExerciseSummary } from '@/lib/exercise-library';
+import {
+  listExerciseSwapsForAssignment,
+  swapExerciseForSession,
+  undoExerciseSwap,
+  type ExerciseSwap,
+} from '@/lib/exercise-swaps';
 import { getQuestionTypeDefinition, type AnswerValue } from '@/lib/question-types';
 import { getReadinessStatusForAssignment, submitReadinessResponses, type ReadinessStatus } from '@/lib/readiness';
 import { awardWorkoutXp } from '@/lib/xp';
+
+/** What's actually shown/logged for one exercise slot right now -- the
+ * swap's replacement if this session has one for it, otherwise exactly
+ * what the workout/programme originally prescribed. The slot's own id
+ * (and therefore where workout_logs attaches) never changes either way. */
+function displayExercise(exercise: AssignmentDetail['exercises'][number], swap: ExerciseSwap | undefined) {
+  if (!swap) return { ...exercise, isSwapped: false as const, originalName: exercise.name };
+  return {
+    ...exercise,
+    name: swap.replacementName,
+    exerciseLibraryId: swap.replacementExerciseLibraryId,
+    isSwapped: true as const,
+    originalName: exercise.name,
+  };
+}
 
 /** A sensible starting value per answer kind for a not-yet-answered
  * readiness question -- same reasoning as checkins/[id].tsx's
@@ -80,6 +102,7 @@ export default function AssignedWorkoutDetailScreen() {
   const [detail, setDetail] = useState<AssignmentDetail | null>(null);
   const [inputs, setInputs] = useState<Record<string, ExerciseInput>>({});
   const [prefills, setPrefills] = useState<Record<string, ExercisePrefill>>({});
+  const [swaps, setSwaps] = useState<Record<string, ExerciseSwap>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -90,22 +113,48 @@ export default function AssignedWorkoutDetailScreen() {
   const [submittingReadiness, setSubmittingReadiness] = useState(false);
   const [readinessError, setReadinessError] = useState<string | null>(null);
 
+  const [swapPickerExerciseId, setSwapPickerExerciseId] = useState<string | null>(null);
+  const [libraryExercises, setLibraryExercises] = useState<ExerciseSummary[]>([]);
+  const [loadingLibrary, setLoadingLibrary] = useState(false);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [swapSearch, setSwapSearch] = useState('');
+  const [swappingId, setSwappingId] = useState<string | null>(null);
+  const [swapError, setSwapError] = useState<string | null>(null);
+
+  /** Re-derives prefills for every exercise using each one's EFFECTIVE
+   * exercise (the swap's replacement where one exists) -- a swap counts
+   * as "a new exercise for logging purposes," so its own previous-session
+   * history applies, but the original exercise's coach baseline does
+   * NOT (a baseline set for Bench Press is meaningless for whatever it
+   * got swapped to). */
+  const refreshPrefills = async (assignmentData: AssignmentDetail, swapMap: Record<string, ExerciseSwap>) => {
+    if (!session) return {};
+    const effectiveExercises = assignmentData.exercises.map((exercise) => {
+      const swap = swapMap[exercise.id];
+      return swap
+        ? { id: exercise.id, exerciseLibraryId: swap.replacementExerciseLibraryId, baselineWeight: null, baselineReps: null }
+        : { id: exercise.id, exerciseLibraryId: exercise.exerciseLibraryId, baselineWeight: exercise.baselineWeight, baselineReps: exercise.baselineReps };
+    });
+    return getExercisePrefills(session.user.id, assignmentData.id, effectiveExercises);
+  };
+
   useEffect(() => {
     if (!id || !session) return;
     let cancelled = false;
 
-    Promise.all([getAssignmentDetail(id), getReadinessStatusForAssignment(id)])
-      .then(async ([assignmentData, readinessData]) => {
+    Promise.all([getAssignmentDetail(id), getReadinessStatusForAssignment(id), listExerciseSwapsForAssignment(id)])
+      .then(async ([assignmentData, readinessData, swapMap]) => {
         if (cancelled) return;
         setDetail(assignmentData);
         setReadiness(readinessData);
+        setSwaps(swapMap);
         const answers: Record<string, AnswerValue> = {};
         readinessData.questions.forEach((question) => {
           answers[question.id] = blankReadinessAnswer(question);
         });
         setReadinessAnswers(answers);
 
-        const prefillMap = await getExercisePrefills(session.user.id, assignmentData.id, assignmentData.exercises);
+        const prefillMap = await refreshPrefills(assignmentData, swapMap);
         if (cancelled) return;
         setPrefills(prefillMap);
         setInputs(buildInputsFromDetail(assignmentData, prefillMap));
@@ -160,6 +209,70 @@ export default function AssignedWorkoutDetailScreen() {
       ...current,
       [exerciseId]: { ...current[exerciseId], [field]: value },
     }));
+  };
+
+  const openSwapPicker = (workoutExerciseId: string) => {
+    setSwapPickerExerciseId(workoutExerciseId);
+    setSwapSearch('');
+    setSwapError(null);
+    if (libraryExercises.length === 0 && !loadingLibrary) {
+      setLoadingLibrary(true);
+      listExerciseLibrarySummaries()
+        .then(setLibraryExercises)
+        .catch((err) => setLibraryError(err instanceof Error ? err.message : 'Failed to load the exercise library.'))
+        .finally(() => setLoadingLibrary(false));
+    }
+  };
+
+  const closeSwapPicker = () => setSwapPickerExerciseId(null);
+
+  const handleSelectReplacement = async (workoutExerciseId: string, replacement: ExerciseSummary) => {
+    setSwapError(null);
+    if (!session || !detail) return;
+
+    setSwappingId(workoutExerciseId);
+    try {
+      await swapExerciseForSession(detail.id, session.user.id, workoutExerciseId, {
+        exerciseLibraryId: replacement.id,
+        name: replacement.name,
+      });
+      const swapMap = await listExerciseSwapsForAssignment(detail.id);
+      setSwaps(swapMap);
+      // The swap is effectively a new exercise for logging purposes --
+      // whatever was typed for the old one no longer applies, so its
+      // fallback chain reruns fresh against the replacement.
+      const prefillMap = await refreshPrefills(detail, swapMap);
+      setPrefills(prefillMap);
+      setInputs((current) => {
+        const rebuilt = buildInputsFromDetail(detail, prefillMap);
+        return { ...current, [workoutExerciseId]: rebuilt[workoutExerciseId] };
+      });
+      setSwapPickerExerciseId(null);
+    } catch (err) {
+      setSwapError(err instanceof Error ? err.message : 'Something went wrong swapping this exercise.');
+    } finally {
+      setSwappingId(null);
+    }
+  };
+
+  const handleUndoSwap = async (workoutExerciseId: string) => {
+    if (!detail) return;
+    setSwappingId(workoutExerciseId);
+    try {
+      await undoExerciseSwap(detail.id, workoutExerciseId);
+      const swapMap = await listExerciseSwapsForAssignment(detail.id);
+      setSwaps(swapMap);
+      const prefillMap = await refreshPrefills(detail, swapMap);
+      setPrefills(prefillMap);
+      setInputs((current) => {
+        const rebuilt = buildInputsFromDetail(detail, prefillMap);
+        return { ...current, [workoutExerciseId]: rebuilt[workoutExerciseId] };
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to undo that swap.');
+    } finally {
+      setSwappingId(null);
+    }
   };
 
   const handleMarkComplete = async () => {
@@ -280,6 +393,8 @@ export default function AssignedWorkoutDetailScreen() {
                   )}
 
                   {detail.exercises.map((exercise, index) => {
+                    const swap = swaps[exercise.id];
+                    const shown = displayExercise(exercise, swap);
                     const input = inputs[exercise.id] ?? { weight: '', reps: '' };
                     const alreadyLogged = exercise.loggedWeight !== null || exercise.loggedReps !== null;
                     const prefill = prefills[exercise.id];
@@ -298,11 +413,30 @@ export default function AssignedWorkoutDetailScreen() {
                             {index + 1}
                           </ThemedText>
                           <View style={styles.exerciseText}>
-                            <ThemedText type="smallBold">{exercise.name}</ThemedText>
+                            <ThemedText type="smallBold">{shown.name}</ThemedText>
                             <ThemedText type="small" themeColor="textSecondary">
                               Target: {exercise.setsReps}
                             </ThemedText>
+                            {shown.isSwapped && (
+                              <ThemedText type="small" style={styles.swappedNote}>
+                                Swapped for today -- originally {shown.originalName}
+                              </ThemedText>
+                            )}
                           </View>
+                          {detail.status === 'pending' && exercise.muscleGroup && (
+                            <Pressable
+                              onPress={() =>
+                                shown.isSwapped ? handleUndoSwap(exercise.id) : openSwapPicker(exercise.id)
+                              }
+                              disabled={swappingId === exercise.id}
+                              hitSlop={8}>
+                              {swappingId === exercise.id ? (
+                                <ActivityIndicator size="small" />
+                              ) : (
+                                <ThemedText type="linkPrimary">{shown.isSwapped ? 'Undo' : 'Swap'}</ThemedText>
+                              )}
+                            </Pressable>
+                          )}
                         </View>
 
                         {detail.status === 'completed' ? (
@@ -362,6 +496,79 @@ export default function AssignedWorkoutDetailScreen() {
           )}
         </ScrollView>
       </SafeAreaView>
+
+      <Modal visible={swapPickerExerciseId !== null} transparent animationType="fade" onRequestClose={closeSwapPicker}>
+        <View style={styles.modalOverlay}>
+          <ThemedView type="backgroundElement" style={styles.modalCard}>
+            <ThemedText type="smallBold" style={styles.modalTitle}>
+              Swap exercise
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.modalSubtitle}>
+              For today's session only -- your programme doesn't change.
+            </ThemedText>
+
+            {loadingLibrary && <ActivityIndicator style={styles.smallLoader} />}
+            {!loadingLibrary && libraryError && <ThemedText style={styles.error}>{libraryError}</ThemedText>}
+
+            {!loadingLibrary && !libraryError && (
+              <TextInput
+                value={swapSearch}
+                onChangeText={setSwapSearch}
+                placeholder="Search alternatives"
+                placeholderTextColor={theme.textSecondary}
+                autoFocus
+                style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+              />
+            )}
+
+            {swapError && <ThemedText style={styles.error}>{swapError}</ThemedText>}
+
+            {!loadingLibrary && !libraryError && (
+              <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
+                {(() => {
+                  const pickerExercise = detail?.exercises.find((e) => e.id === swapPickerExerciseId) ?? null;
+                  if (!pickerExercise) return null;
+                  const query = swapSearch.trim().toLowerCase();
+                  const candidates = libraryExercises.filter(
+                    (candidate) =>
+                      candidate.muscleGroup === pickerExercise.muscleGroup &&
+                      candidate.id !== pickerExercise.exerciseLibraryId &&
+                      (query === '' || candidate.name.toLowerCase().includes(query))
+                  );
+
+                  if (candidates.length === 0) {
+                    return (
+                      <ThemedText type="small" themeColor="textSecondary" style={styles.noResults}>
+                        No other {pickerExercise.muscleGroup} exercises match.
+                      </ThemedText>
+                    );
+                  }
+
+                  return candidates.map((candidate) => (
+                    <Pressable
+                      key={candidate.id}
+                      onPress={() => handleSelectReplacement(pickerExercise.id, candidate)}
+                      disabled={swappingId === pickerExercise.id}>
+                      <View style={styles.resultRow}>
+                        <ThemedText type="small" style={styles.resultName}>
+                          {candidate.name}
+                        </ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {candidate.category}
+                        </ThemedText>
+                      </View>
+                    </Pressable>
+                  ));
+                })()}
+              </ScrollView>
+            )}
+
+            <Pressable style={styles.cancelButton} onPress={closeSwapPicker}>
+              <ThemedText themeColor="textSecondary">Cancel</ThemedText>
+            </Pressable>
+          </ThemedView>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -438,5 +645,52 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: Colors.text,
+  },
+  swappedNote: {
+    color: Colors.tealBright,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.four,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 400,
+    maxHeight: '80%',
+    borderRadius: Spacing.four,
+    padding: Spacing.four,
+    gap: Spacing.two,
+  },
+  modalTitle: {
+    marginBottom: Spacing.half,
+  },
+  modalSubtitle: {
+    marginBottom: Spacing.two,
+  },
+  smallLoader: {
+    marginVertical: Spacing.one,
+  },
+  resultsList: {
+    maxHeight: 320,
+  },
+  resultRow: {
+    paddingVertical: Spacing.two,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.backgroundSelected,
+    gap: Spacing.half,
+  },
+  resultName: {
+    fontWeight: '700',
+  },
+  noResults: {
+    textAlign: 'center',
+    marginVertical: Spacing.two,
+  },
+  cancelButton: {
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
   },
 });
