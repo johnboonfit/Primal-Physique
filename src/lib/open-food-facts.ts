@@ -8,7 +8,18 @@
 import { estimateFruitVegLegumeNutPercentFromCategory } from '@/lib/nutri-score';
 
 const SEARCH_URL = 'https://world.openfoodfacts.org/cgi/search.pl';
+const SEARCH_V2_URL = 'https://world.openfoodfacts.org/api/v2/search';
 const PRODUCT_URL = 'https://world.openfoodfacts.org/api/v2/product';
+
+const PRODUCT_FIELDS = 'code,product_name,brands,nutriments,categories_tags,serving_size,serving_quantity';
+
+/** A real, structured "1 x = Yg" option — e.g. "2 biscuits (25g)" or "1
+ * cup, sliced" — never a guess. Only ever populated from a field the
+ * source data actually provided (Open Food Facts' serving_quantity, or
+ * USDA's foodMeasures — see usda-fooddata.ts); an empty array means the
+ * source simply has no real portion data for this food, not that one
+ * was omitted. */
+export type FoodPortion = { label: string; grams: number };
 
 export type FoodSearchResult = {
   /** Open Food Facts' barcode, when the product has one — used as a
@@ -36,6 +47,7 @@ export type FoodSearchResult = {
    * other Nutri-Score inputs above, since both search sources always
    * fall back to a category guess rather than leaving this unset. */
   fruitVegLegumeNutPercent: number;
+  portions: FoodPortion[];
 };
 
 function toNumberOrNull(value: unknown): number | null {
@@ -90,6 +102,43 @@ function caloriesFromNutriments(nutriments: Record<string, unknown>): number | n
   return unit === 'kcal' ? raw : raw / 4.184;
 }
 
+/** `serving_quantity` is a clean numeric gram figure Open Food Facts
+ * exposes alongside the free-text `serving_size` label — far more
+ * reliable than trying to parse a number out of that label ourselves,
+ * since its format varies wildly product to product. */
+function servingPortion(product: Record<string, unknown>): FoodPortion[] {
+  const grams = toNumberOrNull(product['serving_quantity']);
+  if (grams === null || grams <= 0) return [];
+
+  const label = (product['serving_size'] as string | undefined)?.trim() || `1 serving (${Math.round(grams)}g)`;
+  return [{ label, grams }];
+}
+
+function mapProduct(product: Record<string, unknown>): FoodSearchResult | null {
+  const nutriments = (product.nutriments as Record<string, unknown> | undefined) ?? {};
+  const categoriesTags = (product.categories_tags as string[] | undefined) ?? [];
+  const name = (product.product_name as string | undefined)?.trim() ?? '';
+  const caloriesPer100g = caloriesFromNutriments(nutriments);
+
+  if (!name || caloriesPer100g === null) return null;
+
+  return {
+    id: (product.code as string | undefined) || name,
+    name,
+    brand: (product.brands as string | undefined)?.split(',')[0]?.trim() || null,
+    caloriesPer100g,
+    proteinPer100g: toNumberOrNull(nutriments['proteins_100g']),
+    carbsPer100g: toNumberOrNull(nutriments['carbohydrates_100g']),
+    fatPer100g: toNumberOrNull(nutriments['fat_100g']),
+    sugarsPer100g: toNumberOrNull(nutriments['sugars_100g']),
+    saturatedFatPer100g: toNumberOrNull(nutriments['saturated-fat_100g']),
+    sodiumMgPer100g: sodiumMgFromNutriments(nutriments),
+    fiberPer100g: toNumberOrNull(nutriments['fiber_100g']),
+    fruitVegLegumeNutPercent: fruitVegLegumeNutPercent(nutriments, categoriesTags),
+    portions: servingPortion(product),
+  };
+}
+
 export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
@@ -109,7 +158,7 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
     // "chicken" with nothing usable in the top results.
     sort_by: 'unique_scans_n',
     page_size: '50',
-    fields: 'code,product_name,brands,nutriments,categories_tags',
+    fields: PRODUCT_FIELDS,
   });
 
   const response = await fetch(`${SEARCH_URL}?${params.toString()}`, {
@@ -129,30 +178,75 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
   const data = (await response.json()) as { products?: Record<string, unknown>[] };
 
   return (data.products ?? [])
-    .map((product) => {
-      const nutriments = (product.nutriments as Record<string, unknown> | undefined) ?? {};
-      const categoriesTags = (product.categories_tags as string[] | undefined) ?? [];
-      return {
-        id: (product.code as string | undefined) || (product.product_name as string | undefined) || '',
-        name: (product.product_name as string | undefined)?.trim() ?? '',
-        brand: (product.brands as string | undefined)?.split(',')[0]?.trim() || null,
-        caloriesPer100g: caloriesFromNutriments(nutriments),
-        proteinPer100g: toNumberOrNull(nutriments['proteins_100g']),
-        carbsPer100g: toNumberOrNull(nutriments['carbohydrates_100g']),
-        fatPer100g: toNumberOrNull(nutriments['fat_100g']),
-        sugarsPer100g: toNumberOrNull(nutriments['sugars_100g']),
-        saturatedFatPer100g: toNumberOrNull(nutriments['saturated-fat_100g']),
-        sodiumMgPer100g: sodiumMgFromNutriments(nutriments),
-        fiberPer100g: toNumberOrNull(nutriments['fiber_100g']),
-        fruitVegLegumeNutPercent: fruitVegLegumeNutPercent(nutriments, categoriesTags),
-      };
-    })
+    .map(mapProduct)
     // A result with no name or no calorie figure isn't useful to log
     // against — Open Food Facts has plenty of incomplete entries. This
     // runs against the larger 50-item pool fetched above, then trims
     // back down to a sane number to actually show.
-    .filter((result): result is FoodSearchResult => result.name.length > 0 && result.caloriesPer100g !== null)
+    .filter((result): result is FoodSearchResult => result !== null)
     .slice(0, 20);
+}
+
+// Canonical Open Food Facts brand tags for the major UK supermarkets'
+// own-brand ranges. Tag ids are the lowercased, hyphenated form OFF
+// normalizes brand names to (apostrophes become hyphens), which is why
+// Sainsbury's is "sainsbury-s" here, not "sainsburys".
+const UK_SUPERMARKET_BRAND_TAGS = ['tesco', 'asda', 'aldi', 'sainsbury-s', 'morrisons', 'lidl'];
+
+async function fetchV2Products(params: Record<string, string>): Promise<Record<string, unknown>[]> {
+  const response = await fetch(`${SEARCH_V2_URL}?${new URLSearchParams(params).toString()}`, {
+    headers: { 'User-Agent': 'PrimalPhysique-App - Fitness Coaching App' },
+  });
+  // Best-effort — this is a supplementary pass on top of the primary
+  // USDA search (see food-search.ts), so a failure here should never
+  // block a search from returning USDA's results.
+  if (!response.ok) return [];
+  const data = (await response.json()) as { products?: Record<string, unknown>[] };
+  return data.products ?? [];
+}
+
+/**
+ * A second, UK-specific pass over Open Food Facts, run alongside the
+ * primary USDA search (see food-search.ts, which is what actually calls
+ * this) — USDA has essentially zero UK branded/packaged products, so
+ * typed search would otherwise never surface things like "Tesco Basmati
+ * Rice" or "Warburtons Thins."
+ *
+ * Two parallel v2 API queries, since a single request can't OR an origin
+ * filter together with a brand filter: one filtered to products actually
+ * sold in the UK (`countries_tags`), one filtered to the major UK
+ * supermarkets' own brand tags (`brands_tags`, comma-separated for an OR
+ * match) — merged and de-duplicated by barcode below. This only fetches
+ * candidates; deciding which of them are a genuinely good match for the
+ * typed query (and therefore worth ranking above USDA) happens in
+ * food-search.ts, not here.
+ */
+export async function searchUKFoods(query: string): Promise<FoodSearchResult[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const baseParams = {
+    search_terms: trimmed,
+    sort_by: 'unique_scans_n',
+    page_size: '25',
+    fields: PRODUCT_FIELDS,
+  };
+
+  const [byCountry, byBrand] = await Promise.all([
+    fetchV2Products({ ...baseParams, countries_tags: 'en:united-kingdom' }),
+    fetchV2Products({ ...baseParams, brands_tags: UK_SUPERMARKET_BRAND_TAGS.join(',') }),
+  ]);
+
+  const seen = new Set<string>();
+  const merged: FoodSearchResult[] = [];
+  for (const product of [...byCountry, ...byBrand]) {
+    const mapped = mapProduct(product);
+    if (!mapped) continue;
+    if (seen.has(mapped.id)) continue;
+    seen.add(mapped.id);
+    merged.push(mapped);
+  }
+  return merged;
 }
 
 /**
@@ -171,7 +265,7 @@ export async function getProductByBarcode(barcode: string): Promise<FoodSearchRe
   const trimmed = barcode.trim();
   if (!trimmed) return null;
 
-  const params = new URLSearchParams({ fields: 'code,product_name,brands,nutriments,categories_tags' });
+  const params = new URLSearchParams({ fields: PRODUCT_FIELDS });
 
   const response = await fetch(`${PRODUCT_URL}/${encodeURIComponent(trimmed)}.json?${params.toString()}`, {
     headers: {
@@ -187,25 +281,9 @@ export async function getProductByBarcode(barcode: string): Promise<FoodSearchRe
 
   if (data.status !== 1 || !data.product) return null;
 
-  const nutriments = (data.product.nutriments as Record<string, unknown> | undefined) ?? {};
-  const categoriesTags = (data.product.categories_tags as string[] | undefined) ?? [];
-  const name = (data.product.product_name as string | undefined)?.trim() ?? '';
-  const caloriesPer100g = caloriesFromNutriments(nutriments);
-
-  if (!name || caloriesPer100g === null) return null;
-
-  return {
-    id: (data.product.code as string | undefined) || trimmed,
-    name,
-    brand: (data.product.brands as string | undefined)?.split(',')[0]?.trim() || null,
-    caloriesPer100g,
-    proteinPer100g: toNumberOrNull(nutriments['proteins_100g']),
-    carbsPer100g: toNumberOrNull(nutriments['carbohydrates_100g']),
-    fatPer100g: toNumberOrNull(nutriments['fat_100g']),
-    sugarsPer100g: toNumberOrNull(nutriments['sugars_100g']),
-    saturatedFatPer100g: toNumberOrNull(nutriments['saturated-fat_100g']),
-    sodiumMgPer100g: sodiumMgFromNutriments(nutriments),
-    fiberPer100g: toNumberOrNull(nutriments['fiber_100g']),
-    fruitVegLegumeNutPercent: fruitVegLegumeNutPercent(nutriments, categoriesTags),
-  };
+  const mapped = mapProduct(data.product);
+  // mapProduct falls back to the product's name for `id` when no barcode
+  // field came back, which barcode lookup should never do — the scanned
+  // barcode itself is the more correct fallback here.
+  return mapped ? { ...mapped, id: (data.product.code as string | undefined) || trimmed } : null;
 }

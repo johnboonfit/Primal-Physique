@@ -11,19 +11,12 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import {
-  addFoodLog,
-  deleteFoodLog,
-  listFoodLogsForDate,
-  type FoodLogEntry,
-  type FoodSource,
-  type Meal,
-} from '@/lib/food-logs';
+import { addFoodLog, deleteFoodLog, listFoodLogsForDate, type FoodLogEntry, type FoodSource, type Meal } from '@/lib/food-logs';
+import { searchAllFoods, type BlendedFoodResult } from '@/lib/food-search';
 import { getProductByBarcode, type FoodSearchResult } from '@/lib/open-food-facts';
 import { GOAL_TYPES } from '@/lib/programmes';
 import { addDays } from '@/lib/time-ranges';
 import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
-import { searchFoods } from '@/lib/usda-fooddata';
 import { awardMealXp } from '@/lib/xp';
 
 // EAN-13/EAN-8 and UPC-A/UPC-E cover essentially every retail packaged
@@ -102,11 +95,19 @@ export default function NutritionScreen() {
 
   const [activeMeal, setActiveMeal] = useState<Meal | null>(null);
   const [search, setSearch] = useState('');
-  const [results, setResults] = useState<FoodSearchResult[]>([]);
+  const [results, setResults] = useState<BlendedFoodResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selected, setSelected] = useState<FoodSearchResult | null>(null);
   const [selectedSource, setSelectedSource] = useState<FoodSource | null>(null);
+
+  // Quantity is entered one of three ways depending on what the food's
+  // source data actually offers — see food-search.ts/usda-fooddata.ts for
+  // where `portions` real (never guessed) per-item weights come from.
+  const [unitMode, setUnitMode] = useState<'grams' | 'portion' | 'custom'>('grams');
+  const [portionIndex, setPortionIndex] = useState(0);
+  const [countInput, setCountInput] = useState('1');
+  const [customGramsInput, setCustomGramsInput] = useState('');
   const [quantityInput, setQuantityInput] = useState('100');
 
   const [saving, setSaving] = useState(false);
@@ -141,9 +142,10 @@ export default function NutritionScreen() {
     }, [load])
   );
 
-  // Live search against USDA FoodData Central — debounced so it doesn't
-  // fire on every keystroke, and guarded against a slow older request
-  // clobbering a faster, more recent one.
+  // Live blended search — USDA's generic foods plus a UK-supermarket-
+  // targeted pass over Open Food Facts (see food-search.ts) — debounced
+  // so it doesn't fire on every keystroke, and guarded against a slow
+  // older request clobbering a faster, more recent one.
   useEffect(() => {
     if (activeMeal === null || selected) return;
 
@@ -160,9 +162,11 @@ export default function NutritionScreen() {
     const requestId = ++searchRequestId.current;
 
     const timeout = setTimeout(() => {
-      searchFoods(query)
-        .then((data) => {
-          if (searchRequestId.current === requestId) setResults(data);
+      searchAllFoods(query)
+        .then(({ results: data, error: blendError }) => {
+          if (searchRequestId.current !== requestId) return;
+          setResults(data);
+          setSearchError(blendError);
         })
         .catch((err) => {
           if (searchRequestId.current === requestId) {
@@ -193,6 +197,30 @@ export default function NutritionScreen() {
   const parsedQuantity = Number(quantityInput);
   const hasValidQuantity = quantityInput.trim().length > 0 && !Number.isNaN(parsedQuantity) && parsedQuantity > 0;
 
+  const parsedCount = Number(countInput);
+  const hasValidCount = countInput.trim().length > 0 && !Number.isNaN(parsedCount) && parsedCount > 0;
+
+  const parsedCustomGrams = Number(customGramsInput);
+  const hasValidCustomGrams =
+    customGramsInput.trim().length > 0 && !Number.isNaN(parsedCustomGrams) && parsedCustomGrams > 0;
+
+  const activePortion = selected?.portions[portionIndex] ?? null;
+
+  // The one number every macro figure below actually scales off, however
+  // it was entered — a plain gram amount, a count of a real structured
+  // portion (e.g. "2 x 1 small apple"), or a count of a manually-entered
+  // custom item weight (e.g. "1 scoop = 30g", for foods with no
+  // structured portion data at all, like protein powder).
+  let totalGrams: number | null = null;
+  if (unitMode === 'grams') {
+    totalGrams = hasValidQuantity ? parsedQuantity : null;
+  } else if (unitMode === 'portion') {
+    totalGrams = activePortion && hasValidCount ? activePortion.grams * parsedCount : null;
+  } else {
+    totalGrams = hasValidCustomGrams && hasValidCount ? parsedCustomGrams * parsedCount : null;
+  }
+  const hasValidTotal = totalGrams !== null && totalGrams > 0;
+
   const handlePrevDay = () => setLogDate((current) => addDays(current, -1));
   // No future days — there's nothing to browse ahead of today, and this
   // is a log of what's already been eaten, not a meal planner.
@@ -205,6 +233,10 @@ export default function NutritionScreen() {
     setSearchError(null);
     setSelected(null);
     setSelectedSource(null);
+    setUnitMode('grams');
+    setPortionIndex(0);
+    setCountInput('1');
+    setCustomGramsInput('');
     setQuantityInput('100');
     setFormError(null);
     setScanning(false);
@@ -222,6 +254,10 @@ export default function NutritionScreen() {
   const selectFood = (result: FoodSearchResult, source: FoodSource) => {
     setSelected(result);
     setSelectedSource(source);
+    setUnitMode('grams');
+    setPortionIndex(0);
+    setCountInput('1');
+    setCustomGramsInput('');
     setQuantityInput('100');
     setFormError(null);
   };
@@ -271,9 +307,8 @@ export default function NutritionScreen() {
     setFormError(null);
     if (!session || !activeMeal || !selected || !selectedSource) return;
 
-    const quantityGrams = Number(quantityInput);
-    if (!quantityInput.trim() || Number.isNaN(quantityGrams) || quantityGrams <= 0) {
-      setFormError('Enter the quantity as a number of grams greater than 0.');
+    if (totalGrams === null || totalGrams <= 0) {
+      setFormError('Enter a valid quantity before logging this.');
       return;
     }
 
@@ -281,11 +316,11 @@ export default function NutritionScreen() {
     try {
       await addFoodLog(session.user.id, logDate, activeMeal, {
         name: selected.brand ? `${selected.name} (${selected.brand})` : selected.name,
-        quantityGrams,
-        calories: Math.round(scaleMacro(selected.caloriesPer100g, quantityGrams) ?? 0),
-        protein: scaleMacro(selected.proteinPer100g, quantityGrams),
-        carbs: scaleMacro(selected.carbsPer100g, quantityGrams),
-        fat: scaleMacro(selected.fatPer100g, quantityGrams),
+        quantityGrams: totalGrams,
+        calories: Math.round(scaleMacro(selected.caloriesPer100g, totalGrams) ?? 0),
+        protein: scaleMacro(selected.proteinPer100g, totalGrams),
+        carbs: scaleMacro(selected.carbsPer100g, totalGrams),
+        fat: scaleMacro(selected.fatPer100g, totalGrams),
         source: selectedSource,
         sourceId: selected.id || null,
       });
@@ -475,7 +510,7 @@ export default function NutritionScreen() {
                 <TextInput
                   value={search}
                   onChangeText={setSearch}
-                  placeholder="Search USDA FoodData Central"
+                  placeholder="Search foods"
                   placeholderTextColor={theme.textSecondary}
                   autoFocus
                   style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
@@ -491,11 +526,12 @@ export default function NutritionScreen() {
 
                 <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
                   {results.map((result) => (
-                    <Pressable key={result.id || result.name} onPress={() => selectFood(result, 'usda_fdc')}>
+                    <Pressable key={`${result.source}-${result.id || result.name}`} onPress={() => selectFood(result, result.source)}>
                       <View style={styles.resultRow}>
                         <ThemedText type="small" style={styles.resultName}>
                           {result.name}
                           {result.brand ? ` (${result.brand})` : ''}
+                          {result.source === 'open_food_facts' ? ' 🇬🇧' : ''}
                         </ThemedText>
                         <ThemedText type="small" themeColor="textSecondary">
                           {Math.round(result.caloriesPer100g)} cal / 100g
@@ -519,32 +555,109 @@ export default function NutritionScreen() {
                 </ThemedText>
 
                 <ThemedText type="smallBold" style={styles.sectionLabel}>
-                  Quantity (grams)
+                  Quantity
                 </ThemedText>
-                <TextInput
-                  value={quantityInput}
-                  onChangeText={setQuantityInput}
-                  placeholder="100"
-                  placeholderTextColor={theme.textSecondary}
-                  keyboardType="decimal-pad"
-                  style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                />
+                <View style={styles.unitRow}>
+                  <Pressable
+                    onPress={() => setUnitMode('grams')}
+                    style={[styles.unitChip, unitMode === 'grams' && styles.unitChipActive]}>
+                    <ThemedText type="small" style={unitMode === 'grams' ? styles.unitChipTextActive : undefined}>
+                      Grams
+                    </ThemedText>
+                  </Pressable>
+                  {selected.portions.map((portion, index) => (
+                    <Pressable
+                      key={portion.label}
+                      onPress={() => {
+                        setUnitMode('portion');
+                        setPortionIndex(index);
+                      }}
+                      style={[styles.unitChip, unitMode === 'portion' && portionIndex === index && styles.unitChipActive]}>
+                      <ThemedText
+                        type="small"
+                        style={unitMode === 'portion' && portionIndex === index ? styles.unitChipTextActive : undefined}>
+                        {portion.label}
+                      </ThemedText>
+                    </Pressable>
+                  ))}
+                  <Pressable
+                    onPress={() => setUnitMode('custom')}
+                    style={[styles.unitChip, unitMode === 'custom' && styles.unitChipActive]}>
+                    <ThemedText type="small" style={unitMode === 'custom' ? styles.unitChipTextActive : undefined}>
+                      Custom item
+                    </ThemedText>
+                  </Pressable>
+                </View>
 
-                {hasValidQuantity ? (
+                {unitMode === 'grams' && (
+                  <TextInput
+                    value={quantityInput}
+                    onChangeText={setQuantityInput}
+                    placeholder="100"
+                    placeholderTextColor={theme.textSecondary}
+                    keyboardType="decimal-pad"
+                    style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                  />
+                )}
+
+                {unitMode === 'portion' && activePortion && (
+                  <>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {activePortion.label} = {round(activePortion.grams)}g each
+                    </ThemedText>
+                    <TextInput
+                      value={countInput}
+                      onChangeText={setCountInput}
+                      placeholder="1"
+                      placeholderTextColor={theme.textSecondary}
+                      keyboardType="decimal-pad"
+                      style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                    />
+                  </>
+                )}
+
+                {unitMode === 'custom' && (
+                  <>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Grams per item (check the packaging, or estimate)
+                    </ThemedText>
+                    <TextInput
+                      value={customGramsInput}
+                      onChangeText={setCustomGramsInput}
+                      placeholder="e.g. 30"
+                      placeholderTextColor={theme.textSecondary}
+                      keyboardType="decimal-pad"
+                      style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                    />
+                    <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
+                      How many
+                    </ThemedText>
+                    <TextInput
+                      value={countInput}
+                      onChangeText={setCountInput}
+                      placeholder="1"
+                      placeholderTextColor={theme.textSecondary}
+                      keyboardType="decimal-pad"
+                      style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                    />
+                  </>
+                )}
+
+                {hasValidTotal ? (
                   <ThemedText type="smallBold">
-                    For {parsedQuantity}g: {Math.round(scaleMacro(selected.caloriesPer100g, parsedQuantity) ?? 0)} cal
+                    For {round(totalGrams as number)}g: {Math.round(scaleMacro(selected.caloriesPer100g, totalGrams as number) ?? 0)} cal
                     {selected.proteinPer100g !== null
-                      ? ` · ${round(scaleMacro(selected.proteinPer100g, parsedQuantity) as number)}g protein`
+                      ? ` · ${round(scaleMacro(selected.proteinPer100g, totalGrams as number) as number)}g protein`
                       : ''}
                     {selected.carbsPer100g !== null
-                      ? ` · ${round(scaleMacro(selected.carbsPer100g, parsedQuantity) as number)}g carbs`
+                      ? ` · ${round(scaleMacro(selected.carbsPer100g, totalGrams as number) as number)}g carbs`
                       : ''}
                     {selected.fatPer100g !== null
-                      ? ` · ${round(scaleMacro(selected.fatPer100g, parsedQuantity) as number)}g fat`
+                      ? ` · ${round(scaleMacro(selected.fatPer100g, totalGrams as number) as number)}g fat`
                       : ''}
                   </ThemedText>
                 ) : (
-                  <ThemedText style={styles.error}>Enter a valid quantity in grams.</ThemedText>
+                  <ThemedText style={styles.error}>Enter a valid quantity.</ThemedText>
                 )}
 
                 <Pressable
@@ -563,7 +676,7 @@ export default function NutritionScreen() {
               <Pressable
                 style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
                 onPress={handleSave}
-                disabled={saving || !hasValidQuantity}>
+                disabled={saving || !hasValidTotal}>
                 {saving ? (
                   <ActivityIndicator color={Colors.text} />
                 ) : (
@@ -693,6 +806,25 @@ const styles = StyleSheet.create({
   },
   sectionLabel: {
     marginTop: Spacing.two,
+  },
+  unitRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.one,
+  },
+  unitChip: {
+    borderWidth: 1,
+    borderColor: Colors.backgroundSelected,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.one,
+  },
+  unitChipActive: {
+    backgroundColor: Accent,
+    borderColor: Accent,
+  },
+  unitChipTextActive: {
+    color: Colors.text,
   },
   input: {
     borderWidth: 1,

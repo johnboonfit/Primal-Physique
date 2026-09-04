@@ -28,6 +28,25 @@ type UsdaNutrient = {
   value?: number;
 };
 
+type UsdaFoodMeasure = {
+  disseminationText?: string;
+  gramWeight?: number;
+};
+
+/** Only Survey (FNDDS) items — the "as eaten" data type this search
+ * already includes — carry real per-portion weights in the search
+ * response (e.g. "1 small apple", "1 rice cake"), each with USDA's own
+ * lab-derived gram weight attached. Foundation/SR Legacy entries don't
+ * expose this in the search endpoint at all, so they simply get no
+ * portion options — grams-only, same as today — rather than a guessed one. */
+function portionsFromMeasures(measures: UsdaFoodMeasure[] | undefined): { label: string; grams: number }[] {
+  if (!measures) return [];
+  return measures
+    .filter((measure): measure is Required<UsdaFoodMeasure> => Boolean(measure.disseminationText) && (measure.gramWeight ?? 0) > 0)
+    .map((measure) => ({ label: measure.disseminationText.trim(), grams: measure.gramWeight }))
+    .slice(0, 5);
+}
+
 function findNutrient(nutrients: UsdaNutrient[], name: string, unit?: string): number | null {
   const match = nutrients.find((nutrient) => {
     if ((nutrient.nutrientName ?? '').toLowerCase() !== name.toLowerCase()) return false;
@@ -112,6 +131,7 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
         fruitVegLegumeNutPercent: estimateFruitVegLegumeNutPercentFromCategory(
           (food.foodCategory as string | undefined) ?? null
         ),
+        portions: portionsFromMeasures(food.foodMeasures as UsdaFoodMeasure[] | undefined),
       };
     })
     .filter((result): result is FoodSearchResult => result.name.length > 0 && result.caloriesPer100g !== null);
