@@ -52,13 +52,20 @@ export async function searchAllFoods(query: string): Promise<BlendedSearchResult
   const usda: BlendedFoodResult[] =
     usdaOutcome.status === 'fulfilled' ? usdaOutcome.value.map((result) => ({ ...result, source: 'usda_fdc' as const })) : [];
 
-  const uk: BlendedFoodResult[] =
-    ukOutcome.status === 'fulfilled'
-      ? ukOutcome.value
-          .filter((result) => isGoodMatch(query, result))
-          .map((result) => ({ ...result, source: 'open_food_facts' as const }))
-          .slice(0, MAX_UK_RESULTS)
-      : [];
+  let uk: BlendedFoodResult[] = [];
+  if (ukOutcome.status === 'fulfilled') {
+    const goodMatches = ukOutcome.value.filter((result) => isGoodMatch(query, result));
+    console.log(
+      `[searchAllFoods] "${query}": ${ukOutcome.value.length} UK candidates -> ${goodMatches.length} passed the good-match gate`
+    );
+    uk = goodMatches.map((result) => ({ ...result, source: 'open_food_facts' as const })).slice(0, MAX_UK_RESULTS);
+  } else {
+    // searchUKFoods() itself catches its own fetch/HTTP errors and always
+    // resolves — this branch firing at all means something unexpected
+    // threw, which is worth seeing rather than silently losing every UK
+    // result for the rest of the session.
+    console.error('[searchAllFoods] UK search rejected unexpectedly:', ukOutcome.reason);
+  }
 
   const error =
     usdaOutcome.status === 'rejected'

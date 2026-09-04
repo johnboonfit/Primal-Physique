@@ -241,22 +241,40 @@ export async function searchUKFoods(query: string): Promise<FoodSearchResult[]> 
     page_size: '100',
     fields: `${PRODUCT_FIELDS},countries_tags`,
   });
+  const url = `${SEARCH_URL}?${params.toString()}`;
 
-  const response = await fetch(`${SEARCH_URL}?${params.toString()}`, {
-    headers: { 'User-Agent': 'PrimalPhysique-App - Fitness Coaching App' },
-  });
-  // Best-effort — this is a supplementary pass on top of the primary
-  // USDA search (see food-search.ts), so a failure here should never
-  // block a search from returning USDA's results.
-  if (!response.ok) return [];
+  // Logged unconditionally (not just __DEV__) while this feature is still
+  // being confirmed against the real API for the first time -- two
+  // earlier attempts at this both silently returned zero UK results for
+  // reasons invisible from inside this sandbox (its network proxy blocks
+  // both live APIs outright, so this exact request has never actually
+  // been run and inspected before now). This makes the real cause visible
+  // in the browser/Metro console instead of a third blind guess.
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { 'User-Agent': 'PrimalPhysique-App - Fitness Coaching App' },
+    });
+  } catch (err) {
+    console.error(`[searchUKFoods] fetch itself failed for "${trimmed}" (network error or blocked by CORS):`, err, url);
+    return [];
+  }
+
+  if (!response.ok) {
+    console.error(`[searchUKFoods] Open Food Facts returned HTTP ${response.status} for "${trimmed}":`, url);
+    return [];
+  }
 
   const data = (await response.json()) as { products?: Record<string, unknown>[] };
+  const rawProducts = data.products ?? [];
+  const ukRelevant = rawProducts.filter(isUkRelevant);
+  const mapped = ukRelevant.map(mapProduct).filter((result): result is FoodSearchResult => result !== null);
 
-  return (data.products ?? [])
-    .filter(isUkRelevant)
-    .map(mapProduct)
-    .filter((result): result is FoodSearchResult => result !== null)
-    .slice(0, 20);
+  console.log(
+    `[searchUKFoods] "${trimmed}": ${rawProducts.length} raw results from Open Food Facts -> ${ukRelevant.length} UK-relevant -> ${mapped.length} usable`
+  );
+
+  return mapped.slice(0, 20);
 }
 
 /**
