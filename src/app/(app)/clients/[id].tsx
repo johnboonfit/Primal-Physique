@@ -354,6 +354,18 @@ export default function ClientDetailScreen() {
             ))}
 
             <ThemedText type="smallBold" style={styles.sectionLabel}>
+              Feature Access
+            </ThemedText>
+            <ThemedView type="backgroundElement" style={styles.featureAccessCard}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Turn individual features off for this client — Chat, Community, Leaderboard, Momentum Score, and more.
+              </ThemedText>
+              <Pressable onPress={() => router.push(`/clients/${client.id}/features`)}>
+                <ThemedText type="linkPrimary">Manage feature access…</ThemedText>
+              </Pressable>
+            </ThemedView>
+
+            <ThemedText type="smallBold" style={styles.sectionLabel}>
               Danger Zone
             </ThemedText>
             <ThemedView type="backgroundElement" style={styles.dangerCard}>
@@ -502,6 +514,11 @@ const styles = StyleSheet.create({
   },
   deleteText: {
     color: Colors.textSecondary,
+  },
+  featureAccessCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.two,
   },
   dangerCard: {
     borderRadius: Spacing.two,

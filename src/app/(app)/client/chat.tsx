@@ -3,26 +3,30 @@ import { ActivityIndicator, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ChatThread } from '@/components/chat-thread';
+import { FeatureLockedCard } from '@/components/feature-locked-card';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { getAnyCoach, getOrCreateConversation } from '@/lib/chat';
+import { isFeatureEnabled } from '@/lib/feature-toggles';
 
 export default function ChatScreen() {
   const { session } = useAuth();
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [coach, setCoach] = useState<{ id: string; name: string } | null>(null);
+  const [featureEnabled, setFeatureEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!session) return;
-    Promise.all([getOrCreateConversation(session.user.id), getAnyCoach()])
-      .then(([convoId, coachProfile]) => {
+    Promise.all([getOrCreateConversation(session.user.id), getAnyCoach(), isFeatureEnabled(session.user.id, 'chat')])
+      .then(([convoId, coachProfile, enabled]) => {
         setConversationId(convoId);
         setCoach(coachProfile);
+        setFeatureEnabled(enabled);
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to open your conversation.'))
       .finally(() => setLoading(false));
@@ -39,13 +43,17 @@ export default function ChatScreen() {
 
         {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
-        {!loading && !error && (!conversationId || !coach) && (
+        {!loading && !error && !featureEnabled && (
+          <FeatureLockedCard title="Chat" message="Your coach has turned off Chat access for your account." />
+        )}
+
+        {!loading && !error && featureEnabled && (!conversationId || !coach) && (
           <ThemedText themeColor="textSecondary" style={styles.empty}>
             No coach account exists yet to message.
           </ThemedText>
         )}
 
-        {!loading && !error && conversationId && coach && (
+        {!loading && !error && featureEnabled && conversationId && coach && (
           <ChatThread conversationId={conversationId} otherPartyId={coach.id} otherPartyName={`Coach: ${coach.name}`} />
         )}
       </SafeAreaView>

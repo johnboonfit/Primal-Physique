@@ -2,10 +2,12 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 
+import { FeatureLockedCard } from '@/components/feature-locked-card';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { isFeatureEnabled } from '@/lib/feature-toggles';
 import {
   getLifetimeLeaderboard,
   getMyTier,
@@ -25,6 +27,7 @@ function initial(name: string) {
  * in plain language rather than naming the exact price, since that's
  * the kind of detail that drifts out of sync with real pricing. */
 const UPGRADE_MESSAGE = 'Leaderboards is an Accelerator and Precision perk. Ask your coach about upgrading to unlock it.';
+const TOGGLED_OFF_MESSAGE = 'Your coach has turned off Leaderboards access for your account.';
 
 /**
  * Position, name, an initials avatar (no real photo-upload avatar
@@ -52,12 +55,17 @@ export function LeaderboardPanel() {
   const [tierLoading, setTierLoading] = useState(!isCoach);
   const [tierError, setTierError] = useState<string | null>(null);
 
+  // A coach-controlled override, independent of tier — see
+  // feature-toggles.ts. Defaults to true (full access) while still
+  // loading rather than flashing the locked state for a moment first.
+  const [featureEnabled, setFeatureEnabled] = useState(true);
+
   const [view, setView] = useState<LeaderboardView>('weekly');
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const hasAccess = isCoach || (tier !== null && tierHasLeaderboardAccess(tier));
+  const hasAccess = isCoach || (tier !== null && tierHasLeaderboardAccess(tier) && featureEnabled);
 
   useFocusEffect(
     useCallback(() => {
@@ -65,9 +73,11 @@ export function LeaderboardPanel() {
       let cancelled = false;
 
       setTierLoading(true);
-      getMyTier(session.user.id)
-        .then((value) => {
-          if (!cancelled) setTier(value);
+      Promise.all([getMyTier(session.user.id), isFeatureEnabled(session.user.id, 'leaderboard')])
+        .then(([tierValue, enabled]) => {
+          if (cancelled) return;
+          setTier(tierValue);
+          setFeatureEnabled(enabled);
         })
         .catch((err) => {
           if (!cancelled) setTierError(err instanceof Error ? err.message : 'Failed to check your membership tier.');
@@ -108,14 +118,13 @@ export function LeaderboardPanel() {
   }
 
   if (!hasAccess) {
-    return (
-      <ThemedView type="backgroundElement" style={styles.upsellCard}>
-        <ThemedText type="smallBold" style={styles.upsellTitle}>
-          🔒 Leaderboards
-        </ThemedText>
-        <ThemedText themeColor="textSecondary">{UPGRADE_MESSAGE}</ThemedText>
-      </ThemedView>
-    );
+    // Tier and the coach's per-client toggle are independent gates —
+    // whichever one is actually the reason gets named, so a client whose
+    // tier qualifies but whose toggle is off isn't told to upgrade for
+    // something upgrading wouldn't fix.
+    const tierQualifies = tier !== null && tierHasLeaderboardAccess(tier);
+    const message = tierQualifies ? TOGGLED_OFF_MESSAGE : UPGRADE_MESSAGE;
+    return <FeatureLockedCard title="Leaderboards" message={message} />;
   }
 
   return (
@@ -191,16 +200,6 @@ const styles = StyleSheet.create({
   empty: {
     textAlign: 'center',
     marginTop: Spacing.five,
-  },
-  upsellCard: {
-    borderRadius: Spacing.two,
-    padding: Spacing.four,
-    gap: Spacing.two,
-    alignItems: 'center',
-    opacity: 0.6,
-  },
-  upsellTitle: {
-    marginBottom: Spacing.one,
   },
   viewToggleRow: {
     flexDirection: 'row',

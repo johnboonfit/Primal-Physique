@@ -18,6 +18,7 @@ import {
   type OverdueAssignment,
 } from '@/lib/assignments';
 import { getCommunityEnabled, getCommunityHidden, setCommunityHidden } from '@/lib/community';
+import { isFeatureEnabled } from '@/lib/feature-toggles';
 import { listFoodLogsForDate } from '@/lib/food-logs';
 import { ensureCheckInsUpToDate, listUpNextCheckIns, type UpNextCheckIn } from '@/lib/form-check-ins';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
@@ -69,6 +70,8 @@ export default function ClientHomeScreen() {
   const [momentum, setMomentum] = useState<MomentumBreakdown | null>(null);
   const [momentumLoading, setMomentumLoading] = useState(true);
   const [momentumError, setMomentumError] = useState<string | null>(null);
+  // Defaults to true (full access) until loaded — see feature-toggles.ts.
+  const [momentumFeatureEnabled, setMomentumFeatureEnabled] = useState(true);
 
   const [xp, setXp] = useState<XpSummary | null>(null);
   const [xpLoading, setXpLoading] = useState(true);
@@ -219,9 +222,11 @@ export default function ClientHomeScreen() {
       let cancelled = false;
 
       setMomentumLoading(true);
-      getMomentumScore(session.user.id)
-        .then((data) => {
-          if (!cancelled) setMomentum(data);
+      Promise.all([getMomentumScore(session.user.id), isFeatureEnabled(session.user.id, 'momentum_score')])
+        .then(([data, enabled]) => {
+          if (cancelled) return;
+          setMomentum(data);
+          setMomentumFeatureEnabled(enabled);
         })
         .catch((err) => {
           if (!cancelled) setMomentumError(err instanceof Error ? err.message : 'Failed to calculate your score.');
@@ -424,12 +429,16 @@ export default function ClientHomeScreen() {
           </View>
 
           <View style={styles.heroRow}>
-            <StatTile
-              value={momentumLoading || !momentum ? '--' : momentum.score.toFixed(1)}
-              label="Momentum"
-              subtitle="out of 10"
-              style={styles.heroTile}
-            />
+            {!momentumLoading && !momentumFeatureEnabled ? (
+              <StatTile value="--" label="Momentum" subtitle="Ask your coach" muted style={styles.heroTile} />
+            ) : (
+              <StatTile
+                value={momentumLoading || !momentum ? '--' : momentum.score.toFixed(1)}
+                label="Momentum"
+                subtitle="out of 10"
+                style={styles.heroTile}
+              />
+            )}
             <StatTile value="--" label="Steps" subtitle="Sync a wearable" muted style={styles.heroTile} />
             <StatTile
               value={caloriesToday !== null ? String(Math.round(caloriesToday)) : '--'}

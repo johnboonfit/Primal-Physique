@@ -1947,6 +1947,29 @@ The coach dashboard's "Recent Activity" preview was always capped, dashboard-onl
 4. A new row should appear within a couple of seconds **without touching pull-to-refresh or reopening the screen**.
 5. Optional: toggle wifi off on the first device, log something from the second, toggle wifi back on — confirm the feed catches up on reconnect rather than staying stuck (a real outage's events aren't retroactively replayed, so briefly missing one while offline is expected; the subscription recovering afterward is what this checks).
 
+## Per-client feature toggles
+
+A real, extensible gating system: 9 feature keys (Form Check, AI Create Workout, AI-Assisted Logging, Community, Challenges, Leaderboard, Progress Photo Scanning, Momentum Score, Chat), a coach-facing screen to flip any of them on/off per client, and the actual gate wired into the 4 features that exist today.
+
+**Extensible by design, not a hardcoded enum.** `feature_key` is a real table (`key`, `label`) — adding a 10th gateable feature later is an `insert`, never a schema migration. `client_feature_toggles` links `(client_id, feature_key)` to an `enabled` flag, and **no row means enabled** — a coach only ever writes a row when actively turning something off for someone (or back on afterward), not 9 rows created per client on day one. The other 5 keys exist in the table starting now so the coach's toggle screen and this schema are ready the moment each one is actually built; toggling one of them today simply does nothing yet, same as it would for any feature nobody's wired a check for.
+
+**The gate is additive, never a replacement for existing access logic.** Leaderboards already had its own tier-based lock (`🔒 Leaderboards`, greyed, an upgrade message) — the toggle is a second, independent gate on top: off locks it regardless of tier, on still requires the client's tier to qualify same as before. The locked-card message itself is aware of which gate actually fired, so a client whose tier qualifies but whose toggle is off sees "your coach turned this off," not a misleading nudge to upgrade for something upgrading wouldn't fix.
+
+**Community's per-client toggle is a new, separate gate from its existing app-wide on/off switch** (the coach's "Community is on/off for clients" control) — the two are independent and visually distinct on purpose: the pre-existing app-wide-off state still shows its original plain grey text unchanged, while the new per-client-off state shows the same locked card the other three features use, so testing either one is unambiguous about which actually fired.
+
+**Momentum Score has no full-screen home** — it's one compact tile in the client Home hero row (Momentum/Steps/Calories). Rather than force a mismatched full-width locked card into a 3-across row, toggling it off reuses the exact `muted` treatment already sitting right next to it (the "Steps: Sync a wearable" placeholder) — same greyed-out, explained-why spirit, adapted to the tile's compact form.
+
+**New**: `supabase/feature-toggles.sql`, `src/lib/feature-toggles.ts` (`getClientFeatureToggles()`, `setClientFeatureToggle()`, and `isFeatureEnabled()` — the one function every gated screen calls), `src/components/feature-locked-card.tsx` (the shared `🔒 [Feature]` greyed card — extracted here since Leaderboard, Community, and Chat all needed the exact same visual, and a fourth screen reusing hand-copied JSX three times over was exactly the kind of drift worth avoiding), `src/app/(app)/clients/[id]/features.tsx` (the coach's toggle screen, linked from a new "Feature Access" section on the client detail page). **Changed**: `leaderboard-panel.tsx`, `community/index.tsx`, `client/chat.tsx`, `client/index.tsx` (the 4 retrofits above).
+
+**What was verified here.** All four gates were tested against realistic fake data run through the real production code, in both states: toggle off correctly shows the locked treatment with the right message (and, for Leaderboard/Community, correctly distinguishes itself from the pre-existing tier/app-wide logic rather than colliding with it); toggle on shows the real feature exactly as before this chunk. The `setClientFeatureToggle()`/`isFeatureEnabled()` round-trip itself was verified directly: no row defaults to enabled, turning off reads back as off, turning back on reads back as on. **Momentum Score's retrofit was verified by direct code review, not a live render** — its screen (`client/index.tsx`) pulls in roughly a dozen unrelated subsystems (assignments, check-ins, habits, TDEE, weight logs...) that would need faking just to reach one hero tile; the tile's own logic is a direct, already-typechecked conditional wired to the exact same `isFeatureEnabled()` call already proven correct by the other three screens, so this was a reasonable place to rely on review rather than a disproportionate test-harness effort.
+
+**How you verify each of the 4 on your own device**, after running `feature-toggles.sql`:
+1. Open a client's detail page → **Feature Access** → turn a feature off.
+2. **Chat**: as that client, open the Chat tab — should show a locked card instead of the conversation. Turn it back on → conversation loads normally.
+3. **Community**: as that client, open Community — should show the locked card. This is deliberately a different message from "your coach turned Community off for everyone" (the app-wide switch on the Community screen itself) — try both independently to confirm they're not the same code path.
+4. **Leaderboard**: Community → Leaderboards — locked card appears even for a client whose tier would otherwise grant access. Toggle back on → leaderboard shows again (assuming their tier still qualifies).
+5. **Momentum Score**: client Home — the Momentum tile should go grey/dashed like the Steps placeholder next to it, instead of showing a real number.
+
 ## Project structure reference
 
 ```
@@ -1963,7 +1986,7 @@ src/
         index.tsx        # coach-only inbox — every client, most-recently-messaged first, with a last-message preview and an online dot
         [clientId].tsx     # coach's per-client thread — same <ChatThread> the client's own Chat tab uses
       community/
-        index.tsx        # Posts/Leaderboards sub-tabs; Posts = shared feed + coach-only app-wide on/off switch + Moderation link + Report/Delete actions per post
+        index.tsx        # Posts/Leaderboards sub-tabs; Posts = shared feed + coach-only app-wide on/off switch + Moderation link + Report/Delete actions per post; a client whose per-client Community toggle is off sees the shared FeatureLockedCard instead (a separate gate from the app-wide switch)
         new.tsx           # compose a post — tag picker excludes Announcement entirely for a client account; shows a plain message instead of the form if this client is blocked
         moderation.tsx      # coach-only (inline role check, no folder _layout.tsx): open reports with Dismiss/Delete post/Block author, plus a Blocked clients list with Unblock
       workouts/
@@ -2007,9 +2030,10 @@ src/
       clients/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of every client account, each row showing a color-coded Compliance Score % badge, a Tier: Base/Accelerator/Precision picker (coach-set, gates that client's Leaderboards access), a "Paused" badge when relevant, and a Pause/Reactivate action
-        [id].tsx          # one client's detail page — Programme section (Unassign) + Assigned Workouts section (one-off workouts, Unassign) + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete) + a Danger Zone linking to permanent deletion
+        [id].tsx          # one client's detail page — Programme section (Unassign) + Assigned Workouts section (one-off workouts, Unassign) + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete) + a Feature Access section + a Danger Zone linking to permanent deletion
         [id]/
           delete.tsx        # the one irreversible action in the app — spells out exactly what's deleted vs. anonymized, requires typing the client's exact full name to enable the delete button, calls deleteClient()
+          features.tsx        # per-client feature toggles — all 9 feature_key rows with an On/Off control each; see feature-toggles.ts
       forms/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's check-in form templates, with Assign and Set as readiness (✓ badge on whichever one is currently the active pre-workout questionnaire)
@@ -2024,11 +2048,11 @@ src/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
         _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat), each with an @expo/vector-icons Ionicon (filled when active, outline otherwise) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
-        index.tsx        # Home tab — greeting + a 3-across hero row (Momentum / Steps [muted placeholder] / Calories Today), streak + Level/XP combined into one row, daily logging nudge, weekly TDEE recalculation check, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
+        index.tsx        # Home tab — greeting + a 3-across hero row (Momentum [greyed like Steps if the coach has toggled it off] / Steps [muted placeholder] / Calories Today), streak + Level/XP combined into one row, daily logging nudge, weekly TDEE recalculation check, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
         training.tsx      # Training tab — Volume Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) directly under the hero stat, then Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — one glowing summary card (‹›date navigator + calories vs. real calorie target + macro rings), 4 meal sections, blended USDA + UK-supermarket search (food-search.ts) + camera barcode scan, quantity as grams / a real structured portion chip / a manual custom item
         progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
-        chat.tsx             # Chat tab — real messaging now: resolves/creates this client's conversation with "the coach", then renders <ChatThread>
+        chat.tsx             # Chat tab — real messaging now: resolves/creates this client's conversation with "the coach", then renders <ChatThread>; the shared FeatureLockedCard instead if the coach has toggled Chat off for this client
         calendar.tsx        # Not a tab anymore, still a real route — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />, reached via Training's "View Calendar" link
   components/
     hero-stat.tsx        # glowing teal oversized-number card; optional progress bar (used where one number should dominate the screen)
@@ -2046,7 +2070,8 @@ src/
     brand-logo.tsx        # fixed top-left logo overlay, mounted once in the root layout
     confirm-dialog.tsx      # <ConfirmDialog> — real Modal (not Alert.alert, a no-op on web), shared "Are you sure?" prompt — archive actions, Community's Delete/Block
     report-post-modal.tsx    # <ReportPostModal> — same Modal shape as ConfirmDialog plus a free-text optional reason field, kept separate since ConfirmDialog's callers all expect its fixed message-only shape
-    leaderboard-panel.tsx     # Community → Leaderboards sub-tab content — This week/Lifetime toggle, ranked rows with a placeholder initials avatar, self-highlight; shows the locked/upsell state instead when the viewing client's tier doesn't have access
+    leaderboard-panel.tsx     # Community → Leaderboards sub-tab content — This week/Lifetime toggle, ranked rows with a placeholder initials avatar, self-highlight; shows the shared FeatureLockedCard instead when the viewing client's tier doesn't qualify OR their coach has toggled Leaderboard off (independent gates, both funnel into the same locked card with a gate-appropriate message)
+    feature-locked-card.tsx    # <FeatureLockedCard title message> — the shared "🔒 [Feature]" greyed card every per-client-toggle-gated screen renders when its feature is off
     chat-thread.tsx             # <ChatThread> — the whole conversation view (messages, composer, voice recording, emoji picker, edit/delete actions, presence, Sent/Read status on your last message), shared identically by the client's Chat tab and the coach's per-client thread
     emoji-picker.tsx             # <EmojiPicker> — fixed curated grid, not a full emoji-keyboard library
     question-config-editor.tsx  # <ConfigFieldEditor> — one render branch per config-field kind (text/list/range), not per question type; used by both the form builder and its read-only detail view
@@ -2099,6 +2124,7 @@ src/
     session-scorecard.ts                # getSessionScorecard() — PBs (per-exercise heaviest this session vs. every prior session, swap-aware, matched by exercise_library_id same as getSetPrefills), total weight lifted (sum of weight x reps), and an approximate duration (first logged set's timestamp to the last)
     muscle-group-analysis.ts            # getWeeklyMuscleGroupSetCounts() — this week's logged sets grouped by muscle group, swap-aware, using getCurrentWeekRange(); tierForSetCount() (green/yellow/red at 10/20) and overallVolumeStatus() (worst tier wins, not an average)
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
+    feature-toggles.ts             # getClientFeatureToggles() (all 9 feature_key rows + this client's real on/off state) / setClientFeatureToggle() (coach-only) / isFeatureEnabled() — the one function every gated screen calls; no row for a feature means enabled
     client-deletion.ts             # deleteClient() — calls the delete-client Edge Function, surfaces its real {error} message instead of supabase-js's generic "non-2xx status" text
 supabase/
   functions/
@@ -2149,4 +2175,5 @@ supabase/
   client-status.sql                                                                                   # paste in after session-rpe.sql — profiles.status ('active'/'paused'), the coach-only update policy, and a trigger closing the column-grant gap it would otherwise open (a client could flip their own status via a direct API call)
   client-deletion.sql                                                                                   # paste in after client-status.sql — changes community_posts.author_id from on delete cascade to on delete set null, so permanently deleting a client anonymizes their posts instead of deleting them
   client-activity-feed.sql                                                                                # paste in after client-deletion.sql — coach read access to habit_logs (also fixes Momentum Score's habit component when a coach computes it), adds food_logs/habit_logs/assignments to the realtime publication
+  feature-toggles.sql                                                                                       # paste in after client-activity-feed.sql — feature_key (9 seeded rows, extensible) + client_feature_toggles (client + feature_key -> enabled, no row means enabled) + RLS
 ```

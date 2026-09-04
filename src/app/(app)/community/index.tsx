@@ -5,6 +5,7 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import { FeatureLockedCard } from '@/components/feature-locked-card';
 import { LeaderboardPanel } from '@/components/leaderboard-panel';
 import { ReportPostModal } from '@/components/report-post-modal';
 import { ThemedText } from '@/components/themed-text';
@@ -21,6 +22,7 @@ import {
   setCommunityEnabled,
   type CommunityPost,
 } from '@/lib/community';
+import { isFeatureEnabled } from '@/lib/feature-toggles';
 
 type SubTab = 'posts' | 'leaderboards';
 
@@ -58,6 +60,12 @@ export default function CommunityFeedScreen() {
   const [togglingEnabled, setTogglingEnabled] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
 
+  // A coach-controlled per-client override, independent of the app-wide
+  // switch above — see feature-toggles.ts. Defaults to true (full
+  // access) until loaded, same reasoning as communityEnabled defaulting
+  // to null rather than flashing a locked state for a moment first.
+  const [myFeatureEnabled, setMyFeatureEnabled] = useState(true);
+
   const [openReportCount, setOpenReportCount] = useState(0);
 
   const [deleteTarget, setDeleteTarget] = useState<CommunityPost | null>(null);
@@ -71,10 +79,15 @@ export default function CommunityFeedScreen() {
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([listCommunityPosts(), getCommunityEnabled()])
-      .then(([postData, enabled]) => {
+    Promise.all([
+      listCommunityPosts(),
+      getCommunityEnabled(),
+      profile?.role === 'client' && session ? isFeatureEnabled(session.user.id, 'community') : Promise.resolve(true),
+    ])
+      .then(([postData, enabled, myFeature]) => {
         setPosts(postData);
         setCommunityEnabledState(enabled);
+        setMyFeatureEnabled(myFeature);
       })
       .catch((err) => {
         console.error('Failed to load Community:', err);
@@ -91,7 +104,7 @@ export default function CommunityFeedScreen() {
         .then((reports) => setOpenReportCount(reports.length))
         .catch((err) => console.error('Failed to load open report count:', err));
     }
-  }, [profile]);
+  }, [profile, session]);
 
   useFocusEffect(
     useCallback(() => {
@@ -149,13 +162,18 @@ export default function CommunityFeedScreen() {
   // everywhere else. A coach is never blocked by their own switch: they
   // still need to reach this screen to turn it back on.
   const blockedForClient = !isCoach && communityEnabled === false;
+  // The coach's per-client toggle — a separate gate from the app-wide
+  // switch above, and rendered with the shared locked-card look rather
+  // than the plain "off" text blockedForClient uses, so the two are
+  // visually distinguishable while testing/verifying either one.
+  const toggledOffForClient = !isCoach && !myFeatureEnabled;
 
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <ThemedView style={styles.header}>
           <ThemedText type="title">Community</ThemedText>
-          {activeTab === 'posts' && !blockedForClient && (
+          {activeTab === 'posts' && !blockedForClient && !toggledOffForClient && (
             <Pressable style={styles.newButton} onPress={() => router.push('/community/new')}>
               <ThemedText type="smallBold" style={styles.newButtonText}>
                 + New
@@ -213,19 +231,26 @@ export default function CommunityFeedScreen() {
 
             {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
 
-            {!loading && !error && blockedForClient && (
+            {!loading && !error && toggledOffForClient && (
+              <FeatureLockedCard
+                title="Community"
+                message="Your coach has turned off Community access for your account."
+              />
+            )}
+
+            {!loading && !error && !toggledOffForClient && blockedForClient && (
               <ThemedText themeColor="textSecondary" style={styles.empty}>
                 Your coach has turned Community off for now.
               </ThemedText>
             )}
 
-            {!loading && !error && !blockedForClient && posts.length === 0 && (
+            {!loading && !error && !toggledOffForClient && !blockedForClient && posts.length === 0 && (
               <ThemedText themeColor="textSecondary" style={styles.empty}>
                 No posts yet. Tap + New to start the conversation.
               </ThemedText>
             )}
 
-            {!loading && !error && !blockedForClient && posts.length > 0 && (
+            {!loading && !error && !toggledOffForClient && !blockedForClient && posts.length > 0 && (
               <FlatList
                 data={posts}
                 keyExtractor={(item) => item.id}
