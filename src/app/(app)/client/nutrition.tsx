@@ -1,11 +1,12 @@
+import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { HeroStat } from '@/components/hero-stat';
-import { MacroRing } from '@/components/macro-ring';
+import { CalorieRing } from '@/components/calorie-ring';
+import { MacroBar } from '@/components/macro-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
@@ -13,6 +14,7 @@ import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { addFoodLog, deleteFoodLog, listFoodLogsForDate, type FoodLogEntry, type FoodSource, type Meal } from '@/lib/food-logs';
 import { searchAllFoods, type BlendedFoodResult } from '@/lib/food-search';
+import { getMacroTargets, type MacroTargets } from '@/lib/macros';
 import { getProductByBarcode, type FoodSearchResult } from '@/lib/open-food-facts';
 import { GOAL_TYPES } from '@/lib/programmes';
 import { addDays } from '@/lib/time-ranges';
@@ -54,6 +56,17 @@ function round(value: number) {
   return Math.round(value * 10) / 10;
 }
 
+/** Which meal the header's quick-add (search) button logs into — just a
+ * sensible time-of-day guess, the same idea client/index.tsx's own
+ * greeting already uses, not tied to what's actually been logged yet. */
+function currentMealByTime(): Meal {
+  const hour = new Date().getHours();
+  if (hour < 11) return 'breakfast';
+  if (hour < 15) return 'lunch';
+  if (hour < 20) return 'dinner';
+  return 'snacks';
+}
+
 function goalLabel(goalType: CalorieTarget['goalType']) {
   if (!goalType) return 'Maintenance';
   return GOAL_TYPES.find((g) => g.key === goalType)?.label ?? goalType;
@@ -92,6 +105,7 @@ export default function NutritionScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const [target, setTarget] = useState<CalorieTarget | null>(null);
+  const [macroTargets, setMacroTargets] = useState<MacroTargets | null>(null);
 
   const [activeMeal, setActiveMeal] = useState<Meal | null>(null);
   const [search, setSearch] = useState('');
@@ -132,8 +146,15 @@ export default function NutritionScreen() {
       .finally(() => setLoading(false));
 
     getCalorieTarget(session.user.id)
-      .then(setTarget)
-      .catch((err) => console.error('Failed to load calorie target:', err));
+      .then((calorieTarget) => {
+        setTarget(calorieTarget);
+        if (!calorieTarget) {
+          setMacroTargets(null);
+          return;
+        }
+        return getMacroTargets(session.user.id, calorieTarget).then(setMacroTargets);
+      })
+      .catch((err) => console.error('Failed to load calorie/macro targets:', err));
   }, [session, logDate]);
 
   useFocusEffect(
@@ -185,14 +206,6 @@ export default function NutritionScreen() {
   const totalProtein = entries.reduce((sum, entry) => sum + (entry.protein ?? 0), 0);
   const totalCarbs = entries.reduce((sum, entry) => sum + (entry.carbs ?? 0), 0);
   const totalFat = entries.reduce((sum, entry) => sum + (entry.fat ?? 0), 0);
-
-  // This app has no macro targets to track progress against, so each
-  // ring instead fills to show that macro's share of today's total
-  // calories (grams × its kcal/g, over total calories) — a real number
-  // from what's actually logged, not a fabricated goal.
-  const proteinShare = totalCalories > 0 ? (totalProtein * 4) / totalCalories : 0;
-  const carbsShare = totalCalories > 0 ? (totalCarbs * 4) / totalCalories : 0;
-  const fatShare = totalCalories > 0 ? (totalFat * 9) / totalCalories : 0;
 
   const parsedQuantity = Number(quantityInput);
   const hasValidQuantity = quantityInput.trim().length > 0 && !Number.isNaN(parsedQuantity) && parsedQuantity > 0;
@@ -356,9 +369,41 @@ export default function NutritionScreen() {
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          <ThemedText type="title" style={styles.title}>
-            Nutrition
-          </ThemedText>
+          <View style={styles.header}>
+            <View style={styles.headerTitleRow}>
+              <Ionicons name="restaurant-outline" size={20} color={Accent} />
+              <ThemedText type="title" style={styles.title}>
+                Nutrition
+              </ThemedText>
+            </View>
+            <Pressable
+              onPress={() => openAddEntry(currentMealByTime())}
+              hitSlop={8}
+              accessibilityLabel="Quick-add a food">
+              <Ionicons name="search-outline" size={22} color={theme.textSecondary} />
+            </Pressable>
+          </View>
+
+          <View style={styles.dateNavRow}>
+            <Pressable onPress={handlePrevDay} style={styles.dateNavButton} hitSlop={8}>
+              <ThemedText type="smallBold" style={styles.dateNavButtonText}>
+                ‹
+              </ThemedText>
+            </Pressable>
+            <View style={styles.dateNavLabelWrap}>
+              {isToday && (
+                <ThemedText type="small" themeColor="textSecondary" style={styles.todayCaption}>
+                  Today
+                </ThemedText>
+              )}
+              <ThemedText style={styles.date}>{formatDisplayDate(logDate)}</ThemedText>
+            </View>
+            <Pressable onPress={handleNextDay} style={styles.dateNavButton} disabled={isToday} hitSlop={8}>
+              <ThemedText type="smallBold" style={[styles.dateNavButtonText, isToday && styles.dateNavButtonTextDisabled]}>
+                ›
+              </ThemedText>
+            </Pressable>
+          </View>
 
           {loading && <ActivityIndicator style={styles.loader} />}
           {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
@@ -366,57 +411,31 @@ export default function NutritionScreen() {
           {!loading && !error && (
             <View style={styles.summaryGlow}>
               <ThemedView type="backgroundElement" style={styles.summaryCard}>
-                <View style={styles.dateNavRow}>
-                  <Pressable onPress={handlePrevDay} style={styles.dateNavButton} hitSlop={8}>
-                    <ThemedText type="smallBold" style={styles.dateNavButtonText}>
-                      ‹
+                <View style={styles.summaryRow}>
+                  <CalorieRing current={totalCalories} target={target?.targetCalories ?? null} />
+                  {macroTargets ? (
+                    <View style={styles.macroBars}>
+                      <MacroBar label="Protein" current={totalProtein} target={macroTargets.proteinGrams} />
+                      <MacroBar label="Carbs" current={totalCarbs} target={macroTargets.carbsGrams} />
+                      <MacroBar label="Fats" current={totalFat} target={macroTargets.fatGrams} />
+                    </View>
+                  ) : (
+                    <ThemedText type="small" themeColor="textSecondary" style={styles.noTargetMeta}>
+                      Log your weight and meals daily — once there's enough history, your real calorie and macro
+                      targets show here.
                     </ThemedText>
-                  </Pressable>
-                  <View style={styles.dateNavLabelWrap}>
-                    <ThemedText themeColor="textSecondary" style={styles.date}>
-                      {isToday ? 'Today' : formatDisplayDate(logDate)}
-                    </ThemedText>
-                  </View>
-                  <Pressable onPress={handleNextDay} style={styles.dateNavButton} disabled={isToday} hitSlop={8}>
-                    <ThemedText
-                      type="smallBold"
-                      style={[styles.dateNavButtonText, isToday && styles.dateNavButtonTextDisabled]}>
-                      ›
-                    </ThemedText>
-                  </Pressable>
+                  )}
                 </View>
 
-                {target ? (
-                  <>
-                    <HeroStat
-                      value={totalCalories}
-                      label={`of ${Math.round(target.targetCalories)} kcal target`}
-                      progress={totalCalories / target.targetCalories}
-                    />
-                    <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
-                      {goalLabel(target.goalType)}
-                      {target.goalType && target.modifierPercent !== 0
-                        ? ` (${target.modifierPercent > 0 ? '+' : ''}${round(target.modifierPercent)}% of TDEE)`
-                        : ''}
-                      {' · TDEE '}
-                      {Math.round(target.estimatedTdee)} kcal
-                    </ThemedText>
-                  </>
-                ) : (
-                  <>
-                    <HeroStat value={totalCalories} label="Calories Today" />
-                    <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
-                      Log your weight and meals daily — once there's enough history, your real calorie target shows here.
-                    </ThemedText>
-                  </>
-                )}
-
-                {entries.length > 0 && (
-                  <View style={styles.macroRow}>
-                    <MacroRing value={round(totalProtein)} label="Protein" progress={proteinShare} />
-                    <MacroRing value={round(totalCarbs)} label="Carbs" progress={carbsShare} />
-                    <MacroRing value={round(totalFat)} label="Fat" progress={fatShare} />
-                  </View>
+                {target && (
+                  <ThemedText type="small" themeColor="textSecondary" style={styles.targetMeta}>
+                    {goalLabel(target.goalType)}
+                    {target.goalType && target.modifierPercent !== 0
+                      ? ` (${target.modifierPercent > 0 ? '+' : ''}${round(target.modifierPercent)}% of TDEE)`
+                      : ''}
+                    {' · TDEE '}
+                    {Math.round(target.estimatedTdee)} kcal
+                  </ThemedText>
                 )}
               </ThemedView>
             </View>
@@ -704,11 +723,26 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
     paddingBottom: Spacing.four,
   },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
   title: {
-    marginBottom: Spacing.half,
+    fontSize: 28,
+    lineHeight: 33,
   },
   date: {
     textAlign: 'center',
+  },
+  todayCaption: {
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
   summaryGlow: {
     ...Glow.teal,
@@ -717,13 +751,24 @@ const styles = StyleSheet.create({
   summaryCard: {
     borderRadius: Spacing.four,
     padding: Spacing.three,
-    gap: Spacing.one,
+    gap: Spacing.two,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.four,
+  },
+  macroBars: {
+    flex: 1,
+    gap: Spacing.two,
+  },
+  noTargetMeta: {
+    flex: 1,
   },
   dateNavRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: Spacing.one,
   },
   dateNavButton: {
     paddingHorizontal: Spacing.three,
@@ -748,13 +793,6 @@ const styles = StyleSheet.create({
   },
   targetMeta: {
     textAlign: 'center',
-    marginTop: -Spacing.two,
-  },
-  macroRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: Spacing.three,
-    marginBottom: Spacing.two,
   },
   mealSection: {
     gap: Spacing.two,
