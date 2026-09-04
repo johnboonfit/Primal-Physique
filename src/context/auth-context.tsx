@@ -11,6 +11,10 @@ export type Profile = {
   role: UserRole;
   full_name: string | null;
   phone_number: string | null;
+  push_notifications_enabled: boolean;
+  workout_reminders_enabled: boolean;
+  habit_reminders_enabled: boolean;
+  community_updates_enabled: boolean;
 };
 
 type AuthContextValue = {
@@ -65,7 +69,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
     supabase
       .from('profiles')
-      .select('id, email, role, full_name, phone_number')
+      .select(
+        'id, email, role, full_name, phone_number, push_notifications_enabled, workout_reminders_enabled, habit_reminders_enabled, community_updates_enabled'
+      )
       .eq('id', userId)
       .single()
       .then(({ data, error }) => {

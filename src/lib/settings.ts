@@ -27,3 +27,24 @@ export async function requestEmailChange(newEmail: string): Promise<void> {
   const { error } = await supabase.auth.updateUser({ email: newEmail.trim() });
   if (error) throw error;
 }
+
+/** The four notification-preference columns (see
+ * notification-preferences.sql) -- preference STORAGE only. Nothing in
+ * this app reads these yet; real notification delivery is Phase 14.
+ * Each toggle saves immediately on flip (see settings.tsx), same as
+ * every other simple on/off preference elsewhere in the app (e.g.
+ * Community's own hide toggle) -- no separate Save button for these. */
+export type NotificationPreferenceKey =
+  | 'push_notifications_enabled'
+  | 'workout_reminders_enabled'
+  | 'habit_reminders_enabled'
+  | 'community_updates_enabled';
+
+export async function setNotificationPreference(
+  userId: string,
+  key: NotificationPreferenceKey,
+  enabled: boolean
+): Promise<void> {
+  const { error } = await supabase.from('profiles').update({ [key]: enabled }).eq('id', userId);
+  if (error) throw error;
+}

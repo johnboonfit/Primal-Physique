@@ -2126,6 +2126,27 @@ The start of a real account-settings area — a gear icon next to Sign out on bo
 4. On either account, change the name and/or phone number, Save, reload the app — confirm both values persisted.
 5. Change the email field to a real address you can check, Save — confirm the screen tells you to check that inbox and keeps showing your current (old) email, not the new one. Click the confirmation link in the email Supabase sends, then reopen Settings — confirm it now shows the new address (this is the one step that needs your real Supabase project's email delivery to test end to end).
 
+## Settings: notification preferences (storage only) and an honest Wearable placeholder
+
+Two more cards on the Settings screen, after Hero and Profile settings.
+
+**Notification toggles**: four switches — push notifications, workout reminders, habit reminders, community updates — each saving the instant it's flipped (optimistic UI, reverts on failure), no separate Save button, same shape as the Community tab's own hide-toggle elsewhere in the app. This chunk is deliberately **preference storage only** — no real notification delivery exists anywhere in this app yet (that's Phase 14), so flipping these switches doesn't cause anything to fire. What matters now is that a client's real choice is sitting there correctly waiting, so Phase 14 doesn't ship with everyone silently defaulted to whatever the code happens to assume. All four default to **on** — the same "on unless someone turns it off" convention this schema already uses elsewhere (`client_feature_toggles`' own "no row means enabled" rule).
+
+**Wearable card**: genuinely static, not simulated. "Not connected," "Last synced: Never," and a visibly disabled Force Sync button are hardcoded — there is no wearable-connection data model in this database at all yet, on purpose. Phase 14 will define what a real connected state actually looks like; inventing a fake one now would just be something to rip out and reconcile later. The button is disabled at the actual component level (`disabled`, not just styled to look inactive), so tapping it does nothing at all — not a broken action, an honest absence of one.
+
+**A real rendering bug found and fixed while building the switches**: React Native's cross-platform `Switch` API has one `thumbColor` prop, expected to apply in both states — but react-native-web (the layer this app's web build runs on) only honors `thumbColor` for the OFF state. The ON-state thumb is controlled by a separate, web-only prop (`activeThumbColor`) that silently defaults to react-native-web's own teal (`#009688`) whenever it's left unset — which would have put a non-brand teal color on every switch's "on" thumb, quietly breaking the "oxblood is the only active-state accent" rule everywhere a `Switch` is used. Fixed by passing `activeThumbColor` explicitly alongside `thumbColor`, both set to the same bone-white.
+
+**New**: `supabase/notification-preferences.sql` (four boolean columns on `profiles`, all defaulting to true, plus their self-update grant); `setNotificationPreference()` in `src/lib/settings.ts`; the two new cards in `settings.tsx`.
+
+**Verified here** (fake backend, no live Supabase in this sandbox): all four switches default to on; flipping one saves immediately and leaves the other three untouched; a simulated save failure reverts the switch and shows an error rather than leaving it stuck in the wrong state; the Wearable card shows exactly the three placeholder values and its Force Sync button is confirmed inert (genuinely disabled, clicking it does nothing) — plus the thumb-color fix, confirmed by inspecting the actual rendered color before and after.
+
+**How you verify this yourself:**
+1. Run `notification-preferences.sql` in the Supabase SQL Editor (after `settings-profile.sql`).
+2. Open Settings — confirm all four notification switches default to on, and both switch states use oxblood/bone-white only (no teal anywhere on them).
+3. Flip one off, then reload the app — confirm it's still off (it genuinely saved, not just a visual toggle).
+4. Flip it back on, reload again — confirm it's back on.
+5. Check the Wearable card shows "Not connected" and "Never," and that tapping Force Sync visibly does nothing (no loading state, no error, no change).
+
 ## Project structure reference
 
 ```
@@ -2144,7 +2165,7 @@ src/
       health-advisory.tsx  # step 4, conditional — only reached when a PARQ answer flagged the account; a checkbox + optional clearance note, both converging on the same acknowledged-at timestamp; not a dead end, just held
     (app)/
       home.tsx          # coach's home screen — a real dashboard (stat tiles, Needs Attention, a merged real Recent Activity preview with a "View all →" into activity.tsx) plus Manage/Coaching Hub nav grids covering every coach screen; a gear icon opens /settings; redirects clients to /client
-      settings.tsx      # shared coach/client Settings screen — Hero card (initials avatar, email, real tier or "Coach") + Profile settings card (name/email/phone, one Save); email changes go through Supabase Auth's real confirm-by-link flow, never an instant profiles.email overwrite
+      settings.tsx      # shared coach/client Settings screen — Hero card (initials avatar, email, real tier or "Coach") + Profile settings card (name/email/phone, one Save; email changes go through Supabase Auth's real confirm-by-link flow, never an instant profiles.email overwrite) + Notification toggles card (4 switches, save-on-flip, preference storage only — no delivery built yet) + Wearable card (a genuinely static "Not connected"/"Never synced"/disabled Force Sync placeholder, no schema behind it yet)
       activity.tsx      # coach-only "Client Activity" — the full, real-time, cross-client feed (meals/habits/completed workouts, each with that client's live Momentum + Compliance Score); see getClientActivityFeed()/subscribeToClientActivity() in coach-dashboard.ts
       messages/
         index.tsx        # coach-only inbox — every client, most-recently-messaged first, with a last-message preview and an online dot
@@ -2296,7 +2317,7 @@ src/
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
     feature-toggles.ts             # getClientFeatureToggles() (all 9 feature_key rows + this client's real on/off state) / setClientFeatureToggle() (coach-only) / isFeatureEnabled() — the one function every gated screen calls; no row for a feature means enabled / listPresets() / applyPresetToClient() — a one-time bulk write of all 9, not an ongoing link, so every toggle stays individually adjustable right after
     client-deletion.ts             # deleteClient() — calls the delete-client Edge Function, surfaces its real {error} message instead of supabase-js's generic "non-2xx status" text
-    settings.ts                  # updateProfileDetails() (name + phone, immediate) / requestEmailChange() (goes through supabase.auth.updateUser() — a real confirm-by-link account change, never an instant profiles.email overwrite)
+    settings.ts                  # updateProfileDetails() (name + phone, immediate) / requestEmailChange() (goes through supabase.auth.updateUser() — a real confirm-by-link account change, never an instant profiles.email overwrite) / setNotificationPreference() (one of the 4 notification-preference columns, save-on-flip — preference storage only, no delivery reads these yet)
     onboarding.ts                # getOnboardingStatus() (derived, not tracked -- needs_parq/needs_health_review/complete off real data every time) / getParqForm() / submitOnboardingParq() (upserts, so a retried submission re-fires the flagging trigger safely) / acknowledgeHealthAdvisory() / ensureClientProvisioned() (calls complete_client_onboarding() -- auto-places a client on the Base Plan tier + toggle defaults the instant onboarding is genuinely done, a one-time no-coach-involvement action safe to call repeatedly)
 supabase/
   functions/
@@ -2353,4 +2374,5 @@ supabase/
   onboarding.sql                                                                                                  # paste in after external-forms.sql — app_settings.parq_form_id, profiles.onboarding_health_flagged/onboarding_health_acknowledged_at/onboarding_clearance_note, onboarding_parq_responses, client read-access policies on external_forms/external_form_questions (the same RLS gap class readiness-client-access.sql fixed), and the flag_onboarding_health_risk_trigger safety gate
   onboarding-auto-provision.sql                                                                                   # paste in after onboarding.sql — profiles.onboarding_provisioned_at + complete_client_onboarding(), a SECURITY DEFINER function a client calls on their own account to auto-apply the Base Plan tier + toggle defaults exactly once, ever
   settings-profile.sql                                                                                              # paste in after onboarding-auto-provision.sql — profiles.phone_number + its self-update grant, and a trigger keeping profiles.email in sync whenever a real Supabase Auth email change is confirmed
+  notification-preferences.sql                                                                                        # paste in after settings-profile.sql — 4 boolean columns on profiles (push/workout-reminders/habit-reminders/community-updates, all default true) + their self-update grant; preference storage only, no delivery system reads these yet
 ```

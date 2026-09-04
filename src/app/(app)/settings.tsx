@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -9,7 +9,24 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { CLIENT_TIERS, getMyTier } from '@/lib/leaderboard';
-import { requestEmailChange, updateProfileDetails } from '@/lib/settings';
+import {
+  requestEmailChange,
+  setNotificationPreference,
+  updateProfileDetails,
+  type NotificationPreferenceKey,
+} from '@/lib/settings';
+
+/** Preference storage only -- see notification-preferences.sql. No real
+ * delivery reads these yet (Phase 14); each switch just needs to save
+ * the right value, immediately, same as every other simple on/off
+ * preference in this app (e.g. Community's own hide toggle) rather
+ * than waiting on the Profile settings card's Save button. */
+const NOTIFICATION_TOGGLES: { key: NotificationPreferenceKey; label: string; description: string }[] = [
+  { key: 'push_notifications_enabled', label: 'Push notifications', description: 'Allow this device to receive push notifications.' },
+  { key: 'workout_reminders_enabled', label: 'Workout reminders', description: 'Reminders for your scheduled workouts.' },
+  { key: 'habit_reminders_enabled', label: 'Habit reminders', description: 'Reminders to complete your daily habits.' },
+  { key: 'community_updates_enabled', label: 'Community updates', description: 'New posts and activity in Community.' },
+];
 
 /** Two-letter initials for the Hero card's avatar circle -- first
  * letter of the first two words of whatever name is available, or the
@@ -45,11 +62,25 @@ export default function SettingsScreen() {
   const [savedNotice, setSavedNotice] = useState(false);
   const [emailChangeNotice, setEmailChangeNotice] = useState<string | null>(null);
 
+  const [notifPrefs, setNotifPrefs] = useState<Record<NotificationPreferenceKey, boolean>>({
+    push_notifications_enabled: true,
+    workout_reminders_enabled: true,
+    habit_reminders_enabled: true,
+    community_updates_enabled: true,
+  });
+  const [notifError, setNotifError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!profile || formInitialized) return;
     setFullName(profile.full_name ?? '');
     setPhoneNumber(profile.phone_number ?? '');
     setEmail(profile.email ?? '');
+    setNotifPrefs({
+      push_notifications_enabled: profile.push_notifications_enabled,
+      workout_reminders_enabled: profile.workout_reminders_enabled,
+      habit_reminders_enabled: profile.habit_reminders_enabled,
+      community_updates_enabled: profile.community_updates_enabled,
+    });
     setFormInitialized(true);
   }, [profile, formInitialized]);
 
@@ -93,6 +124,21 @@ export default function SettingsScreen() {
       setSaveError(err instanceof Error ? err.message : 'Something went wrong saving your details.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** Optimistic flip, immediate save, revert on failure -- same shape
+   * client/index.tsx's handleToggleCommunityHidden already uses for a
+   * single on/off preference. */
+  const handleToggleNotification = async (key: NotificationPreferenceKey, next: boolean) => {
+    if (!session) return;
+    setNotifError(null);
+    setNotifPrefs((current) => ({ ...current, [key]: next }));
+    try {
+      await setNotificationPreference(session.user.id, key, next);
+    } catch (err) {
+      setNotifPrefs((current) => ({ ...current, [key]: !next }));
+      setNotifError(err instanceof Error ? err.message : 'Something went wrong saving that.');
     }
   };
 
@@ -201,6 +247,71 @@ export default function SettingsScreen() {
               )}
             </Pressable>
           </ThemedView>
+
+          <ThemedText type="smallBold" style={styles.sectionLabel}>
+            Notifications
+          </ThemedText>
+
+          <ThemedView type="backgroundElement" style={[styles.card, styles.notificationsCard]}>
+            {NOTIFICATION_TOGGLES.map((toggle, index) => (
+              <View
+                key={toggle.key}
+                style={[styles.toggleRow, index === NOTIFICATION_TOGGLES.length - 1 && styles.toggleRowLast]}>
+                <View style={styles.toggleInfo}>
+                  <ThemedText type="smallBold">{toggle.label}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {toggle.description}
+                  </ThemedText>
+                </View>
+                <Switch
+                  value={notifPrefs[toggle.key]}
+                  onValueChange={(next) => handleToggleNotification(toggle.key, next)}
+                  trackColor={{ false: Colors.backgroundSelected, true: Accent }}
+                  thumbColor={Colors.text}
+                  // react-native-web only honors thumbColor for the OFF
+                  // state -- the ON-state thumb is a separate, web-only
+                  // prop (activeThumbColor) that otherwise silently
+                  // defaults to react-native-web's own teal (#009688),
+                  // which would violate this app's "oxblood is the only
+                  // active-state accent" color rule.
+                  {...{ activeThumbColor: Colors.text }}
+                />
+              </View>
+            ))}
+            {notifError && <ThemedText style={styles.error}>{notifError}</ThemedText>}
+          </ThemedView>
+
+          <ThemedText type="smallBold" style={styles.sectionLabel}>
+            Wearable
+          </ThemedText>
+
+          <ThemedView type="backgroundElement" style={[styles.card, styles.wearableCard]}>
+            <View style={styles.wearableRow}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Status
+              </ThemedText>
+              <ThemedText type="smallBold" themeColor="textSecondary">
+                Not connected
+              </ThemedText>
+            </View>
+            <View style={styles.wearableRow}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Last synced
+              </ThemedText>
+              <ThemedText type="smallBold" themeColor="textSecondary">
+                Never
+              </ThemedText>
+            </View>
+            <Pressable style={styles.disabledButton} disabled accessibilityState={{ disabled: true }}>
+              <ThemedText type="smallBold" themeColor="textSecondary">
+                Force Sync
+              </ThemedText>
+            </Pressable>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.wearableHint}>
+              Wearable integration is coming soon — connecting a device and syncing data will work here once it's
+              built.
+            </ThemedText>
+          </ThemedView>
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -286,5 +397,46 @@ const styles = StyleSheet.create({
   },
   loader: {
     marginTop: Spacing.six,
+  },
+  notificationsCard: {
+    padding: 0,
+    paddingHorizontal: Spacing.four,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
+    paddingVertical: Spacing.three,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.backgroundSelected,
+  },
+  toggleRowLast: {
+    borderBottomWidth: 0,
+  },
+  toggleInfo: {
+    flex: 1,
+    gap: Spacing.half,
+  },
+  wearableCard: {
+    gap: Spacing.two,
+  },
+  wearableRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  disabledButton: {
+    borderWidth: 1,
+    borderColor: Colors.backgroundSelected,
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.three,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing.one,
+    opacity: 0.5,
+  },
+  wearableHint: {
+    marginTop: -Spacing.one,
   },
 });
