@@ -1970,6 +1970,36 @@ A real, extensible gating system: 9 feature keys (Form Check, AI Create Workout,
 4. **Leaderboard**: Community → Leaderboards — locked card appears even for a client whose tier would otherwise grant access. Toggle back on → leaderboard shows again (assuming their tier still qualifies).
 5. **Momentum Score**: client Home — the Momentum tile should go grey/dashed like the Steps placeholder next to it, instead of showing a real number.
 
+## Toggle presets: apply all 9 feature states at once
+
+Three starter bundles on top of last chunk's feature toggles — **Base Plan defaults**, **Accelerator defaults**, **Precision defaults** — so setting up a new client's access doesn't mean flipping 9 switches one at a time.
+
+**The real plan-defaults matrix, from the source spreadsheet you provided:**
+
+| Feature | Base | Accelerator | Precision |
+|---|---|---|---|
+| Form Check | Off | On | On |
+| AI Create Workout | On† | Off | On |
+| AI-Assisted Logging | On | On | On |
+| Community | Off | On | On |
+| Challenges | Off | On | On |
+| Leaderboard | Off‡ | On | On |
+| Progress Photo Scanning | On | On | On |
+| Momentum Score | On | On | On |
+| Chat | Off | On | On |
+
+†Base's real spec is "on, but limited to one AI workout creation with the coach able to reset it" — a usage-quota rule this boolean toggle system can't express yet. Stored as plain On; the quota itself is a real feature to build later, and moot today since AI Create Workout isn't built at all.
+
+‡The source matrix said On for Base here; deliberately overridden to match Community's value instead, per your call — Leaderboards is a sub-tab inside Community, and it's also independently gated by membership tier (Base never qualifies there, unchanged from an earlier chunk), so "on" for Base would have been a real toggle value with no visible effect. Accelerator/Precision are unaffected — the source and the override agree there.
+
+**Applying a preset is a one-time bulk write, not an ongoing link.** `applyPresetToClient()` reads a preset's 9 values and upserts them straight into the exact same `client_feature_toggles` rows `setClientFeatureToggle()` already writes to — nothing records "this client is on the Accelerator preset" afterward. That's deliberate, not a missing feature: it's exactly what keeps every toggle freely, individually adjustable right after applying one, with no separate "unlock" step needed. A confirm dialog gates applying one, since it silently overwrites whatever individual customization a client already had.
+
+**New**: `supabase/toggle-presets.sql` (`toggle_preset` + `toggle_preset_value`, coach-only, seeded with the matrix above). **Changed**: `feature-toggles.ts` (`listPresets()`, `applyPresetToClient()`), `clients/[id]/features.tsx` (three preset buttons + confirm dialog above the existing per-feature list).
+
+**Verified here**: applying Base Plan defaults to a client sets exactly the 9 values above (checked directly against the underlying rows, not just the UI); after applying, manually flipping one feature back (Chat) updates only that one row — every other feature stays exactly where the preset left it, proving individual adjustment survives a preset apply rather than being reverted or locked.
+
+**How you verify it yourself**: open a client's Feature Access screen, apply "Base Plan defaults," confirm Form Check/Community/Challenges/Leaderboard/Chat all read Off and the rest read On. Then flip just one of them back — confirm only that one changes, and re-applying a preset later still works normally (nothing about one manual change breaks a future preset apply).
+
 ## Project structure reference
 
 ```
@@ -2033,7 +2063,7 @@ src/
         [id].tsx          # one client's detail page — Programme section (Unassign) + Assigned Workouts section (one-off workouts, Unassign) + Check-in Schedule section (recurring assignments with Cancel, individual check-in instances with Remove) + Nutrition section (target + 14-day food log history, delete) + a Feature Access section + a Danger Zone linking to permanent deletion
         [id]/
           delete.tsx        # the one irreversible action in the app — spells out exactly what's deleted vs. anonymized, requires typing the client's exact full name to enable the delete button, calls deleteClient()
-          features.tsx        # per-client feature toggles — all 9 feature_key rows with an On/Off control each; see feature-toggles.ts
+          features.tsx        # per-client feature toggles — all 9 feature_key rows with an On/Off control each, plus 3 one-tap presets (Base/Accelerator/Precision defaults) that bulk-set all 9 at once; see feature-toggles.ts
       forms/
         _layout.tsx      # coach-only guard for everything below
         index.tsx        # list of the coach's check-in form templates, with Assign and Set as readiness (✓ badge on whichever one is currently the active pre-workout questionnaire)
@@ -2124,7 +2154,7 @@ src/
     session-scorecard.ts                # getSessionScorecard() — PBs (per-exercise heaviest this session vs. every prior session, swap-aware, matched by exercise_library_id same as getSetPrefills), total weight lifted (sum of weight x reps), and an approximate duration (first logged set's timestamp to the last)
     muscle-group-analysis.ts            # getWeeklyMuscleGroupSetCounts() — this week's logged sets grouped by muscle group, swap-aware, using getCurrentWeekRange(); tierForSetCount() (green/yellow/red at 10/20) and overallVolumeStatus() (worst tier wins, not an average)
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
-    feature-toggles.ts             # getClientFeatureToggles() (all 9 feature_key rows + this client's real on/off state) / setClientFeatureToggle() (coach-only) / isFeatureEnabled() — the one function every gated screen calls; no row for a feature means enabled
+    feature-toggles.ts             # getClientFeatureToggles() (all 9 feature_key rows + this client's real on/off state) / setClientFeatureToggle() (coach-only) / isFeatureEnabled() — the one function every gated screen calls; no row for a feature means enabled / listPresets() / applyPresetToClient() — a one-time bulk write of all 9, not an ongoing link, so every toggle stays individually adjustable right after
     client-deletion.ts             # deleteClient() — calls the delete-client Edge Function, surfaces its real {error} message instead of supabase-js's generic "non-2xx status" text
 supabase/
   functions/
@@ -2176,4 +2206,5 @@ supabase/
   client-deletion.sql                                                                                   # paste in after client-status.sql — changes community_posts.author_id from on delete cascade to on delete set null, so permanently deleting a client anonymizes their posts instead of deleting them
   client-activity-feed.sql                                                                                # paste in after client-deletion.sql — coach read access to habit_logs (also fixes Momentum Score's habit component when a coach computes it), adds food_logs/habit_logs/assignments to the realtime publication
   feature-toggles.sql                                                                                       # paste in after client-activity-feed.sql — feature_key (9 seeded rows, extensible) + client_feature_toggles (client + feature_key -> enabled, no row means enabled) + RLS
+  toggle-presets.sql                                                                                          # paste in after feature-toggles.sql — toggle_preset (3 seeded bundles) + toggle_preset_value (the real plan-defaults matrix, all 9 features x all 3 presets), coach-only RLS
 ```

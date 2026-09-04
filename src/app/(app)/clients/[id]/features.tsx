@@ -3,11 +3,19 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
-import { getClientFeatureToggles, setClientFeatureToggle, type FeatureToggle } from '@/lib/feature-toggles';
 import { getErrorMessage } from '@/lib/errors';
+import {
+  applyPresetToClient,
+  getClientFeatureToggles,
+  listPresets,
+  setClientFeatureToggle,
+  type FeatureToggle,
+  type TogglePreset,
+} from '@/lib/feature-toggles';
 
 /**
  * Coach-only per-client feature access. Every key from feature_key
@@ -20,17 +28,25 @@ export default function ClientFeaturesScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const [features, setFeatures] = useState<FeatureToggle[]>([]);
+  const [presets, setPresets] = useState<TogglePreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const [presetTarget, setPresetTarget] = useState<TogglePreset | null>(null);
+  const [applyingPreset, setApplyingPreset] = useState(false);
+  const [presetError, setPresetError] = useState<string | null>(null);
+
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true);
     setError(null);
-    getClientFeatureToggles(id)
-      .then(setFeatures)
+    Promise.all([getClientFeatureToggles(id), listPresets()])
+      .then(([featureData, presetData]) => {
+        setFeatures(featureData);
+        setPresets(presetData);
+      })
       .catch((err) => setError(getErrorMessage(err, 'Failed to load feature access.')))
       .finally(() => setLoading(false));
   }, [id]);
@@ -59,6 +75,21 @@ export default function ClientFeaturesScreen() {
     }
   };
 
+  const handleConfirmApplyPreset = async () => {
+    if (!id || !presetTarget) return;
+    setPresetError(null);
+    setApplyingPreset(true);
+    try {
+      await applyPresetToClient(id, presetTarget.key);
+      setPresetTarget(null);
+      load();
+    } catch (err) {
+      setPresetError(getErrorMessage(err, 'Failed to apply that preset.'));
+    } finally {
+      setApplyingPreset(false);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -78,6 +109,31 @@ export default function ClientFeaturesScreen() {
 
         {!loading && !error && (
           <ScrollView contentContainerStyle={styles.scrollContent}>
+            {presets.length > 0 && (
+              <>
+                <ThemedText type="smallBold" style={styles.sectionLabel}>
+                  Apply a preset
+                </ThemedText>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.presetHint}>
+                  Sets all 9 features at once to that plan's defaults — every toggle stays individually adjustable afterward.
+                </ThemedText>
+                {presetError && <ThemedText style={styles.error}>{presetError}</ThemedText>}
+                <View style={styles.presetRow}>
+                  {presets.map((preset) => (
+                    <Pressable key={preset.key} style={styles.presetButton} onPress={() => setPresetTarget(preset)}>
+                      <ThemedText type="smallBold" style={styles.presetButtonText}>
+                        {preset.label}
+                      </ThemedText>
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            )}
+
+            <ThemedText type="smallBold" style={styles.sectionLabel}>
+              Individual features
+            </ThemedText>
+
             {saveError && <ThemedText style={styles.error}>{saveError}</ThemedText>}
 
             <ThemedView type="backgroundElement" style={styles.card}>
@@ -98,6 +154,16 @@ export default function ClientFeaturesScreen() {
             </ThemedView>
           </ScrollView>
         )}
+
+        <ConfirmDialog
+          visible={presetTarget !== null}
+          title={`Apply ${presetTarget?.label ?? ''}?`}
+          message="This overwrites all 9 feature toggles for this client with that plan's defaults, including any individual changes already made. Each one can still be adjusted afterward."
+          confirmLabel="Apply preset"
+          busy={applyingPreset}
+          onConfirm={handleConfirmApplyPreset}
+          onCancel={() => setPresetTarget(null)}
+        />
       </SafeAreaView>
     </ThemedView>
   );
@@ -126,6 +192,29 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: Spacing.six,
+  },
+  sectionLabel: {
+    marginTop: Spacing.two,
+    marginBottom: Spacing.one,
+  },
+  presetHint: {
+    marginBottom: Spacing.two,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+    marginBottom: Spacing.two,
+  },
+  presetButton: {
+    borderWidth: 1,
+    borderColor: Colors.tealBright,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  presetButtonText: {
+    color: Colors.tealBright,
   },
   card: {
     borderRadius: Spacing.two,

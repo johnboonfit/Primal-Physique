@@ -80,3 +80,46 @@ export async function isFeatureEnabled(clientId: string, featureKey: FeatureKey)
   if (error) throw error;
   return data?.enabled ?? true;
 }
+
+export type PresetKey = 'base_defaults' | 'accelerator_defaults' | 'precision_defaults';
+
+export type TogglePreset = {
+  key: PresetKey;
+  label: string;
+};
+
+/** The 3 starter bundles (see toggle-presets.sql for the real plan-
+ * defaults matrix each one applies) — coach-only reference data, never
+ * shown to a client. */
+export async function listPresets(): Promise<TogglePreset[]> {
+  const { data, error } = await supabase.from('toggle_preset').select('key, label').order('label');
+  if (error) throw error;
+  return (data ?? []).map((row) => ({ key: row.key as PresetKey, label: row.label as string }));
+}
+
+/**
+ * Applies a preset to one client — a one-time bulk write of all 9
+ * feature states, not an ongoing link. Nothing records "this client is
+ * on the Accelerator preset" afterward, which is exactly what keeps
+ * every toggle freely, individually adjustable right after applying one:
+ * presets are a starting point, applied through the exact same
+ * client_feature_toggles rows setClientFeatureToggle() already writes to,
+ * not a separate locked state layered on top.
+ */
+export async function applyPresetToClient(clientId: string, presetKey: PresetKey): Promise<void> {
+  const { data: values, error: valuesError } = await supabase
+    .from('toggle_preset_value')
+    .select('feature_key, enabled')
+    .eq('preset_key', presetKey);
+
+  if (valuesError) throw valuesError;
+
+  const rows = (values ?? []).map((row) => ({
+    client_id: clientId,
+    feature_key: row.feature_key as string,
+    enabled: row.enabled as boolean,
+  }));
+
+  const { error } = await supabase.from('client_feature_toggles').upsert(rows, { onConflict: 'client_id,feature_key' });
+  if (error) throw error;
+}
