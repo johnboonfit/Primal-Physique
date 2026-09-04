@@ -9,7 +9,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import type { ExternalFormDetail } from '@/lib/external-forms';
-import { getOnboardingStatus, getParqForm, submitOnboardingParq } from '@/lib/onboarding';
+import { ensureClientProvisioned, getOnboardingStatus, getParqForm, submitOnboardingParq } from '@/lib/onboarding';
 import { getQuestionTypeDefinition, type AnswerValue } from '@/lib/question-types';
 
 function blankAnswerFor(question: ExternalFormDetail['questions'][number]): AnswerValue {
@@ -86,6 +86,9 @@ export default function OnboardingParqScreen() {
       await submitOnboardingParq(session.user.id, payload);
 
       const status = await getOnboardingStatus(session.user.id);
+      if (status === 'complete') {
+        await ensureClientProvisioned();
+      }
       router.replace(status === 'needs_health_review' ? '/health-advisory' : '/client');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong submitting this form.');

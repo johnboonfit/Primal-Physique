@@ -67,3 +67,23 @@ export async function acknowledgeHealthAdvisory(clientId: string, note: string):
 
   if (error) throw error;
 }
+
+/**
+ * Auto-completes onboarding with zero coach involvement: places the
+ * client on the Base Plan (Tier 1, stored as 'club') and applies the
+ * exact "Base Plan defaults" toggle preset a coach would otherwise have
+ * set by hand. Safe to call every time onboarding status resolves to
+ * 'complete' — see complete_client_onboarding() in
+ * onboarding-auto-provision.sql, which only ever actually provisions
+ * once, ever, per client, and is a no-op on every call after that (so
+ * it can never silently undo a coach's later manual tier/toggle
+ * change). Called from the two real completion points (finishing PARQ
+ * clean, and acknowledging the health advisory) and, as a safety net
+ * for a client whose provisioning didn't get to run the first time
+ * (e.g. a dropped connection), from every later onboarding-status
+ * check that finds 'complete' too.
+ */
+export async function ensureClientProvisioned(): Promise<void> {
+  const { error } = await supabase.rpc('complete_client_onboarding');
+  if (error) throw error;
+}

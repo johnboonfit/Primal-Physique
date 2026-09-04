@@ -5,7 +5,7 @@ import type { ColorValue } from 'react-native';
 
 import { Accent, Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { getOnboardingStatus, type OnboardingStatus } from '@/lib/onboarding';
+import { ensureClientProvisioned, getOnboardingStatus, type OnboardingStatus } from '@/lib/onboarding';
 
 const ONBOARDING_ROUTES: Record<Exclude<OnboardingStatus, 'complete'>, string> = {
   needs_parq: '/parq',
@@ -44,6 +44,15 @@ export default function ClientTabsLayout() {
     getOnboardingStatus(session.user.id)
       .then((status) => {
         if (!cancelled) setOnboardingStatus(status);
+        // Safety net, not the primary path (parq.tsx/health-advisory.tsx
+        // already call this the instant onboarding actually finishes) —
+        // covers a client who finished onboarding but whose provisioning
+        // call never got to run (e.g. a dropped connection). A no-op
+        // every time after the first, so it's harmless to call on every
+        // mount of this layout for a fully-onboarded client, forever.
+        if (status === 'complete') {
+          ensureClientProvisioned().catch((err) => console.error('Failed to provision client account:', err));
+        }
       })
       .finally(() => {
         if (!cancelled) setCheckingOnboarding(false);

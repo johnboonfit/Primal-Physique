@@ -8,7 +8,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import { acknowledgeHealthAdvisory } from '@/lib/onboarding';
+import { acknowledgeHealthAdvisory, ensureClientProvisioned } from '@/lib/onboarding';
 
 /**
  * Step 4 — only ever reached when getOnboardingStatus() says
@@ -38,6 +38,7 @@ export default function HealthAdvisoryScreen() {
     setSaving(true);
     try {
       await acknowledgeHealthAdvisory(session.user.id, note);
+      await ensureClientProvisioned();
       router.replace('/client');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong saving that.');
