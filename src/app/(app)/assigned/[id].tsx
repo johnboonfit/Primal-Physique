@@ -42,6 +42,7 @@ import {
 } from '@/lib/set-logging';
 import { SET_TYPE_DESCRIPTIONS, setTypeLabel } from '@/lib/set-types';
 import { clearSessionSnapshot, loadSessionSnapshot, saveSessionSnapshot } from '@/lib/session-snapshot';
+import { getLatestHeartRateSample, type HeartRateSample } from '@/lib/wearables';
 import { awardWorkoutXp } from '@/lib/xp';
 
 const DEFAULT_REST_SECONDS = 90;
@@ -238,6 +239,8 @@ export default function AssignedWorkoutDetailScreen() {
   const [sessionStartAt, setSessionStartAt] = useState<string | null>(null);
   const [sessionEndAt, setSessionEndAt] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
+
+  const [heartRate, setHeartRate] = useState<HeartRateSample | null>(null);
 
   const [restDuration, setRestDuration] = useState(DEFAULT_REST_SECONDS);
   const [restSecondsLeft, setRestSecondsLeft] = useState<number | null>(null);
@@ -456,6 +459,32 @@ export default function AssignedWorkoutDetailScreen() {
     const interval = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [detail?.status, sessionStartAt]);
+
+  // Polls for a fresh heart rate reading while the session is open --
+  // there's no live push from a wearable to react to yet, so this is
+  // the closest thing to "live" available: re-check every 30s, and
+  // getLatestHeartRateSample itself refuses to return anything older
+  // than a few minutes (see wearables.ts) rather than showing a stale
+  // reading as if it were current.
+  useEffect(() => {
+    if (!clientId || detail?.status !== 'pending') return;
+    let cancelled = false;
+
+    const refresh = () => {
+      getLatestHeartRateSample(clientId)
+        .then((sample) => {
+          if (!cancelled) setHeartRate(sample);
+        })
+        .catch((err) => console.error('Failed to load heart rate:', err));
+    };
+
+    refresh();
+    const interval = setInterval(refresh, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [clientId, detail?.status]);
 
   const startRestTimer = () => {
     if (restIntervalRef.current) clearInterval(restIntervalRef.current);
@@ -843,13 +872,19 @@ export default function AssignedWorkoutDetailScreen() {
 
               {!showingReadinessGate && (
                 <View style={styles.heartRateRow}>
-                  <Ionicons name="heart-outline" size={16} color={Colors.textSecondary} />
+                  <Ionicons name="heart-outline" size={16} color={heartRate ? Accent : Colors.textSecondary} />
                   <ThemedText type="small" themeColor="textSecondary">
                     Heart Rate
                   </ThemedText>
-                  <ThemedText type="small" themeColor="textSecondary" style={styles.heartRateValue}>
-                    -- bpm · Connect a wearable
-                  </ThemedText>
+                  {heartRate ? (
+                    <ThemedText type="smallBold" style={styles.heartRateValue}>
+                      {heartRate.bpm} bpm
+                    </ThemedText>
+                  ) : (
+                    <ThemedText type="small" themeColor="textSecondary" style={styles.heartRateValue}>
+                      -- bpm · Connect a wearable
+                    </ThemedText>
+                  )}
                 </View>
               )}
 

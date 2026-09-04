@@ -15,6 +15,7 @@ import {
   updateProfileDetails,
   type NotificationPreferenceKey,
 } from '@/lib/settings';
+import { getWearableConnections, type WearableConnection } from '@/lib/wearables';
 
 /** Preference storage only -- see notification-preferences.sql. No real
  * delivery reads these yet (Phase 14); each switch just needs to save
@@ -35,6 +36,23 @@ const NOTIFICATION_TOGGLES: { key: NotificationPreferenceKey; label: string; des
  * only avatar there is right now (same placeholder-initials approach
  * leaderboard-panel.tsx already uses, just two letters instead of one
  * for this larger, more prominent card). */
+const PROVIDER_LABEL: Record<WearableConnection['provider'], string> = {
+  apple_health: 'Apple Health',
+  google_health: 'Google Health',
+};
+
+function formatRelativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 function initials(fullName: string | null, email: string): string {
   const source = (fullName ?? '').trim();
   if (source) {
@@ -70,6 +88,8 @@ export default function SettingsScreen() {
   });
   const [notifError, setNotifError] = useState<string | null>(null);
 
+  const [wearableConnections, setWearableConnections] = useState<WearableConnection[]>([]);
+
   useEffect(() => {
     if (!profile || formInitialized) return;
     setFullName(profile.full_name ?? '');
@@ -94,6 +114,13 @@ export default function SettingsScreen() {
       .then((tier) => setPlanLabel(CLIENT_TIERS.find((t) => t.key === tier)?.label ?? 'Base'))
       .catch(() => setPlanLabel(null));
   }, [session, isCoach]);
+
+  useEffect(() => {
+    if (!session) return;
+    getWearableConnections(session.user.id)
+      .then(setWearableConnections)
+      .catch((err) => console.error('Failed to load wearable connections:', err));
+  }, [session]);
 
   const handleSave = async () => {
     if (!session || !profile) return;
@@ -291,7 +318,9 @@ export default function SettingsScreen() {
                 Status
               </ThemedText>
               <ThemedText type="smallBold" themeColor="textSecondary">
-                Not connected
+                {wearableConnections.length > 0
+                  ? wearableConnections.map((c) => PROVIDER_LABEL[c.provider]).join(', ')
+                  : 'Not connected'}
               </ThemedText>
             </View>
             <View style={styles.wearableRow}>
@@ -299,7 +328,7 @@ export default function SettingsScreen() {
                 Last synced
               </ThemedText>
               <ThemedText type="smallBold" themeColor="textSecondary">
-                Never
+                {wearableConnections[0]?.lastSyncedAt ? formatRelativeTime(wearableConnections[0].lastSyncedAt) : 'Never'}
               </ThemedText>
             </View>
             <Pressable style={styles.disabledButton} disabled accessibilityState={{ disabled: true }}>

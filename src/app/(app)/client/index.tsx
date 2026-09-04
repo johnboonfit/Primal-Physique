@@ -34,6 +34,7 @@ import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
 import { getCurrentStreak } from '@/lib/streak';
 import { checkAndRecalculateTdeeIfDue, getCalorieTarget } from '@/lib/tdee';
 import { getTrainingReadiness, type TrainingReadinessBreakdown } from '@/lib/training-readiness';
+import { getDailyMetricsForDate } from '@/lib/wearables';
 import { hasWeightLogForDate } from '@/lib/weight-logs';
 import { awardHabitXp, getXpSummary, type XpSummary } from '@/lib/xp';
 
@@ -84,6 +85,8 @@ export default function ClientHomeScreen() {
 
   const [readiness, setReadiness] = useState<TrainingReadinessBreakdown | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(true);
+
+  const [todaySteps, setTodaySteps] = useState<number | null>(null);
 
   const [xp, setXp] = useState<XpSummary | null>(null);
   const [xpLoading, setXpLoading] = useState(true);
@@ -273,6 +276,23 @@ export default function ClientHomeScreen() {
         cancelled = true;
       };
     }, [session])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+
+      getDailyMetricsForDate(session.user.id, logDate)
+        .then((metrics) => {
+          if (!cancelled) setTodaySteps(metrics?.steps ?? null);
+        })
+        .catch((err) => console.error('Failed to load wearable step count:', err));
+
+      return () => {
+        cancelled = true;
+      };
+    }, [session, logDate])
   );
 
   const loadXp = useCallback(() => {
@@ -634,7 +654,11 @@ export default function ClientHomeScreen() {
               )}
             </View>
             <View style={styles.ringGridRow}>
-              <StatRing value="--" label="Steps" subtitle="Sync a wearable" muted style={styles.ringTile} />
+              {todaySteps !== null ? (
+                <StatRing value={todaySteps.toLocaleString()} label="Steps" subtitle="today" style={styles.ringTile} />
+              ) : (
+                <StatRing value="--" label="Steps" subtitle="Sync a wearable" muted style={styles.ringTile} />
+              )}
               <StatRing
                 value={caloriesToday !== null ? String(Math.round(caloriesToday)) : '--'}
                 label="Calories"
