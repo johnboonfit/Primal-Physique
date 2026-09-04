@@ -2,6 +2,8 @@ import { supabase } from '@/lib/supabase';
 
 export type Meal = 'breakfast' | 'lunch' | 'dinner' | 'snacks';
 
+export type FoodSource = 'usda_fdc' | 'open_food_facts';
+
 export type FoodLogEntry = {
   id: string;
   logDate: string;
@@ -12,9 +14,14 @@ export type FoodLogEntry = {
   protein: number | null;
   carbs: number | null;
   fat: number | null;
+  /** Null for an entry logged before source/source_id existed on this
+   * table. Kept purely as provenance -- same rule as everywhere else
+   * this shows up (never used to look anything up live) -- but exposed
+   * here (unlike earlier) so Saved Meals can carry it forward into a
+   * saved_meal_items row without re-fetching from USDA/Open Food Facts. */
+  source: FoodSource | null;
+  sourceId: string | null;
 };
-
-export type FoodSource = 'usda_fdc' | 'open_food_facts';
 
 /** All fields here are the ACTUAL scaled amounts for whatever quantity
  * was logged — not per-100g reference figures. Scaling from per-100g
@@ -41,10 +48,13 @@ function mapFoodLogRow(row: Record<string, unknown>): FoodLogEntry {
     protein: row.protein as number | null,
     carbs: row.carbs as number | null,
     fat: row.fat as number | null,
+    source: row.source as FoodSource | null,
+    sourceId: row.source_id as string | null,
   };
 }
 
-const FOOD_LOG_COLUMNS = 'id, log_date, meal, food_name, quantity_grams, calories, protein, carbs, fat';
+const FOOD_LOG_COLUMNS =
+  'id, log_date, meal, food_name, quantity_grams, calories, protein, carbs, fat, source, source_id';
 
 export async function listFoodLogsForDate(clientId: string, logDate: string): Promise<FoodLogEntry[]> {
   const { data, error } = await supabase

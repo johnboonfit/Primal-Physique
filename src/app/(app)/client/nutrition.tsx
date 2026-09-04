@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,6 +17,7 @@ import { searchAllFoods, type BlendedFoodResult } from '@/lib/food-search';
 import { getMacroTargets, type MacroTargets } from '@/lib/macros';
 import { getProductByBarcode, type FoodSearchResult } from '@/lib/open-food-facts';
 import { GOAL_TYPES } from '@/lib/programmes';
+import { listSavedMeals, logSavedMeal, saveMealFromEntries, type SavedMeal } from '@/lib/saved-meals';
 import { addDays } from '@/lib/time-ranges';
 import { getCalorieTarget, type CalorieTarget } from '@/lib/tdee';
 import { awardMealXp } from '@/lib/xp';
@@ -137,6 +138,20 @@ export default function NutritionScreen() {
 
   const searchRequestId = useRef(0);
 
+  // Saved Meals -- fetched once alongside the rest of this screen's
+  // data, reused by both the add-food modal's "Use a saved meal" list
+  // and the "Save as meal" prompt (which just needs the list to refresh
+  // after adding a new one, not to build one).
+  const [savedMeals, setSavedMeals] = useState<SavedMeal[]>([]);
+  const [showingSavedMeals, setShowingSavedMeals] = useState(false);
+  const [loggingSavedMealId, setLoggingSavedMealId] = useState<string | null>(null);
+  const [savedMealError, setSavedMealError] = useState<string | null>(null);
+
+  const [savingMealFrom, setSavingMealFrom] = useState<Meal | null>(null);
+  const [saveMealName, setSaveMealName] = useState('');
+  const [savingMeal, setSavingMeal] = useState(false);
+  const [saveMealError, setSaveMealError] = useState<string | null>(null);
+
   const load = useCallback(() => {
     if (!session) return;
     setLoading(true);
@@ -155,6 +170,10 @@ export default function NutritionScreen() {
         return getMacroTargets(session.user.id, calorieTarget).then(setMacroTargets);
       })
       .catch((err) => console.error('Failed to load calorie/macro targets:', err));
+
+    listSavedMeals(session.user.id)
+      .then(setSavedMeals)
+      .catch((err) => console.error('Failed to load saved meals:', err));
   }, [session, logDate]);
 
   useFocusEffect(
@@ -255,11 +274,65 @@ export default function NutritionScreen() {
     setScanning(false);
     setBarcodeLoading(false);
     setBarcodeError(null);
+    setShowingSavedMeals(false);
+    setSavedMealError(null);
   };
 
   const closeModal = () => {
     setActiveMeal(null);
     setScanning(false);
+    setShowingSavedMeals(false);
+  };
+
+  const handleSelectSavedMeal = async (meal: SavedMeal) => {
+    if (!session || !activeMeal) return;
+    setSavedMealError(null);
+    setLoggingSavedMealId(meal.id);
+    try {
+      await logSavedMeal(session.user.id, logDate, activeMeal, meal);
+      try {
+        await awardMealXp(session.user.id, logDate);
+      } catch (xpErr) {
+        console.error('Failed to award meal XP:', xpErr);
+      }
+      closeModal();
+      load();
+    } catch (err) {
+      setSavedMealError(err instanceof Error ? err.message : 'Failed to log that saved meal.');
+    } finally {
+      setLoggingSavedMealId(null);
+    }
+  };
+
+  const openSaveMealPrompt = (meal: Meal) => {
+    setSavingMealFrom(meal);
+    setSaveMealName('');
+    setSaveMealError(null);
+  };
+
+  const closeSaveMealPrompt = () => setSavingMealFrom(null);
+
+  const handleConfirmSaveMeal = async () => {
+    if (!session || !savingMealFrom) return;
+    const name = saveMealName.trim();
+    if (!name) {
+      setSaveMealError('Give this meal a name.');
+      return;
+    }
+
+    setSavingMeal(true);
+    setSaveMealError(null);
+    try {
+      const mealEntries = entries.filter((entry) => entry.meal === savingMealFrom);
+      await saveMealFromEntries(session.user.id, name, mealEntries);
+      const refreshed = await listSavedMeals(session.user.id);
+      setSavedMeals(refreshed);
+      closeSaveMealPrompt();
+    } catch (err) {
+      setSaveMealError(err instanceof Error ? err.message : 'Failed to save this meal.');
+    } finally {
+      setSavingMeal(false);
+    }
   };
 
   // Picking a result always starts back at a 100g quantity — the same
@@ -376,12 +449,19 @@ export default function NutritionScreen() {
                 Nutrition
               </ThemedText>
             </View>
-            <Pressable
-              onPress={() => openAddEntry(currentMealByTime())}
-              hitSlop={8}
-              accessibilityLabel="Quick-add a food">
-              <Ionicons name="search-outline" size={22} color={theme.textSecondary} />
-            </Pressable>
+            <View style={styles.headerActions}>
+              <Pressable onPress={() => router.push('/client/saved-meals')} hitSlop={8}>
+                <ThemedText type="linkPrimary" style={styles.savedMealsLink}>
+                  Saved Meals
+                </ThemedText>
+              </Pressable>
+              <Pressable
+                onPress={() => openAddEntry(currentMealByTime())}
+                hitSlop={8}
+                accessibilityLabel="Quick-add a food">
+                <Ionicons name="search-outline" size={22} color={theme.textSecondary} />
+              </Pressable>
+            </View>
           </View>
 
           <View style={styles.dateNavRow}>
@@ -456,6 +536,13 @@ export default function NutritionScreen() {
                           {mealTotal} cal
                         </ThemedText>
                       )}
+                      {mealEntries.length > 0 && (
+                        <Pressable onPress={() => openSaveMealPrompt(key)}>
+                          <ThemedText type="small" style={styles.saveMealLink}>
+                            Save as meal
+                          </ThemedText>
+                        </Pressable>
+                      )}
                       <Pressable onPress={() => openAddEntry(key)}>
                         <ThemedText type="linkPrimary">+ Add</ThemedText>
                       </Pressable>
@@ -517,11 +604,55 @@ export default function NutritionScreen() {
                   <ThemedText type="linkPrimary">Cancel scan</ThemedText>
                 </Pressable>
               </>
+            ) : !selected && showingSavedMeals ? (
+              <>
+                <Pressable onPress={() => setShowingSavedMeals(false)} style={styles.scanButton}>
+                  <ThemedText type="linkPrimary">← Back to search</ThemedText>
+                </Pressable>
+
+                {savedMealError && <ThemedText style={styles.error}>{savedMealError}</ThemedText>}
+
+                {savedMeals.length === 0 ? (
+                  <ThemedText type="small" themeColor="textSecondary" style={styles.noResults}>
+                    No saved meals yet -- log some food here, then use "Save as meal" to create one.
+                  </ThemedText>
+                ) : (
+                  <ScrollView style={styles.resultsList} keyboardShouldPersistTaps="handled">
+                    {savedMeals.map((meal) => {
+                      const totalCalories = meal.items.reduce((sum, item) => sum + item.calories, 0);
+                      return (
+                        <Pressable
+                          key={meal.id}
+                          onPress={() => handleSelectSavedMeal(meal)}
+                          disabled={loggingSavedMealId === meal.id}>
+                          <View style={styles.resultRow}>
+                            <View style={styles.entryInfo}>
+                              <ThemedText type="small" style={styles.resultName}>
+                                {meal.name}
+                              </ThemedText>
+                              <ThemedText type="small" themeColor="textSecondary">
+                                {meal.items.length} item{meal.items.length === 1 ? '' : 's'} ·{' '}
+                                {Math.round(totalCalories)} cal
+                              </ThemedText>
+                            </View>
+                            {loggingSavedMealId === meal.id && <ActivityIndicator size="small" />}
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                )}
+              </>
             ) : !selected ? (
               <>
-                <Pressable onPress={handleOpenScanner} style={styles.scanButton}>
-                  <ThemedText type="linkPrimary">📷 Scan a barcode instead</ThemedText>
-                </Pressable>
+                <View style={styles.modalActionRow}>
+                  <Pressable onPress={handleOpenScanner} style={styles.scanButton}>
+                    <ThemedText type="linkPrimary">📷 Scan a barcode instead</ThemedText>
+                  </Pressable>
+                  <Pressable onPress={() => setShowingSavedMeals(true)} style={styles.scanButton}>
+                    <ThemedText type="linkPrimary">📋 Use a saved meal</ThemedText>
+                  </Pressable>
+                </View>
 
                 {barcodeLoading && <ActivityIndicator style={styles.searchLoader} />}
                 {!barcodeLoading && barcodeError && <ThemedText style={styles.error}>{barcodeError}</ThemedText>}
@@ -712,6 +843,47 @@ export default function NutritionScreen() {
           </ThemedView>
         </View>
       </Modal>
+
+      <Modal visible={savingMealFrom !== null} transparent animationType="fade" onRequestClose={closeSaveMealPrompt}>
+        <View style={styles.modalOverlay}>
+          <ThemedView type="backgroundElement" style={styles.modalCard}>
+            <ThemedText type="smallBold" style={styles.modalTitle}>
+              Save {savingMealFrom ? MEALS.find((m) => m.key === savingMealFrom)?.label : ''} as a meal
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.modalSubtitle}>
+              Give it a name so you can log the whole thing again in one tap later.
+            </ThemedText>
+
+            <TextInput
+              value={saveMealName}
+              onChangeText={setSaveMealName}
+              placeholder="e.g. My protein breakfast"
+              placeholderTextColor={theme.textSecondary}
+              autoFocus
+              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+            />
+
+            {saveMealError && <ThemedText style={styles.error}>{saveMealError}</ThemedText>}
+
+            <Pressable
+              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+              onPress={handleConfirmSaveMeal}
+              disabled={savingMeal}>
+              {savingMeal ? (
+                <ActivityIndicator color={Colors.text} />
+              ) : (
+                <ThemedText type="smallBold" style={styles.primaryButtonText}>
+                  Save
+                </ThemedText>
+              )}
+            </Pressable>
+
+            <Pressable style={styles.cancelButton} onPress={closeSaveMealPrompt}>
+              <ThemedText themeColor="textSecondary">Cancel</ThemedText>
+            </Pressable>
+          </ThemedView>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -732,6 +904,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  savedMealsLink: {
+    fontSize: 14,
   },
   title: {
     fontSize: 28,
@@ -824,6 +1004,9 @@ const styles = StyleSheet.create({
   deleteText: {
     color: Colors.textSecondary,
   },
+  saveMealLink: {
+    color: Colors.tealBright,
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -841,6 +1024,10 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     marginBottom: Spacing.two,
+  },
+  modalSubtitle: {
+    marginTop: -Spacing.one,
+    marginBottom: Spacing.one,
   },
   sectionLabel: {
     marginTop: Spacing.two,
@@ -874,9 +1061,14 @@ const styles = StyleSheet.create({
   searchLoader: {
     marginVertical: Spacing.two,
   },
+  modalActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.three,
+    marginBottom: Spacing.two,
+  },
   scanButton: {
     alignSelf: 'flex-start',
-    marginBottom: Spacing.two,
   },
   cameraContainer: {
     height: 300,
