@@ -8,7 +8,6 @@
 import { estimateFruitVegLegumeNutPercentFromCategory } from '@/lib/nutri-score';
 
 const SEARCH_URL = 'https://world.openfoodfacts.org/cgi/search.pl';
-const SEARCH_V2_URL = 'https://world.openfoodfacts.org/api/v2/search';
 const PRODUCT_URL = 'https://world.openfoodfacts.org/api/v2/product';
 
 const PRODUCT_FIELDS = 'code,product_name,brands,nutriments,categories_tags,serving_size,serving_quantity';
@@ -187,66 +186,77 @@ export async function searchFoods(query: string): Promise<FoodSearchResult[]> {
     .slice(0, 20);
 }
 
-// Canonical Open Food Facts brand tags for the major UK supermarkets'
-// own-brand ranges. Tag ids are the lowercased, hyphenated form OFF
-// normalizes brand names to (apostrophes become hyphens), which is why
-// Sainsbury's is "sainsbury-s" here, not "sainsburys".
-const UK_SUPERMARKET_BRAND_TAGS = ['tesco', 'asda', 'aldi', 'sainsbury-s', 'morrisons', 'lidl'];
+// Matched as plain case-insensitive substrings of a product's raw
+// `brands` text (which is often a comma-separated list, e.g. "Tesco,
+// Tesco Finest") — not Open Food Facts tag IDs. `/api/v2/search`'s
+// `brands_tags` filter would have been the more "structured" way to do
+// this, but v2 search has no free-text query support at all (confirmed
+// against OFF's own docs — search_terms is a v1/legacy-only parameter),
+// so there's no way to combine a tag filter with the actual typed search
+// there. This filters the one real full-text search response instead.
+const UK_SUPERMARKET_BRAND_NAMES = ['tesco', 'asda', 'aldi', "sainsbury's", 'sainsburys', 'morrisons', 'lidl'];
 
-async function fetchV2Products(params: Record<string, string>): Promise<Record<string, unknown>[]> {
-  const response = await fetch(`${SEARCH_V2_URL}?${new URLSearchParams(params).toString()}`, {
-    headers: { 'User-Agent': 'PrimalPhysique-App - Fitness Coaching App' },
-  });
-  // Best-effort — this is a supplementary pass on top of the primary
-  // USDA search (see food-search.ts), so a failure here should never
-  // block a search from returning USDA's results.
-  if (!response.ok) return [];
-  const data = (await response.json()) as { products?: Record<string, unknown>[] };
-  return data.products ?? [];
+function isUkRelevant(product: Record<string, unknown>): boolean {
+  const countriesTags = (product.countries_tags as string[] | undefined) ?? [];
+  if (countriesTags.includes('en:united-kingdom')) return true;
+
+  const brand = ((product.brands as string | undefined) ?? '').toLowerCase();
+  return UK_SUPERMARKET_BRAND_NAMES.some((name) => brand.includes(name));
 }
 
 /**
- * A second, UK-specific pass over Open Food Facts, run alongside the
- * primary USDA search (see food-search.ts, which is what actually calls
- * this) — USDA has essentially zero UK branded/packaged products, so
- * typed search would otherwise never surface things like "Tesco Basmati
- * Rice" or "Warburtons Thins."
+ * A UK-relevance filter layered on top of the same real full-text search
+ * used by searchFoods() above, run alongside the primary USDA search
+ * (see food-search.ts, which is what actually calls this) — USDA has
+ * essentially zero UK branded/packaged products, so typed search would
+ * otherwise never surface things like "Tesco Basmati Rice" or
+ * "Warburtons Thins."
  *
- * Two parallel v2 API queries, since a single request can't OR an origin
- * filter together with a brand filter: one filtered to products actually
- * sold in the UK (`countries_tags`), one filtered to the major UK
- * supermarkets' own brand tags (`brands_tags`, comma-separated for an OR
- * match) — merged and de-duplicated by barcode below. This only fetches
- * candidates; deciding which of them are a genuinely good match for the
- * typed query (and therefore worth ranking above USDA) happens in
+ * One request, not a separate tag-filtered query — `/api/v2/search`
+ * doesn't support free-text search at all (only `cgi/search.pl` does),
+ * so there's no way to ask the API itself for "UK products matching
+ * this text." Instead this runs the normal text search and asks for
+ * `countries_tags` + `brands` back, then keeps only the results that are
+ * either tagged as sold in the UK or carry one of the major UK
+ * supermarkets' brand names — a plain client-side filter over a real,
+ * query-relevant result set, rather than a server-side tag filter over
+ * an unrelated one. Whether a surviving result is a genuinely *good*
+ * match for the typed query (worth ranking above USDA) is decided by
  * food-search.ts, not here.
  */
 export async function searchUKFoods(query: string): Promise<FoodSearchResult[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
 
-  const baseParams = {
+  const params = new URLSearchParams({
     search_terms: trimmed,
+    search_simple: '1',
+    action: 'process',
+    json: '1',
     sort_by: 'unique_scans_n',
-    page_size: '25',
-    fields: PRODUCT_FIELDS,
-  };
+    // A larger pool than searchFoods()'s own 50 -- most of these will get
+    // dropped by the UK-relevance filter below, so a small page here
+    // would often leave nothing left over for a search term that's
+    // common but not particularly UK-branded.
+    page_size: '100',
+    fields: `${PRODUCT_FIELDS},countries_tags`,
+  });
 
-  const [byCountry, byBrand] = await Promise.all([
-    fetchV2Products({ ...baseParams, countries_tags: 'en:united-kingdom' }),
-    fetchV2Products({ ...baseParams, brands_tags: UK_SUPERMARKET_BRAND_TAGS.join(',') }),
-  ]);
+  const response = await fetch(`${SEARCH_URL}?${params.toString()}`, {
+    headers: { 'User-Agent': 'PrimalPhysique-App - Fitness Coaching App' },
+  });
+  // Best-effort — this is a supplementary pass on top of the primary
+  // USDA search (see food-search.ts), so a failure here should never
+  // block a search from returning USDA's results.
+  if (!response.ok) return [];
 
-  const seen = new Set<string>();
-  const merged: FoodSearchResult[] = [];
-  for (const product of [...byCountry, ...byBrand]) {
-    const mapped = mapProduct(product);
-    if (!mapped) continue;
-    if (seen.has(mapped.id)) continue;
-    seen.add(mapped.id);
-    merged.push(mapped);
-  }
-  return merged;
+  const data = (await response.json()) as { products?: Record<string, unknown>[] };
+
+  return (data.products ?? [])
+    .filter(isUkRelevant)
+    .map(mapProduct)
+    .filter((result): result is FoodSearchResult => result !== null)
+    .slice(0, 20);
 }
 
 /**
