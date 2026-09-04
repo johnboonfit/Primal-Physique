@@ -10,7 +10,28 @@
  * whatever's there.
  */
 
+import type { MeasurementType } from '@/lib/body-measurements';
+
 export type QuestionType = 'short_text' | 'number' | 'single_select' | 'multi_select' | 'scale' | 'measurement';
+
+/** What a 'measurement' question's answer can be tagged to write through
+ * to, besides form_responses -- 'none' (default) plus every canonical
+ * metric weight_logs/body_measurements already track. Type-only coupling
+ * to body-measurements.ts (MeasurementType) so this stays a compile-time
+ * check, not a runtime dependency -- this file otherwise knows nothing
+ * about specific business tables. */
+export type MeasurementTrackTarget = 'none' | 'weight' | MeasurementType;
+
+const TRACKS_OPTIONS: { key: MeasurementTrackTarget; label: string }[] = [
+  { key: 'none', label: 'Nothing — just this check-in' },
+  { key: 'weight', label: 'Weight' },
+  { key: 'waist', label: 'Waist' },
+  { key: 'chest', label: 'Chest' },
+  { key: 'arms', label: 'Arms' },
+  { key: 'thighs', label: 'Thighs' },
+  { key: 'hips', label: 'Hips' },
+  { key: 'neck', label: 'Neck' },
+];
 
 export type QuestionConfig = Record<string, unknown>;
 
@@ -37,7 +58,8 @@ export type AnswerKind = 'short_text' | 'numeric' | 'single_choice' | 'multi_cho
 export type ConfigFieldDefinition =
   | { key: string; kind: 'text'; label: string; placeholder?: string }
   | { key: string; kind: 'list'; label: string; itemLabel: string; minItems: number }
-  | { key: string; kind: 'range'; label: string; minKey: string; maxKey: string };
+  | { key: string; kind: 'range'; label: string; minKey: string; maxKey: string }
+  | { key: string; kind: 'select'; label: string; options: { key: string; label: string }[] };
 
 export type QuestionTypeDefinition = {
   key: QuestionType;
@@ -171,10 +193,23 @@ export const QUESTION_TYPES: QuestionTypeDefinition[] = [
     key: 'measurement',
     label: 'Weight / measurement',
     description: 'A numeric measurement, optionally labelled with a unit (e.g. lb, in, cm).',
-    configFields: [{ key: 'unit', kind: 'text', label: 'Unit (optional)', placeholder: 'e.g. lb, in, cm' }],
-    defaultConfig: () => ({ unit: '' }),
+    configFields: [
+      // "tracks" (default 'none') is the "one source of truth" hook: a
+      // check-in question tagged with a real metric here also writes
+      // through to weight_logs/body_measurements on submission (see
+      // form-check-ins.ts), so it shows up in the client's own Metrics/
+      // Measure tabs, trend chart, and TDEE calc, not just this one
+      // check-in's answers. Left untagged ('none'), a measurement
+      // question behaves exactly as before -- a plain recorded answer.
+      { key: 'tracks', kind: 'select', label: 'Also save this answer as', options: TRACKS_OPTIONS },
+      { key: 'unit', kind: 'text', label: 'Unit (optional)', placeholder: 'e.g. lb, in, cm' },
+    ],
+    defaultConfig: () => ({ unit: '', tracks: 'none' }),
     validateConfig: () => null,
-    toStoredConfig: (config) => ({ unit: typeof config.unit === 'string' ? config.unit.trim() : '' }),
+    toStoredConfig: (config) => ({
+      unit: typeof config.unit === 'string' ? config.unit.trim() : '',
+      tracks: typeof config.tracks === 'string' ? config.tracks : 'none',
+    }),
     answerKind: 'numeric',
     validateAnswer: (_config, answer) => validateNumericAnswer(answer),
     toStoredAnswer: (_config, answer) => Number(answer),

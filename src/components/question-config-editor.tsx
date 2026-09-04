@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { Accent, Spacing } from '@/constants/theme';
+import { Accent, Colors, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { ConfigFieldDefinition, QuestionConfig } from '@/lib/question-types';
 
@@ -34,6 +34,32 @@ export function ConfigFieldEditor({ field, config, onChange }: Props) {
           placeholderTextColor={theme.textSecondary}
           style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
         />
+      </View>
+    );
+  }
+
+  if (field.kind === 'select') {
+    const selected = typeof config[field.key] === 'string' ? (config[field.key] as string) : field.options[0]?.key;
+    return (
+      <View style={styles.field}>
+        <ThemedText type="small" themeColor="textSecondary">
+          {field.label}
+        </ThemedText>
+        <View style={styles.chipRow}>
+          {field.options.map((option) => {
+            const isSelected = selected === option.key;
+            return (
+              <Pressable
+                key={option.key}
+                onPress={() => onChange({ ...config, [field.key]: option.key })}
+                style={[styles.chip, { borderColor: theme.backgroundSelected }, isSelected && styles.chipSelected]}>
+                <ThemedText type="small" style={isSelected ? styles.chipTextSelected : undefined}>
+                  {option.label}
+                </ThemedText>
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
     );
   }
@@ -148,5 +174,24 @@ const styles = StyleSheet.create({
   removeText: {
     color: Accent,
     fontSize: 12,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  chip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  chipSelected: {
+    backgroundColor: Accent,
+    borderColor: Accent,
+  },
+  chipTextSelected: {
+    color: Colors.text,
+    fontWeight: '700',
   },
 });

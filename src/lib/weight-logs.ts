@@ -59,13 +59,22 @@ export async function listWeightLogs(clientId: string): Promise<WeightLogEntry[]
  * is — the gap needs no special handling, since skipped days never had
  * a row to begin with. If this is the client's very first-ever
  * weigh-in, the trend is seeded to equal the raw weight.
+ *
+ * bodyFatPercent/musclePercent default to `undefined`, not `null` —
+ * `undefined` means "don't touch this field" (omitted from the upsert
+ * payload entirely, so a conflicting row's existing value survives);
+ * `null` means "clear it," same as the Metrics tab already does when the
+ * client blanks that field before saving. This distinction is what lets
+ * a check-in that only asks about weight (see form-check-ins.ts) sync
+ * into this same table without silently wiping out body fat/muscle %
+ * the client already logged for that day some other way.
  */
 export async function saveWeightLog(
   clientId: string,
   logDate: string,
   weight: number,
-  bodyFatPercent: number | null = null,
-  musclePercent: number | null = null
+  bodyFatPercent?: number | null,
+  musclePercent?: number | null
 ) {
   const { data: previous, error: previousError } = await supabase
     .from('weight_logs')
@@ -81,17 +90,16 @@ export async function saveWeightLog(
   const previousTrend = previous?.weight_trend as number | undefined;
   const weightTrend = previousTrend === undefined ? weight : ALPHA * weight + (1 - ALPHA) * previousTrend;
 
-  const { error } = await supabase.from('weight_logs').upsert(
-    {
-      client_id: clientId,
-      log_date: logDate,
-      weight,
-      weight_trend: weightTrend,
-      body_fat_percent: bodyFatPercent,
-      muscle_percent: musclePercent,
-    },
-    { onConflict: 'client_id,log_date' }
-  );
+  const row: Record<string, unknown> = {
+    client_id: clientId,
+    log_date: logDate,
+    weight,
+    weight_trend: weightTrend,
+  };
+  if (bodyFatPercent !== undefined) row.body_fat_percent = bodyFatPercent;
+  if (musclePercent !== undefined) row.muscle_percent = musclePercent;
+
+  const { error } = await supabase.from('weight_logs').upsert(row, { onConflict: 'client_id,log_date' });
 
   if (error) throw error;
 }

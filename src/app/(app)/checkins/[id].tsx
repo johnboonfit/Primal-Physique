@@ -26,7 +26,30 @@ function formatStoredAnswer(question: CheckInQuestionAnswer): string {
   const answer = question.answer;
   if (answer === null || answer === undefined) return '—';
   if (Array.isArray(answer)) return answer.length > 0 ? answer.join(', ') : '—';
+  if (question.questionType === 'measurement' && typeof answer === 'number') {
+    const unit = typeof question.config.unit === 'string' ? question.config.unit.trim() : '';
+    return unit ? `${answer} ${unit}` : String(answer);
+  }
   return String(answer);
+}
+
+/** Matches TRACKS_OPTIONS' labels in question-types.ts -- kept local
+ * since this is purely a display concern for the read-only view, not
+ * part of the question-type system itself. */
+const TRACK_TARGET_LABEL: Record<string, string> = {
+  weight: 'Weight log',
+  waist: 'Waist measurements',
+  chest: 'Chest measurements',
+  arms: 'Arm measurements',
+  thighs: 'Thigh measurements',
+  hips: 'Hip measurements',
+  neck: 'Neck measurements',
+};
+
+function trackedTargetLabel(question: CheckInQuestionAnswer): string | null {
+  if (question.questionType !== 'measurement' || question.answer === null || question.answer === undefined) return null;
+  const tracks = typeof question.config.tracks === 'string' ? question.config.tracks : 'none';
+  return TRACK_TARGET_LABEL[tracks] ?? null;
 }
 
 function buildAnswers(detail: CheckInDetail): Record<string, AnswerValue> {
@@ -39,7 +62,7 @@ function buildAnswers(detail: CheckInDetail): Record<string, AnswerValue> {
 
 export default function CheckInDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { session } = useAuth();
+  const { session, profile } = useAuth();
 
   const [detail, setDetail] = useState<CheckInDetail | null>(null);
   const [answers, setAnswers] = useState<Record<string, AnswerValue>>({});
@@ -91,9 +114,11 @@ export default function CheckInDetailScreen() {
         return {
           questionId: question.id,
           answer: typeDefinition.toStoredAnswer(question.config, answers[question.id] ?? null),
+          questionType: question.questionType,
+          config: question.config,
         };
       });
-      await submitCheckIn(detail.id, session.user.id, submission);
+      await submitCheckIn(detail.id, session.user.id, detail.scheduledDate, submission);
       const refreshed = await getCheckInDetail(detail.id);
       setDetail(refreshed);
       setAnswers(buildAnswers(refreshed));
@@ -117,6 +142,11 @@ export default function CheckInDetailScreen() {
 
           {!loading && detail && (
             <>
+              {profile?.role === 'coach' && (
+                <ThemedText type="small" themeColor="textSecondary">
+                  {detail.clientFullName || detail.clientEmail}
+                </ThemedText>
+              )}
               <ThemedText type="title" style={styles.title}>
                 {detail.formName}
               </ThemedText>
@@ -152,9 +182,16 @@ export default function CheckInDetailScreen() {
                         onChange={(value) => setAnswers((current) => ({ ...current, [question.id]: value }))}
                       />
                     ) : (
-                      <ThemedText type="small" themeColor="textSecondary">
-                        {formatStoredAnswer(question)}
-                      </ThemedText>
+                      <>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {formatStoredAnswer(question)}
+                        </ThemedText>
+                        {trackedTargetLabel(question) && (
+                          <ThemedText type="small" style={styles.trackedNote}>
+                            ✓ Also saved to {trackedTargetLabel(question)}
+                          </ThemedText>
+                        )}
+                      </>
                     )}
                   </ThemedView>
                 );
@@ -201,6 +238,9 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.two,
   },
   statusCompleted: {
+    color: Colors.tealBright,
+  },
+  trackedNote: {
     color: Colors.tealBright,
   },
   statusMissed: {

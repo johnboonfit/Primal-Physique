@@ -263,12 +263,21 @@ export default function ClientDetailScreen() {
                 </ThemedText>
                 {checkInInstances.map((instance) => (
                   <ThemedView key={instance.id} type="backgroundElement" style={styles.checkInInstanceCard}>
-                    <View style={styles.checkInInstanceInfo}>
-                      <ThemedText type="small">{instance.formName}</ThemedText>
-                      <ThemedText type="small" themeColor="textSecondary">
-                        {instance.scheduledDate} · {CHECK_IN_STATUS_LABEL[instance.status]}
-                      </ThemedText>
-                    </View>
+                    {instance.status === 'completed' ? (
+                      <Pressable style={styles.checkInInstanceInfo} onPress={() => router.push(`/checkins/${instance.id}`)}>
+                        <ThemedText type="small">{instance.formName}</ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {instance.scheduledDate} · {CHECK_IN_STATUS_LABEL[instance.status]} · View answers →
+                        </ThemedText>
+                      </Pressable>
+                    ) : (
+                      <View style={styles.checkInInstanceInfo}>
+                        <ThemedText type="small">{instance.formName}</ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {instance.scheduledDate} · {CHECK_IN_STATUS_LABEL[instance.status]}
+                        </ThemedText>
+                      </View>
+                    )}
                     <Pressable
                       onPress={() =>
                         setPendingAction({
