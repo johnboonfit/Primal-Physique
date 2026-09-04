@@ -18,7 +18,14 @@ import {
   type ClientAssignmentSummary,
   type OverdueAssignment,
 } from '@/lib/assignments';
-import { getCommunityEnabled, getCommunityHidden, setCommunityHidden } from '@/lib/community';
+import {
+  getCommunityEnabled,
+  getCommunityHidden,
+  getCommunityLastViewedAt,
+  getNewCommunityPostCount,
+  setCommunityHidden,
+  subscribeToCommunityPosts,
+} from '@/lib/community';
 import { isFeatureEnabled } from '@/lib/feature-toggles';
 import { listFoodLogsForDate } from '@/lib/food-logs';
 import { ensureCheckInsUpToDate, listUpNextCheckIns, type UpNextCheckIn } from '@/lib/form-check-ins';
@@ -90,6 +97,7 @@ export default function ClientHomeScreen() {
   // flashing on then off while both are still in flight.
   const [communityEnabled, setCommunityEnabledLocal] = useState<boolean | null>(null);
   const [communityHidden, setCommunityHiddenLocal] = useState<boolean | null>(null);
+  const [newCommunityPostCount, setNewCommunityPostCount] = useState(0);
 
   // One-time banner for workouts the app moved on its own this session.
   const [movedNotice, setMovedNotice] = useState<AutoRescheduleResult['moved']>([]);
@@ -315,6 +323,47 @@ export default function ClientHomeScreen() {
       return () => {
         cancelled = true;
       };
+    }, [session])
+  );
+
+  // Community card badge — two complementary triggers, not a duplicate:
+  // this plain effect's realtime subscription catches a new post
+  // arriving while this screen is just sitting there (community_posts
+  // is what's replicated, see unread-badges.sql); the useFocusEffect
+  // below catches the OTHER direction — returning from Community after
+  // markCommunityViewed() moved this client's own last-viewed cursor
+  // forward, which is a plain profiles update, not something replicated
+  // to subscribe to, so it needs its own refetch on refocus to actually
+  // clear the badge.
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+
+    const refresh = () => {
+      getCommunityLastViewedAt(session.user.id)
+        .then((lastViewedAt) => getNewCommunityPostCount(session.user.id, lastViewedAt))
+        .then((count) => {
+          if (!cancelled) setNewCommunityPostCount(count);
+        })
+        .catch((err) => console.error('Failed to check for new Community posts:', err));
+    };
+
+    refresh();
+    const unsubscribe = subscribeToCommunityPosts(refresh);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [session]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      getCommunityLastViewedAt(session.user.id)
+        .then((lastViewedAt) => getNewCommunityPostCount(session.user.id, lastViewedAt))
+        .then(setNewCommunityPostCount)
+        .catch((err) => console.error('Failed to refresh new Community post count:', err));
     }, [session])
   );
 
@@ -631,7 +680,16 @@ export default function ClientHomeScreen() {
             ) : (
               <ThemedView type="backgroundElement" style={styles.communityCard}>
                 <Pressable style={styles.communityLink} onPress={() => router.push('/community')}>
-                  <ThemedText type="smallBold">Community</ThemedText>
+                  <View style={styles.communityTitleRow}>
+                    <ThemedText type="smallBold">Community</ThemedText>
+                    {newCommunityPostCount > 0 && (
+                      <View style={styles.badge}>
+                        <ThemedText type="small" style={styles.badgeText}>
+                          {newCommunityPostCount > 99 ? '99+' : newCommunityPostCount}
+                        </ThemedText>
+                      </View>
+                    )}
+                  </View>
                   <ThemedText type="small" themeColor="textSecondary">
                     See what everyone&apos;s up to
                   </ThemedText>
@@ -821,6 +879,25 @@ const styles = StyleSheet.create({
   communityLink: {
     flex: 1,
     gap: Spacing.half,
+  },
+  communityTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  badge: {
+    backgroundColor: Accent,
+    borderRadius: 999,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: Spacing.one,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: {
+    color: Colors.text,
+    fontSize: 11,
+    lineHeight: 13,
   },
   communityHiddenRow: {
     alignItems: 'center',

@@ -147,6 +147,50 @@ export async function setCommunityHidden(userId: string, hidden: boolean): Promi
   if (error) throw error;
 }
 
+/** How far this person has "read" the Community feed — see
+ * unread-badges.sql for why this defaults to now() rather than null. */
+export async function getCommunityLastViewedAt(userId: string): Promise<string> {
+  const { data, error } = await supabase.from('profiles').select('community_last_viewed_at').eq('id', userId).single();
+  if (error) throw error;
+  return data.community_last_viewed_at as string;
+}
+
+/** Call the instant the Posts sub-tab actually becomes visible — same
+ * "opening it and seeing what's there counts as reading it" rule
+ * markConversationRead already applies to Chat. */
+export async function markCommunityViewed(userId: string): Promise<void> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ community_last_viewed_at: new Date().toISOString() })
+    .eq('id', userId);
+  if (error) throw error;
+}
+
+/** Posts made by someone else, since the given timestamp — the
+ * Community quick-link's badge count. Excludes the viewer's own posts
+ * (posting something yourself isn't "new" to you) the same way
+ * getUnreadMessageCount excludes the viewer's own sent messages. */
+export async function getNewCommunityPostCount(userId: string, since: string): Promise<number> {
+  const { data, error } = await supabase.from('community_posts').select('id, author_id').gt('created_at', since);
+  if (error) throw error;
+  return (data ?? []).filter((row) => row.author_id !== userId).length;
+}
+
+/** Fires on any new/edited/deleted post — the same "subscribe while
+ * mounted, unsubscribe on cleanup" shape subscribeToConversation
+ * already uses for Chat. Not filtered to one row's id, since this is
+ * one shared feed, not a per-conversation channel. */
+export function subscribeToCommunityPosts(onChange: () => void): () => void {
+  const channel = supabase
+    .channel('community_posts_badge')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'community_posts' }, onChange)
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
 /** Postgres' unique-violation code — used to turn a duplicate report
  * into a plain message instead of a raw database error. */
 const UNIQUE_VIOLATION = '23505';

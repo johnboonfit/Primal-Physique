@@ -266,6 +266,46 @@ export async function markConversationRead(conversationId: string, userId: strin
   if (error) throw error;
 }
 
+/**
+ * How many messages the OTHER party sent that this viewer hasn't read
+ * yet — the Chat tab badge's count. Reuses the exact same two data
+ * sources listMessages() already reads (the message rows and this
+ * viewer's message_hidden_for rows), filtered client-side rather than
+ * as a single SQL count, so a message this viewer deleted-for-me is
+ * correctly excluded from the badge the same way it's excluded from
+ * the thread itself — a discrepancy there (badge says 3, opening Chat
+ * shows 2) would be a real, visible bug, not just an internal detail.
+ */
+export async function getUnreadMessageCount(conversationId: string, viewerId: string): Promise<number> {
+  const [readRes, messagesRes, hiddenRes] = await Promise.all([
+    supabase
+      .from('conversation_reads')
+      .select('last_read_at')
+      .eq('conversation_id', conversationId)
+      .eq('user_id', viewerId)
+      .maybeSingle(),
+    supabase
+      .from('messages')
+      .select('id, created_at, deleted_for_everyone_at')
+      .eq('conversation_id', conversationId)
+      .neq('sender_id', viewerId),
+    supabase.from('message_hidden_for').select('message_id').eq('user_id', viewerId),
+  ]);
+
+  if (readRes.error) throw readRes.error;
+  if (messagesRes.error) throw messagesRes.error;
+  if (hiddenRes.error) throw hiddenRes.error;
+
+  const lastReadAt = readRes.data?.last_read_at as string | null | undefined;
+  const hiddenIds = new Set((hiddenRes.data ?? []).map((row) => row.message_id as string));
+
+  return (messagesRes.data ?? []).filter((row) => {
+    if (hiddenIds.has(row.id as string)) return false;
+    if (row.deleted_for_everyone_at) return false;
+    return !lastReadAt || (row.created_at as string) > lastReadAt;
+  }).length;
+}
+
 /** Both participants' read cursors for this conversation, keyed by
  * user id — a message counts as read by someone if their cursor here
  * is at or after that message's created_at. */

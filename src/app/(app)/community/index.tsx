@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -18,6 +18,7 @@ import {
   getCommunityEnabled,
   getOpenReports,
   listCommunityPosts,
+  markCommunityViewed,
   reportPost,
   setCommunityEnabled,
   type CommunityPost,
@@ -111,6 +112,18 @@ export default function CommunityFeedScreen() {
       load();
     }, [load])
   );
+
+  // Opening the Posts sub-tab and seeing what's there counts as viewing
+  // it — same "seeing it is reading it" simplification
+  // markConversationRead already applies to Chat. Fires on mount (Posts
+  // is the default sub-tab) and again any time this client switches
+  // back to it from Leaderboards, but not while sitting on Leaderboards
+  // itself — that isn't the content this badge is about. Coach-only
+  // accounts have no badge and no last-viewed cursor to move.
+  useEffect(() => {
+    if (activeTab !== 'posts' || profile?.role !== 'client' || !session) return;
+    markCommunityViewed(session.user.id).catch((err) => console.error('Failed to mark Community viewed:', err));
+  }, [activeTab, profile?.role, session]);
 
   const handleToggleEnabled = async () => {
     if (communityEnabled === null) return;

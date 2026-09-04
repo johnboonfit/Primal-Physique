@@ -118,23 +118,31 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load messages.'))
       .finally(() => setLoading(false));
-
-    // Opening the thread and seeing what's in it counts as reading it —
-    // same simplification every real messaging app makes, rather than
-    // tracking which specific messages were actually looked at. A
-    // failure here shouldn't block the thread from loading.
-    markConversationRead(conversationId, currentUserId).catch((err) =>
-      console.error('Failed to mark conversation read:', err)
-    );
   }, [conversationId, currentUserId]);
 
   useFocusEffect(
     useCallback(() => {
+      if (!currentUserId) return;
       setLoading(true);
       load();
+
+      // Opening the thread and seeing what's in it counts as reading it
+      // — same simplification every real messaging app makes, rather
+      // than tracking which specific messages were actually looked at.
+      // Deliberately NOT inside load(): load() also runs as the
+      // subscription's own onChange handler below, and
+      // markConversationRead's write is itself a change to
+      // conversation_reads — calling it from inside load() would mean
+      // every reload re-marks-read, which fires another
+      // conversation_reads change, which reloads again, forever. Once
+      // per focus, here, is what "opening the thread" actually means.
+      markConversationRead(conversationId, currentUserId).catch((err) =>
+        console.error('Failed to mark conversation read:', err)
+      );
+
       const unsubscribe = subscribeToConversation(conversationId, load);
       return unsubscribe;
-    }, [conversationId, load])
+    }, [conversationId, currentUserId, load])
   );
 
   // Presence: write our own heartbeat, and poll the other party's,
