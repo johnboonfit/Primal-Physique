@@ -45,6 +45,45 @@ async function persistLocalCache(assignmentId: string, cache: LocalCache): Promi
   await AsyncStorage.setItem(storageKey(assignmentId), JSON.stringify(cache));
 }
 
+/**
+ * When the first and last set were actually logged this session,
+ * server-confirmed. Two uses: the live session timer's anchor on a
+ * resumed/reloaded PENDING session (start only, ticking against now),
+ * and the frozen duration shown when reopening an already-COMPLETED
+ * session later (start to end, same "duration = time between the
+ * first and last set checked" definition getSessionScorecard's own
+ * durationMinutes already uses). Null if nothing's been confirmed yet
+ * (a session just opened, or one still sitting unsynced in the local
+ * cache only).
+ */
+export async function getSetLogTimeRange(assignmentId: string): Promise<{ earliest: string; latest: string } | null> {
+  const [earliestRes, latestRes] = await Promise.all([
+    supabase
+      .from('workout_logs')
+      .select('created_at')
+      .eq('assignment_id', assignmentId)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('workout_logs')
+      .select('created_at')
+      .eq('assignment_id', assignmentId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  if (earliestRes.error) throw earliestRes.error;
+  if (latestRes.error) throw latestRes.error;
+  if (!earliestRes.data || !latestRes.data) return null;
+
+  return {
+    earliest: earliestRes.data.created_at as string,
+    latest: latestRes.data.created_at as string,
+  };
+}
+
 /** Every set already confirmed on the server for this assignment, keyed
  * the same way the local cache is. */
 export async function listSetLogsForAssignment(assignmentId: string): Promise<Record<string, SetLogValues>> {

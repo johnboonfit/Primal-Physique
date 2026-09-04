@@ -1,8 +1,10 @@
+import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { AnswerInput } from '@/components/question-answer-input';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -18,6 +20,7 @@ import {
   type ExercisePrefill,
 } from '@/lib/assignments';
 import { listExerciseLibrarySummaries, type ExerciseSummary } from '@/lib/exercise-library';
+import { listExerciseRemovalsForAssignment, removeExerciseForSession } from '@/lib/exercise-removals';
 import {
   listExerciseSwapsForAssignment,
   swapExerciseForSession,
@@ -26,11 +29,13 @@ import {
 } from '@/lib/exercise-swaps';
 import { getQuestionTypeDefinition, type AnswerValue } from '@/lib/question-types';
 import { getReadinessStatusForAssignment, submitReadinessResponses, type ReadinessStatus } from '@/lib/readiness';
+import { getExercisePersonalBests, type ExercisePersonalBest } from '@/lib/session-scorecard';
 import {
   clearLocalSetLogsIfFullySynced,
   deleteSetLog,
   flushPendingSetLogs,
   getMergedSetLogs,
+  getSetLogTimeRange,
   saveSetLog,
   setLogKey,
   type SetLogValues,
@@ -57,6 +62,25 @@ function blankReadinessAnswer(question: ReadinessStatus['questions'][number]): A
 
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** `timeZone: 'UTC'` matches how assigned_date is stored/compared
+ * everywhere else in this app -- same reasoning nutrition.tsx's own
+ * formatDisplayDate documents for the identical pitfall. */
+function formatWeekday(isoDate: string) {
+  return new Date(`${isoDate}T00:00:00.000Z`).toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'long' });
+}
+
+/** M:SS under an hour, H:MM:SS beyond -- a live-ticking elapsed-time
+ * format, distinct from the coarser "Xh Ym" the post-workout scorecard
+ * uses for its one-time static summary (see session-scorecard.ts). */
+function formatElapsed(seconds: number | null): string {
+  if (seconds === null) return '--:--';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  return `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
 /** What's actually shown/logged for one exercise slot right now -- the
@@ -113,6 +137,52 @@ function loggedSetRow(logged: SetLogValues): SetRowState {
   };
 }
 
+/**
+ * Live per-set PR detection, shared between two callers: backfilling
+ * flags for sets already checked before this screen even loaded (walks
+ * every exercise/set in order, since merged set logs don't carry a
+ * timestamp to sort by -- a reasonable stand-in for "the order they
+ * were actually done in"), and updating a single set's flag the instant
+ * it's newly checked. Both start from the same all-time-bests seed
+ * (every OTHER session, see getExercisePersonalBests) and update it as
+ * they go, so a second strong set later in the walk still compares
+ * against the first one just seen, not just against history.
+ */
+function computePrFlags(
+  exercises: { id: string; libraryId: string | null; totalSets: number }[],
+  rows: Record<string, SetRowState>,
+  seedBests: Record<string, ExercisePersonalBest>
+): { flags: Record<string, { weightPr: boolean; volPr: boolean }>; bests: Record<string, ExercisePersonalBest> } {
+  const bests: Record<string, ExercisePersonalBest> = { ...seedBests };
+  const flags: Record<string, { weightPr: boolean; volPr: boolean }> = {};
+
+  exercises.forEach(({ id: exerciseId, libraryId, totalSets }) => {
+    if (!libraryId) return;
+    for (let setNumber = 1; setNumber <= totalSets; setNumber++) {
+      const key = setLogKey(exerciseId, setNumber);
+      const row = rows[key];
+      if (!row || !row.checked) continue;
+
+      const weight = row.weight.trim() !== '' ? Number(row.weight) : null;
+      const reps = row.reps.trim() !== '' ? Number(row.reps) : null;
+      if (weight === null || Number.isNaN(weight)) continue;
+      const volume = reps !== null && !Number.isNaN(reps) ? weight * reps : null;
+
+      const current = bests[libraryId] ?? { bestWeight: null, bestVolume: null };
+      const weightPr = current.bestWeight === null || weight > current.bestWeight;
+      const volPr = volume !== null && (current.bestVolume === null || volume > current.bestVolume);
+
+      flags[key] = { weightPr, volPr };
+      bests[libraryId] = {
+        bestWeight: weightPr ? weight : current.bestWeight,
+        bestVolume: volPr ? volume : current.bestVolume,
+      };
+    }
+  });
+
+  return { flags, bests };
+}
+
 export default function AssignedWorkoutDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const theme = useTheme();
@@ -142,6 +212,33 @@ export default function AssignedWorkoutDetailScreen() {
   const [swappingId, setSwappingId] = useState<string | null>(null);
   const [swapError, setSwapError] = useState<string | null>(null);
 
+  // Exercises removed for this session only (see exercise-removals.ts) --
+  // same "session-only override, programme untouched" shape as swaps.
+  const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
+  const [confirmRemove, setConfirmRemove] = useState<{ id: string; name: string } | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  // + Add Set -- how many sets beyond what the programme prescribed
+  // have been added this session, per exercise slot.
+  const [extraSets, setExtraSets] = useState<Record<string, number>>({});
+
+  // Live per-set PR detection: seeded once from every OTHER session's
+  // all-time bests, then bumped in memory the instant a set beats it --
+  // so a second strong set later in the SAME session still compares
+  // against the first, not just against history.
+  const [runningBests, setRunningBests] = useState<Record<string, ExercisePersonalBest>>({});
+  const [prFlags, setPrFlags] = useState<Record<string, { weightPr: boolean; volPr: boolean }>>({});
+
+  // The live summary bar's duration anchor -- when the first set was
+  // actually logged this session (resumed from the server on reload, or
+  // set the instant the very first set is checked this mount). Null
+  // means nothing logged yet, so the timer reads "not started" rather
+  // than fabricating a start time from when the screen happened to open.
+  const [sessionStartAt, setSessionStartAt] = useState<string | null>(null);
+  const [sessionEndAt, setSessionEndAt] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
   const [restDuration, setRestDuration] = useState(DEFAULT_REST_SECONDS);
   const [restSecondsLeft, setRestSecondsLeft] = useState<number | null>(null);
   const restIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -156,22 +253,27 @@ export default function AssignedWorkoutDetailScreen() {
   // every time a set row or the session RPE changes.
   const setRowsRef = useRef(setRows);
   const sessionRpeRef = useRef(sessionRpe);
+  const extraSetsRef = useRef(extraSets);
   useEffect(() => {
     setRowsRef.current = setRows;
   }, [setRows]);
   useEffect(() => {
     sessionRpeRef.current = sessionRpe;
   }, [sessionRpe]);
+  useEffect(() => {
+    extraSetsRef.current = extraSets;
+  }, [extraSets]);
 
   const load = async () => {
     if (!id || !clientId) return;
     setLoading(true);
     setError(null);
     try {
-      const [assignmentData, readinessData, swapMap, library] = await Promise.all([
+      const [assignmentData, readinessData, swapMap, removalSet, library] = await Promise.all([
         getAssignmentDetail(id),
         getReadinessStatusForAssignment(id),
         listExerciseSwapsForAssignment(id),
+        listExerciseRemovalsForAssignment(id),
         listExerciseLibrarySummaries(),
       ]);
 
@@ -179,6 +281,7 @@ export default function AssignedWorkoutDetailScreen() {
       setSessionRpe(assignmentData.sessionRpe);
       setReadiness(readinessData);
       setSwaps(swapMap);
+      setRemovedIds(removalSet);
       setLibraryExercises(library);
       setLibraryById(Object.fromEntries(library.map((entry) => [entry.id, entry])));
 
@@ -207,15 +310,38 @@ export default function AssignedWorkoutDetailScreen() {
             };
       });
 
-      const [prefillMap, mergedLogs] = await Promise.all([
+      const libraryIds = effectiveExercises.map((e) => e.exerciseLibraryId).filter((v): v is string => v !== null);
+
+      const [prefillMap, mergedLogs, snapshot, timeRange, seedBests] = await Promise.all([
         getSetPrefills(clientId, assignmentData.id, effectiveExercises),
         getMergedSetLogs(assignmentData.id),
+        assignmentData.status === 'pending' ? loadSessionSnapshot(assignmentData.id) : Promise.resolve(null),
+        getSetLogTimeRange(assignmentData.id),
+        getExercisePersonalBests(clientId, assignmentData.id, libraryIds),
       ]);
       setPrefills(prefillMap);
 
+      // How many sets to actually render per exercise -- the programme's
+      // own count, widened to cover whatever's already been logged past
+      // it (a synced "+ Add Set" from a previous visit) or snapshotted
+      // as added-but-not-yet-logged this same visit.
+      const extra: Record<string, number> = {};
+      assignmentData.exercises.forEach((exercise) => {
+        let maxLoggedSetNumber = 0;
+        Object.keys(mergedLogs).forEach((key) => {
+          const [exerciseId, setNumberStr] = key.split(':');
+          if (exerciseId === exercise.id) maxLoggedSetNumber = Math.max(maxLoggedSetNumber, Number(setNumberStr));
+        });
+        const fromLogs = Math.max(0, maxLoggedSetNumber - exercise.totalSets);
+        const fromSnapshot = snapshot?.extraSetsByExercise?.[exercise.id] ?? 0;
+        extra[exercise.id] = Math.max(fromLogs, fromSnapshot);
+      });
+      setExtraSets(extra);
+
       const rows: Record<string, SetRowState> = {};
       assignmentData.exercises.forEach((exercise) => {
-        for (let setNumber = 1; setNumber <= exercise.totalSets; setNumber++) {
+        const totalSets = exercise.totalSets + extra[exercise.id];
+        for (let setNumber = 1; setNumber <= totalSets; setNumber++) {
           const key = setLogKey(exercise.id, setNumber);
           const logged = mergedLogs[key];
           rows[key] = logged ? loggedSetRow(logged) : blankSetRow(prefillMap[key]);
@@ -227,20 +353,42 @@ export default function AssignedWorkoutDetailScreen() {
       // is already authoritative from the server/local per-set cache
       // above; this is strictly a safety net under that, never a
       // replacement for it, and never touches a finished session.
-      if (assignmentData.status === 'pending') {
-        const snapshot = await loadSessionSnapshot(assignmentData.id);
-        if (snapshot) {
-          for (const [key, snapshotRow] of Object.entries(snapshot.setRows)) {
-            if (rows[key] && !rows[key].checked) {
-              rows[key] = { ...rows[key], weight: snapshotRow.weight, reps: snapshotRow.reps, rpe: snapshotRow.rpe };
-            }
+      if (snapshot) {
+        for (const [key, snapshotRow] of Object.entries(snapshot.setRows)) {
+          if (rows[key] && !rows[key].checked) {
+            rows[key] = { ...rows[key], weight: snapshotRow.weight, reps: snapshotRow.reps, rpe: snapshotRow.rpe };
           }
-          if (assignmentData.sessionRpe === null && snapshot.sessionRpe !== null) {
-            setSessionRpe(snapshot.sessionRpe);
-          }
+        }
+        if (assignmentData.sessionRpe === null && snapshot.sessionRpe !== null) {
+          setSessionRpe(snapshot.sessionRpe);
         }
       }
       setSetRows(rows);
+
+      // Backfills PR flags for sets already checked before this load --
+      // reopening a session (or reviewing a finished one) still shows
+      // the same badges it would have shown live.
+      const libraryIdByExercise: Record<string, string | null> = {};
+      effectiveExercises.forEach((e) => {
+        libraryIdByExercise[e.id] = e.exerciseLibraryId;
+      });
+      const { flags, bests } = computePrFlags(
+        assignmentData.exercises.map((exercise) => ({
+          id: exercise.id,
+          libraryId: libraryIdByExercise[exercise.id],
+          totalSets: exercise.totalSets + extra[exercise.id],
+        })),
+        rows,
+        seedBests
+      );
+      setPrFlags(flags);
+      setRunningBests(bests);
+
+      // The live summary bar's duration anchor -- start ticking against
+      // now for a pending session, or freeze at the actual last-logged
+      // moment for one already finished.
+      setSessionStartAt(timeRange?.earliest ?? null);
+      setSessionEndAt(assignmentData.status === 'completed' ? (timeRange?.latest ?? null) : null);
 
       // Best-effort retry of anything left over from a previous visit --
       // never blocks rendering on this.
@@ -285,6 +433,7 @@ export default function AssignedWorkoutDetailScreen() {
       saveSessionSnapshot(id, {
         setRows: setRowsRef.current,
         sessionRpe: sessionRpeRef.current,
+        extraSetsByExercise: extraSetsRef.current,
         savedAt: new Date().toISOString(),
       }).catch((err) => console.error('Session snapshot failed:', err));
       flushPendingSetLogs(id, clientId).catch((err) => console.error('Flush failed:', err));
@@ -297,6 +446,16 @@ export default function AssignedWorkoutDetailScreen() {
       if (restIntervalRef.current) clearInterval(restIntervalRef.current);
     };
   }, []);
+
+  // Ticks the live summary bar's duration display once a second while
+  // the session is actually underway -- a completed session's duration
+  // is frozen (see sessionEndAt above), and one that's never had a set
+  // checked yet has nothing to tick against.
+  useEffect(() => {
+    if (detail?.status !== 'pending' || !sessionStartAt) return;
+    const interval = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [detail?.status, sessionStartAt]);
 
   const startRestTimer = () => {
     if (restIntervalRef.current) clearInterval(restIntervalRef.current);
@@ -366,6 +525,16 @@ export default function AssignedWorkoutDetailScreen() {
     }));
   };
 
+  /** The exercise actually being performed in this slot right now,
+   * accounting for a swap -- same resolution displayExercise() uses for
+   * display, needed here too since a PR is tracked by the real exercise
+   * identity, not the slot. */
+  const effectiveLibraryId = (exerciseId: string): string | null => {
+    const swap = swaps[exerciseId];
+    if (swap) return swap.replacementExerciseLibraryId;
+    return detail?.exercises.find((e) => e.id === exerciseId)?.exerciseLibraryId ?? null;
+  };
+
   const toggleSetComplete = async (exerciseId: string, setNumber: number) => {
     setSetError(null);
     if (!clientId || !id) return;
@@ -375,6 +544,15 @@ export default function AssignedWorkoutDetailScreen() {
 
     if (row.checked) {
       setSetRows((current) => ({ ...current, [key]: { ...current[key], checked: false } }));
+      // Doesn't roll runningBests back -- an uncheck-after-PR is a rare,
+      // low-stakes edge case, and the next full load() recomputes PR
+      // flags/bests from scratch anyway, so this is never permanently
+      // wrong, just possibly briefly generous until then.
+      setPrFlags((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
       await deleteSetLog(id, exerciseId, setNumber);
       return;
     }
@@ -392,6 +570,30 @@ export default function AssignedWorkoutDetailScreen() {
     }
 
     setSetRows((current) => ({ ...current, [key]: { ...current[key], checked: true } }));
+
+    // The live summary bar's duration starts ticking the instant the
+    // very first set of this session is checked, if nothing was already
+    // logged (and therefore already anchored it) on load.
+    setSessionStartAt((current) => current ?? new Date().toISOString());
+
+    const libraryId = effectiveLibraryId(exerciseId);
+    if (libraryId && weight !== null) {
+      const volume = reps !== null ? weight * reps : null;
+      setRunningBests((current) => {
+        const best = current[libraryId] ?? { bestWeight: null, bestVolume: null };
+        const weightPr = best.bestWeight === null || weight > best.bestWeight;
+        const volPr = volume !== null && (best.bestVolume === null || volume > best.bestVolume);
+        setPrFlags((flags) => ({ ...flags, [key]: { weightPr, volPr } }));
+        return {
+          ...current,
+          [libraryId]: {
+            bestWeight: weightPr ? weight : best.bestWeight,
+            bestVolume: volPr ? volume : best.bestVolume,
+          },
+        };
+      });
+    }
+
     await saveSetLog(id, clientId, exerciseId, setNumber, { weight, reps, rpe: row.rpe });
     startRestTimer();
     flushPendingSetLogs(id, clientId).catch((err) => console.error('Flush failed:', err));
@@ -406,12 +608,15 @@ export default function AssignedWorkoutDetailScreen() {
   const closeSwapPicker = () => setSwapPickerExerciseId(null);
 
   /** Clears any sets already checked off under one exercise identity --
-   * used both when swapping (the old numbers belonged to the exercise
-   * being replaced) and when undoing (whatever was logged during the
-   * swap belonged to the replacement, not the original). */
+   * used when swapping (the old numbers belonged to the exercise being
+   * replaced), undoing (whatever was logged during the swap belonged to
+   * the replacement, not the original), and removing (they belonged to
+   * the exercise being taken out of today's session). Covers any +
+   * Add Set sets too, not just the programme's own count. */
   const clearLoggedSetsForExercise = async (exercise: AssignmentDetail['exercises'][number]) => {
     if (!id) return;
-    for (let setNumber = 1; setNumber <= exercise.totalSets; setNumber++) {
+    const totalSets = exercise.totalSets + (extraSets[exercise.id] ?? 0);
+    for (let setNumber = 1; setNumber <= totalSets; setNumber++) {
       const key = setLogKey(exercise.id, setNumber);
       if (setRows[key]?.checked) {
         await deleteSetLog(id, exercise.id, setNumber);
@@ -496,6 +701,50 @@ export default function AssignedWorkoutDetailScreen() {
     }
   };
 
+  const handleConfirmRemoveExercise = async () => {
+    if (!confirmRemove || !clientId || !id || !detail) return;
+    const exercise = detail.exercises.find((e) => e.id === confirmRemove.id);
+    if (!exercise) return;
+
+    setRemovingId(confirmRemove.id);
+    setRemoveError(null);
+    try {
+      // Same reasoning as a swap: whatever was logged this session
+      // belonged to the exercise being removed, so it goes with it.
+      await clearLoggedSetsForExercise(exercise);
+      await removeExerciseForSession(id, clientId, confirmRemove.id);
+      setRemovedIds((current) => new Set(current).add(confirmRemove.id));
+      setConfirmRemove(null);
+    } catch (err) {
+      setRemoveError(getErrorMessage(err, 'Failed to remove that exercise.'));
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
+  /** Adds one more set beyond what the programme prescribed, for this
+   * session only -- a blank, unchecked row that behaves exactly like
+   * any other set once logged (same saveSetLog/toggleSetComplete path,
+   * no special-casing there). Snapshotted immediately, not just on the
+   * usual 10-minute timer, so a quick add-then-reload doesn't lose it
+   * before it's ever actually logged. */
+  const handleAddSet = (exerciseId: string, currentTotalSets: number) => {
+    const nextExtra = (extraSets[exerciseId] ?? 0) + 1;
+    setExtraSets((current) => ({ ...current, [exerciseId]: nextExtra }));
+    const newSetNumber = currentTotalSets + nextExtra;
+    const key = setLogKey(exerciseId, newSetNumber);
+    setSetRows((current) => ({ ...current, [key]: blankSetRow(undefined) }));
+
+    if (id) {
+      saveSessionSnapshot(id, {
+        setRows: setRowsRef.current,
+        sessionRpe: sessionRpeRef.current,
+        extraSetsByExercise: { ...extraSetsRef.current, [exerciseId]: nextExtra },
+        savedAt: new Date().toISOString(),
+      }).catch((err) => console.error('Session snapshot failed:', err));
+    }
+  };
+
   const handleFinishSession = async () => {
     if (!detail || !clientId) return;
     setFinishing(true);
@@ -518,6 +767,17 @@ export default function AssignedWorkoutDetailScreen() {
     }
   };
 
+  // Summary bar stats -- pure computation over what's already checked
+  // off, same "weight x reps, 0 if either is missing" convention
+  // getSessionScorecard's own totalWeightLifted uses.
+  const checkedRows = Object.values(setRows).filter((row) => row.checked);
+  const totalVolume = checkedRows.reduce((sum, row) => {
+    const weight = row.weight.trim() !== '' ? Number(row.weight) : null;
+    const reps = row.reps.trim() !== '' ? Number(row.reps) : null;
+    return sum + (weight !== null && reps !== null && !Number.isNaN(weight) && !Number.isNaN(reps) ? weight * reps : 0);
+  }, 0);
+  const completedSetsCount = checkedRows.length;
+
   const showingReadinessGate = readiness && !readiness.completed && detail?.status === 'pending';
 
   return (
@@ -534,7 +794,7 @@ export default function AssignedWorkoutDetailScreen() {
           {!loading && detail && (
             <>
               <ThemedText type="title" style={styles.title}>
-                {detail.workoutName}
+                {formatWeekday(detail.assignedDate)} - {detail.workoutName}
               </ThemedText>
               <ThemedText themeColor="textSecondary" style={styles.date}>
                 {detail.assignedDate} ·{' '}
@@ -545,6 +805,53 @@ export default function AssignedWorkoutDetailScreen() {
                   {detail.status === 'completed' ? 'Completed' : 'Pending'}
                 </ThemedText>
               </ThemedText>
+
+              {!showingReadinessGate && (
+                <View style={styles.summaryBar}>
+                  <View style={styles.summaryStat}>
+                    <Ionicons name="time-outline" size={16} color={Colors.tealBright} />
+                    <ThemedText type="smallBold">
+                      {formatElapsed(
+                        detail.status === 'completed'
+                          ? sessionStartAt && sessionEndAt
+                            ? Math.round((new Date(sessionEndAt).getTime() - new Date(sessionStartAt).getTime()) / 1000)
+                            : null
+                          : sessionStartAt
+                            ? Math.max(0, Math.floor((nowTick - new Date(sessionStartAt).getTime()) / 1000))
+                            : null
+                      )}
+                    </ThemedText>
+                  </View>
+                  <View style={styles.summaryDivider} />
+                  <View style={styles.summaryStat}>
+                    <Ionicons name="trending-up-outline" size={16} color={Colors.tealBright} />
+                    <ThemedText type="smallBold">{Math.round(totalVolume).toLocaleString()} kg</ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      vol
+                    </ThemedText>
+                  </View>
+                  <View style={styles.summaryDivider} />
+                  <View style={styles.summaryStat}>
+                    <Ionicons name="checkmark-circle-outline" size={16} color={Colors.tealBright} />
+                    <ThemedText type="smallBold">{completedSetsCount}</ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      sets
+                    </ThemedText>
+                  </View>
+                </View>
+              )}
+
+              {!showingReadinessGate && (
+                <View style={styles.heartRateRow}>
+                  <Ionicons name="heart-outline" size={16} color={Colors.textSecondary} />
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Heart Rate
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary" style={styles.heartRateValue}>
+                    -- bpm · Connect a wearable
+                  </ThemedText>
+                </View>
+              )}
 
               {showingReadinessGate ? (
                 <>
@@ -612,12 +919,16 @@ export default function AssignedWorkoutDetailScreen() {
                     <ThemedText themeColor="textSecondary">This workout has no exercises.</ThemedText>
                   )}
 
-                  {detail.exercises.map((exercise, index) => {
+                  {detail.exercises
+                    .filter((exercise) => !removedIds.has(exercise.id))
+                    .map((exercise, index) => {
                     const swap = swaps[exercise.id];
                     const shown = displayExercise(exercise, swap);
                     const description = shown.isSwapped
                       ? (libraryById[shown.exerciseLibraryId ?? '']?.description ?? null)
                       : exercise.description;
+                    const category = shown.exerciseLibraryId ? libraryById[shown.exerciseLibraryId]?.category : null;
+                    const totalSetsToRender = exercise.totalSets + (extraSets[exercise.id] ?? 0);
 
                     return (
                       <ThemedView key={exercise.id} type="backgroundElement" style={styles.exerciseCard}>
@@ -643,43 +954,117 @@ export default function AssignedWorkoutDetailScreen() {
                                 Swapped for today -- originally {shown.originalName}
                               </ThemedText>
                             )}
+                            {category && (
+                              <View style={styles.tagPill}>
+                                <ThemedText type="small" style={styles.tagPillText}>
+                                  {category} · {restDuration}s rest
+                                </ThemedText>
+                              </View>
+                            )}
                           </View>
-                          {detail.status === 'pending' && exercise.muscleGroup && (
-                            <Pressable
-                              onPress={() =>
-                                shown.isSwapped ? handleUndoSwap(exercise.id) : openSwapPicker(exercise.id)
-                              }
-                              disabled={swappingId === exercise.id}
-                              hitSlop={8}>
-                              {swappingId === exercise.id ? (
-                                <ActivityIndicator size="small" />
-                              ) : (
-                                <ThemedText type="linkPrimary">{shown.isSwapped ? 'Undo' : 'Swap'}</ThemedText>
+                          {detail.status === 'pending' && (
+                            <View style={styles.exerciseActions}>
+                              <Pressable
+                                onPress={() => setConfirmRemove({ id: exercise.id, name: shown.name })}
+                                disabled={removingId === exercise.id}
+                                hitSlop={8}
+                                accessibilityLabel={`Remove ${shown.name} for today`}>
+                                {removingId === exercise.id ? (
+                                  <ActivityIndicator size="small" />
+                                ) : (
+                                  <Ionicons name="trash-outline" size={18} color={Accent} />
+                                )}
+                              </Pressable>
+                              {exercise.muscleGroup && (
+                                <Pressable
+                                  onPress={() =>
+                                    shown.isSwapped ? handleUndoSwap(exercise.id) : openSwapPicker(exercise.id)
+                                  }
+                                  disabled={swappingId === exercise.id}
+                                  hitSlop={8}>
+                                  {swappingId === exercise.id ? (
+                                    <ActivityIndicator size="small" />
+                                  ) : (
+                                    <ThemedText type="linkPrimary">{shown.isSwapped ? 'Undo' : 'Swap'}</ThemedText>
+                                  )}
+                                </Pressable>
                               )}
-                            </Pressable>
+                            </View>
                           )}
                         </View>
 
-                        {Array.from({ length: exercise.totalSets }, (_, i) => i + 1).map((setNumber) => {
+                        {totalSetsToRender > 0 && (
+                          <View style={styles.setHeaderRow}>
+                            <ThemedText type="small" themeColor="textSecondary" style={styles.setHeaderSet}>
+                              Set
+                            </ThemedText>
+                            <ThemedText type="small" themeColor="textSecondary" style={styles.setHeaderInput}>
+                              Weight
+                            </ThemedText>
+                            <ThemedText type="small" themeColor="textSecondary" style={styles.setHeaderInput}>
+                              Reps
+                            </ThemedText>
+                          </View>
+                        )}
+
+                        {Array.from({ length: totalSetsToRender }, (_, i) => i + 1).map((setNumber) => {
                           const key = setLogKey(exercise.id, setNumber);
                           const row = setRows[key] ?? { checked: false, weight: '', reps: '', rpe: null };
                           const prefill = prefills[key];
                           const tag = exercise.taggedSets.find((t) => t.setNumber === setNumber);
                           const prefillLabel =
-                            !row.checked && prefill?.source === 'previous_session'
-                              ? 'From your last session with this exercise'
-                              : !row.checked && prefill?.source === 'baseline'
-                                ? "Coach's suggested starting point"
-                                : null;
+                            !row.checked && prefill?.source === 'baseline' ? "Coach's suggested starting point" : null;
                           const noSuggestion = !row.checked && (!prefill || prefill.source === 'none');
+                          const pr = prFlags[key];
+
+                          const lastWeight = prefill?.source === 'previous_session' ? prefill.weight : null;
+                          const lastReps = prefill?.source === 'previous_session' ? prefill.reps : null;
+                          const weightNum = row.weight.trim() !== '' ? Number(row.weight) : null;
+                          const repsNum = row.reps.trim() !== '' ? Number(row.reps) : null;
+                          const thisVolume =
+                            row.checked && weightNum !== null && repsNum !== null ? weightNum * repsNum : null;
+                          const lastVolume = lastWeight !== null && lastReps !== null ? lastWeight * lastReps : null;
+                          const volumeDelta = thisVolume !== null && lastVolume !== null ? thisVolume - lastVolume : null;
 
                           return (
                             <View key={key} style={styles.setRow}>
-                              <View style={styles.setRowTop}>
+                              {tag && tag.setType !== 'normal' && (
+                                <ThemedText type="small" style={styles.setTypeBadge}>
+                                  {setTypeLabel(tag.setType)}
+                                </ThemedText>
+                              )}
+                              {tag && tag.setType !== 'normal' && SET_TYPE_DESCRIPTIONS[tag.setType] && (
+                                <ThemedText type="small" themeColor="textSecondary" style={styles.setTypeDescription}>
+                                  {SET_TYPE_DESCRIPTIONS[tag.setType]}
+                                </ThemedText>
+                              )}
+
+                              <View style={styles.setRowMain}>
+                                <ThemedText type="small" themeColor="textSecondary" style={styles.setNumberLabel}>
+                                  × {setNumber}
+                                </ThemedText>
+                                <TextInput
+                                  value={row.weight}
+                                  onChangeText={(value) => updateSetField(key, 'weight', value)}
+                                  editable={detail.status !== 'completed'}
+                                  placeholder={noSuggestion ? 'kg' : '--'}
+                                  placeholderTextColor={theme.textSecondary}
+                                  keyboardType="numeric"
+                                  style={[styles.bigInput, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                                />
+                                <TextInput
+                                  value={row.reps}
+                                  onChangeText={(value) => updateSetField(key, 'reps', value)}
+                                  editable={detail.status !== 'completed'}
+                                  placeholder={noSuggestion ? 'reps' : '--'}
+                                  placeholderTextColor={theme.textSecondary}
+                                  keyboardType="numeric"
+                                  style={[styles.bigInput, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                                />
                                 <Pressable
                                   onPress={() => toggleSetComplete(exercise.id, setNumber)}
                                   disabled={detail.status === 'completed'}
-                                  style={[styles.checkbox, row.checked && styles.checkboxChecked]}
+                                  style={[styles.checkCircle, row.checked && styles.checkCircleChecked]}
                                   hitSlop={8}>
                                   {row.checked && (
                                     <ThemedText type="smallBold" style={styles.checkboxMark}>
@@ -687,44 +1072,44 @@ export default function AssignedWorkoutDetailScreen() {
                                     </ThemedText>
                                   )}
                                 </Pressable>
-                                <ThemedText type="small" style={styles.setNumberLabel}>
-                                  Set {setNumber}
-                                </ThemedText>
-                                {tag && tag.setType !== 'normal' && (
-                                  <ThemedText type="small" style={styles.setTypeBadge}>
-                                    {setTypeLabel(tag.setType)}
-                                  </ThemedText>
-                                )}
                               </View>
 
-                              {tag && tag.setType !== 'normal' && SET_TYPE_DESCRIPTIONS[tag.setType] && (
-                                <ThemedText type="small" themeColor="textSecondary" style={styles.setTypeDescription}>
-                                  {SET_TYPE_DESCRIPTIONS[tag.setType]}
-                                </ThemedText>
+                              {lastWeight !== null && (
+                                <View style={styles.lastRow}>
+                                  <ThemedText type="small" themeColor="textSecondary">
+                                    Last: {lastWeight}kg{lastReps !== null ? ` x ${lastReps}` : ''}
+                                  </ThemedText>
+                                  {volumeDelta !== null && volumeDelta !== 0 && (
+                                    <ThemedText
+                                      type="small"
+                                      style={volumeDelta > 0 ? styles.volumeDeltaUp : styles.volumeDeltaDown}>
+                                      {volumeDelta > 0 ? '↑' : '↓'} {volumeDelta > 0 ? '+' : ''}
+                                      {Math.round(volumeDelta)}kg vol
+                                    </ThemedText>
+                                  )}
+                                </View>
                               )}
 
-                              <View style={styles.inputsRow}>
-                                <TextInput
-                                  value={row.weight}
-                                  onChangeText={(value) => updateSetField(key, 'weight', value)}
-                                  editable={detail.status !== 'completed'}
-                                  placeholder={noSuggestion ? 'Weight (kg)' : 'Weight'}
-                                  placeholderTextColor={theme.textSecondary}
-                                  keyboardType="numeric"
-                                  style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                                />
-                                <TextInput
-                                  value={row.reps}
-                                  onChangeText={(value) => updateSetField(key, 'reps', value)}
-                                  editable={detail.status !== 'completed'}
-                                  placeholder={noSuggestion ? 'Reps' : 'Reps'}
-                                  placeholderTextColor={theme.textSecondary}
-                                  keyboardType="numeric"
-                                  style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-                                />
-                              </View>
+                              {pr && (pr.weightPr || pr.volPr) && (
+                                <View style={styles.prBadgeRow}>
+                                  {pr.volPr && (
+                                    <View style={styles.prBadge}>
+                                      <ThemedText type="small" style={styles.prBadgeText}>
+                                        🏆 Vol PR
+                                      </ThemedText>
+                                    </View>
+                                  )}
+                                  {pr.weightPr && (
+                                    <View style={styles.prBadge}>
+                                      <ThemedText type="small" style={styles.prBadgeText}>
+                                        🏆 Weight PR
+                                      </ThemedText>
+                                    </View>
+                                  )}
+                                </View>
+                              )}
 
-                              {setNumber === exercise.totalSets && (
+                              {setNumber === totalSetsToRender && (
                                 <>
                                   <ThemedText type="small" themeColor="textSecondary" style={styles.rpeLabel}>
                                     RPE for this exercise
@@ -747,6 +1132,12 @@ export default function AssignedWorkoutDetailScreen() {
                             </View>
                           );
                         })}
+
+                        {detail.status === 'pending' && (
+                          <Pressable onPress={() => handleAddSet(exercise.id, totalSetsToRender)} style={styles.addSetButton}>
+                            <ThemedText type="linkPrimary">+ Add Set</ThemedText>
+                          </Pressable>
+                        )}
                       </ThemedView>
                     );
                   })}
@@ -773,6 +1164,7 @@ export default function AssignedWorkoutDetailScreen() {
                   )}
 
                   {setError_ && <ThemedText style={styles.error}>{setError_}</ThemedText>}
+                  {removeError && <ThemedText style={styles.error}>{removeError}</ThemedText>}
                   {finishError && <ThemedText style={styles.error}>{finishError}</ThemedText>}
 
                   {detail.status === 'pending' && (
@@ -795,6 +1187,16 @@ export default function AssignedWorkoutDetailScreen() {
           )}
         </ScrollView>
       </SafeAreaView>
+
+      <ConfirmDialog
+        visible={confirmRemove !== null}
+        title={`Remove ${confirmRemove?.name ?? 'this exercise'}?`}
+        message="For today's session only -- your programme doesn't change, and it'll be back next time this workout comes up."
+        confirmLabel="Remove"
+        busy={removingId !== null}
+        onConfirm={handleConfirmRemoveExercise}
+        onCancel={() => setConfirmRemove(null)}
+      />
 
       <Modal visible={swapPickerExerciseId !== null} transparent animationType="fade" onRequestClose={closeSwapPicker}>
         <View style={styles.modalOverlay}>
@@ -917,6 +1319,34 @@ const styles = StyleSheet.create({
     gap: Spacing.four,
     marginTop: Spacing.one,
   },
+  summaryBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    backgroundColor: Colors.backgroundElement,
+  },
+  summaryStat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.half,
+  },
+  summaryDivider: {
+    width: 1,
+    height: 16,
+    backgroundColor: Colors.backgroundSelected,
+  },
+  heartRateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+    paddingHorizontal: Spacing.one,
+  },
+  heartRateValue: {
+    marginLeft: 'auto',
+  },
   exerciseCard: {
     borderRadius: Spacing.two,
     padding: Spacing.three,
@@ -931,8 +1361,37 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: Spacing.half,
   },
+  exerciseActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
   swappedNote: {
     color: Colors.tealBright,
+  },
+  tagPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.backgroundSelected,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.half,
+    marginTop: Spacing.half,
+  },
+  tagPillText: {
+    color: Colors.tealBright,
+  },
+  setHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+  },
+  setHeaderSet: {
+    width: 32,
+  },
+  setHeaderInput: {
+    flex: 1,
+    textAlign: 'center',
   },
   setRow: {
     borderTopWidth: 1,
@@ -940,30 +1399,31 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.two,
     gap: Spacing.one,
   },
-  setRowTop: {
+  setRowMain: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two,
   },
-  checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: Spacing.one,
+  setNumberLabel: {
+    width: 32,
+    fontWeight: '700',
+  },
+  checkCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     borderWidth: 2,
     borderColor: Colors.backgroundSelected,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  checkboxChecked: {
+  checkCircleChecked: {
     ...Glow.oxblood,
     backgroundColor: Accent,
     borderColor: Accent,
   },
   checkboxMark: {
     color: Colors.text,
-  },
-  setNumberLabel: {
-    fontWeight: '700',
   },
   setTypeBadge: {
     color: Colors.tealBright,
@@ -972,9 +1432,44 @@ const styles = StyleSheet.create({
   setTypeDescription: {
     marginLeft: Spacing.four,
   },
-  inputsRow: {
+  lastRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: Spacing.two,
+  },
+  volumeDeltaUp: {
+    color: Colors.tealBright,
+  },
+  volumeDeltaDown: {
+    color: Colors.textSecondary,
+  },
+  prBadgeRow: {
+    flexDirection: 'row',
+    gap: Spacing.one,
+  },
+  prBadge: {
+    backgroundColor: Colors.tealDeep,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.half,
+  },
+  prBadgeText: {
+    color: Colors.tealBright,
+    fontWeight: '700',
+  },
+  addSetButton: {
+    alignSelf: 'flex-start',
+    marginTop: Spacing.one,
+  },
+  bigInput: {
+    flex: 1,
+    minWidth: 0,
+    borderWidth: 1,
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.two,
+    textAlign: 'center',
+    fontSize: 20,
+    fontWeight: '700',
   },
   rpeLabel: {
     marginTop: Spacing.half,

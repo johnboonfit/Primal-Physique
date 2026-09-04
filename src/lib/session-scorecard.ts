@@ -1,6 +1,62 @@
 import { listExerciseSwapsForAssignment } from '@/lib/exercise-swaps';
 import { supabase } from '@/lib/supabase';
 
+export type ExercisePersonalBest = {
+  /** Heaviest weight ever logged for a single set of this exercise, in
+   * any other session. Null if nothing's ever been logged. */
+  bestWeight: number | null;
+  /** Highest single-SET volume (that one set's weight x reps) ever
+   * logged, in any other session -- not cumulative session volume, so
+   * a single strong set can be compared against a single strong set. */
+  bestVolume: number | null;
+};
+
+/**
+ * Live per-set PR detection during an in-progress session -- the same
+ * "beats every weight this client has ever logged for this exercise, in
+ * any OTHER session" definition getSessionScorecard's own PBs use,
+ * fetched once up front (rather than recomputed as a batch afterward)
+ * so the UI can flag a Weight PR or Vol PR the instant a set is
+ * checked. Keyed by exercise_library_id, same identity getSetPrefills
+ * and getSessionScorecard both already key by.
+ */
+export async function getExercisePersonalBests(
+  clientId: string,
+  currentAssignmentId: string,
+  exerciseLibraryIds: string[]
+): Promise<Record<string, ExercisePersonalBest>> {
+  const libraryIds = new Set(exerciseLibraryIds.filter((id): id is string => id !== null && id !== undefined));
+  if (libraryIds.size === 0) return {};
+
+  const { data, error } = await supabase
+    .from('workout_logs')
+    .select('weight, reps, workout_exercises!inner(exercise_library_id)')
+    .eq('client_id', clientId)
+    .neq('assignment_id', currentAssignmentId)
+    .not('weight', 'is', null);
+
+  if (error) throw error;
+
+  const result: Record<string, ExercisePersonalBest> = {};
+  (data ?? []).forEach((row) => {
+    const libraryId = (row.workout_exercises as unknown as { exercise_library_id: string | null } | null)
+      ?.exercise_library_id;
+    if (!libraryId || !libraryIds.has(libraryId)) return;
+
+    const weight = row.weight as number;
+    const reps = row.reps as number | null;
+    const volume = reps !== null ? weight * reps : null;
+
+    const current = result[libraryId] ?? { bestWeight: null, bestVolume: null };
+    result[libraryId] = {
+      bestWeight: current.bestWeight === null || weight > current.bestWeight ? weight : current.bestWeight,
+      bestVolume: volume !== null && (current.bestVolume === null || volume > current.bestVolume) ? volume : current.bestVolume,
+    };
+  });
+
+  return result;
+}
+
 export type SessionPB = {
   exerciseLibraryId: string;
   exerciseName: string;

@@ -19,6 +19,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export type SessionSnapshot = {
   setRows: Record<string, { weight: string; reps: string; rpe: number | null }>;
   sessionRpe: number | null;
+  /** How many sets beyond what the programme prescribed have been added
+   * for this session, per exercise slot (+ Add Set) -- an added-but-
+   * not-yet-logged blank row otherwise has nothing else remembering it
+   * exists, the same gap this snapshot already covers for typed-but-
+   * unchecked weight/reps. Optional so an older snapshot saved before
+   * this field existed still loads fine (no extra sets, same as if it
+   * were explicitly empty). */
+  extraSetsByExercise?: Record<string, number>;
   savedAt: string;
 };
 
