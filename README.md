@@ -2223,6 +2223,14 @@ Redesigned the top of the client's Nutrition screen against a reference mockup �
 
 **How you verify this yourself:** open Nutrition — the top card should show a calorie ring with real macro bars underneath showing your actual protein/carb/fat targets, a bar should turn oxblood with "OVER" wording if you log past it, and logging/deleting food in the meal sections below should work exactly as it did before.
 
+## Compliance removed from the client's Progress screen, kept running for the coach
+
+The client's Progress tab no longer shows a Compliance sub-tab — Metrics is now the first and default tab, with Measure and Photos after it. `getComplianceScore()` itself (`src/lib/compliance.ts`) is untouched and keeps running exactly as before: it's what feeds the color-coded `{score}%` badge on each row of the coach's Clients list, and the coach's dashboard — this was purely about removing the client-facing display of it, not the underlying calculation. `compliance-panel.tsx` is deleted since removing its one caller left it with none.
+
+**Verified here**: a generic in-memory fake of `supabase.from()`, rendered through the real `ProgressScreen` component — confirmed no "Compliance" text appears anywhere on the screen, confirmed Metrics is the tab shown by default, and confirmed Measure and Photos both still switch to and render correctly.
+
+**How you verify this yourself:** open Progress as a client — you should see Metrics/Measure/Photos, no Compliance tab, with Metrics showing by default. On the coach side, the Clients list's compliance badge should be completely unaffected.
+
 ## Project structure reference
 
 ```
@@ -2317,7 +2325,7 @@ src/
         index.tsx        # Home tab — greeting + a gear icon opening /settings (Sign out lives there now, not here) + a 3-across hero row (Momentum [greyed like Steps if the coach has toggled it off] / Steps [muted placeholder] / Calories Today), streak + Level/XP combined into one row, daily logging nudge, weekly TDEE recalculation check, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle and a live new-post-count badge (clears once the client actually views Community's Posts sub-tab)
         training.tsx      # Training tab — Volume Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) directly under the hero stat, then Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — header (fork icon + title + quick-add search icon) → ‹›date navigator → one glowing summary card (calorie ring + Protein/Carbs/Fat target bars, see macros.ts), 4 meal sections, blended USDA + UK-supermarket search (food-search.ts) + camera barcode scan, quantity as grams / a real structured portion chip / a manual custom item
-        progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
+        progress.tsx       # Progress tab shell — Metrics/Measure/Photos sub-tab switcher (Metrics first, and the default tab); Compliance was removed from here, but getComplianceScore() itself still runs — it feeds the coach's Clients list badge (see clients/index.tsx / coach-dashboard.ts)
         chat.tsx             # Chat tab — real messaging now: resolves/creates this client's conversation with "the coach", then renders <ChatThread>; the shared FeatureLockedCard instead if the coach has toggled Chat off for this client
         calendar.tsx        # Not a tab anymore, still a real route — thin wrapper: title + chrome around <SessionCalendar clientId={self} role="client" />, reached via Training's "View Calendar" link
   components/
@@ -2329,7 +2337,6 @@ src/
     measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
     photo-compare-slider.tsx  # generic, reusable before/after image slider — drag to reveal, pinch either photo to resize it
     photos-panel.tsx            # Progress → Photos sub-tab content (front/side/back upload, gallery, compare tool)
-    compliance-panel.tsx          # Progress → Compliance sub-tab content — HeroStat + side-by-side punctuality/macro-adherence breakdown cards, reads getComplianceScore()
     session-calendar.tsx          # <SessionCalendar clientId role> — the real Week/Month calendar, shared by client/calendar.tsx and Programme Builder; also renders due/completed check-ins (own status marker, tappable only for role="client")
     time-range-toggle.tsx     # shared 1W/1M/6M/1Y/All Time chip row, used by both MetricsPanel and MeasurePanel
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)

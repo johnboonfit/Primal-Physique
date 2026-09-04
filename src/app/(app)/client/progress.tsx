@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { CompliancePanel } from '@/components/compliance-panel';
 import { MeasurePanel } from '@/components/measure-panel';
 import { MetricsPanel } from '@/components/metrics-panel';
 import { PhotosPanel } from '@/components/photos-panel';
@@ -10,17 +9,16 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 
-type SubTab = 'compliance' | 'metrics' | 'measure' | 'photos';
+type SubTab = 'metrics' | 'measure' | 'photos';
 
 const SUB_TABS: { key: SubTab; label: string }[] = [
-  { key: 'compliance', label: 'Compliance' },
   { key: 'metrics', label: 'Metrics' },
   { key: 'measure', label: 'Measure' },
   { key: 'photos', label: 'Photos' },
 ];
 
 export default function ProgressScreen() {
-  const [activeTab, setActiveTab] = useState<SubTab>('compliance');
+  const [activeTab, setActiveTab] = useState<SubTab>('metrics');
 
   return (
     <ThemedView style={styles.container}>
@@ -44,7 +42,6 @@ export default function ProgressScreen() {
             ))}
           </View>
 
-          {activeTab === 'compliance' && <CompliancePanel />}
           {activeTab === 'metrics' && <MetricsPanel />}
           {activeTab === 'measure' && <MeasurePanel />}
           {activeTab === 'photos' && <PhotosPanel />}
