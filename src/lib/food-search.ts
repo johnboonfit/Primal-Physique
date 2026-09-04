@@ -54,11 +54,10 @@ export async function searchAllFoods(query: string): Promise<BlendedSearchResult
 
   let uk: BlendedFoodResult[] = [];
   if (ukOutcome.status === 'fulfilled') {
-    const goodMatches = ukOutcome.value.filter((result) => isGoodMatch(query, result));
-    console.log(
-      `[searchAllFoods] "${query}": ${ukOutcome.value.length} UK candidates -> ${goodMatches.length} passed the good-match gate`
-    );
-    uk = goodMatches.map((result) => ({ ...result, source: 'open_food_facts' as const })).slice(0, MAX_UK_RESULTS);
+    uk = ukOutcome.value
+      .filter((result) => isGoodMatch(query, result))
+      .map((result) => ({ ...result, source: 'open_food_facts' as const }))
+      .slice(0, MAX_UK_RESULTS);
   } else {
     // searchUKFoods() itself catches its own fetch/HTTP errors and always
     // resolves — this branch firing at all means something unexpected

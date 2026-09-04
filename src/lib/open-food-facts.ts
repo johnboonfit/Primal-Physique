@@ -243,13 +243,11 @@ export async function searchUKFoods(query: string): Promise<FoodSearchResult[]> 
   });
   const url = `${SEARCH_URL}?${params.toString()}`;
 
-  // Logged unconditionally (not just __DEV__) while this feature is still
-  // being confirmed against the real API for the first time -- two
-  // earlier attempts at this both silently returned zero UK results for
-  // reasons invisible from inside this sandbox (its network proxy blocks
-  // both live APIs outright, so this exact request has never actually
-  // been run and inspected before now). This makes the real cause visible
-  // in the browser/Metro console instead of a third blind guess.
+  // A caught fetch failure (network error, or the browser blocking a
+  // cross-origin request) is worth surfacing rather than losing silently
+  // — this is a background, best-effort pass, but a coach/client should
+  // still be able to tell from the console why UK results never show up
+  // if Open Food Facts becomes unreachable.
   let response: Response;
   try {
     response = await fetch(url, {
@@ -266,15 +264,12 @@ export async function searchUKFoods(query: string): Promise<FoodSearchResult[]> 
   }
 
   const data = (await response.json()) as { products?: Record<string, unknown>[] };
-  const rawProducts = data.products ?? [];
-  const ukRelevant = rawProducts.filter(isUkRelevant);
-  const mapped = ukRelevant.map(mapProduct).filter((result): result is FoodSearchResult => result !== null);
 
-  console.log(
-    `[searchUKFoods] "${trimmed}": ${rawProducts.length} raw results from Open Food Facts -> ${ukRelevant.length} UK-relevant -> ${mapped.length} usable`
-  );
-
-  return mapped.slice(0, 20);
+  return (data.products ?? [])
+    .filter(isUkRelevant)
+    .map(mapProduct)
+    .filter((result): result is FoodSearchResult => result !== null)
+    .slice(0, 20);
 }
 
 /**
