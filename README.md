@@ -1922,6 +1922,31 @@ Two changes to the client's food-add flow, done together since both touch the sa
 4. If an expected UK product doesn't show, check the network tab for the `api/v2/search` requests — that tells you whether it's a ranking-gate issue (fixable) or an Open Food Facts data-coverage gap (nothing to fix on this end).
 5. Pick a food with real portion data — a plain "apple" or "rice cakes" search against USDA should offer chips like "1 small apple" alongside Grams. Pick something like a protein powder brand — it should only offer Grams and Custom item, never a fabricated per-scoop weight.
 
+## Client Activity: a real-time, cross-client feed
+
+The coach dashboard's "Recent Activity" preview was always capped, dashboard-only, and missing habits entirely — this adds a full dedicated screen (`/activity`, linked via a new "View all →" on that same section) that's genuinely live: a new event from any client appears within a couple of seconds, with no manual refresh.
+
+**Three real event types, merged into one chronological stream**: a meal logged, a habit completed, and a workout completed — reusing this app's existing calculations rather than computing anything new. A completed workout's stats (duration, total weight lifted, RPE) reuse the exact same `getSessionScorecard()` the completion screen itself shows; a meal's calories/protein come straight off its `food_logs` row; a habit shows its real name via `habits.name`.
+
+**One real correction from the original plan, made deliberately**: "workout completed" listens for `assignments` flipping to `status = 'completed'`, not new `workout_logs` rows. `workout_logs` gets a new row per **set** — 15-25 per session — so listening there would have fired the feed on every single set instead of once when the workout actually finishes. The one-event-per-completed-assignment de-duplication already used by the dashboard's small preview is reused here, just extended.
+
+**A real, previously-undiscovered gap, closed by this chunk's migration**: coaches never had read access to `habit_logs` — only a client could see their own. That's not just why the old preview never showed habits; it also meant `getMomentumScore()`'s habit component was silently reading zero rows whenever a *coach* (not the client themself) computed it, undercounting every client's Momentum Score by up to a quarter of it. One new RLS policy on `habit_logs`, mirroring the existing habits-table pattern, fixes both at once.
+
+**Momentum Score and Compliance Score shown per event** are each client's real, current values — computed once per distinct client appearing on the page (not once per event, since several events from the same client would otherwise repeat the same non-trivial queries for an identical answer), using `getMomentumScore()`/`getComplianceScore()` completely unchanged.
+
+**Realtime delivery** is three `postgres_changes` subscriptions on one channel (new `food_logs`, new `habit_logs`, `assignments` updated to `completed`), each just re-triggering a full refetch — the same "any change → refetch everything" approach `chat.ts`'s `subscribeToConversation` already uses, rather than trying to reconstruct one feed entry from a partial realtime payload. Supabase only broadcasts changes for tables explicitly added to its realtime publication, which none of these three were before this migration.
+
+**New**: `supabase/client-activity-feed.sql` (the habit_logs RLS policy + the three tables added to the realtime publication), `src/app/(app)/activity.tsx`. **Changed**: `coach-dashboard.ts` (`getClientActivityFeed()`, `subscribeToClientActivity()` — additions, the existing `getRecentClientActivity()` dashboard preview is untouched), `home.tsx` (a "View all →" link on Recent Activity).
+
+**What was verified here, and what needs your own project.** This sandbox has no live Supabase project or websocket server at all, so the one thing that categorically cannot be tested here is realtime delivery itself. What *was* verified, against realistic fake data run through the real production code: the three event types merge into correct chronological order, the workout-completion de-duplication and scorecard reuse work, Momentum/Compliance attach correctly per client, and the subscription is created on mount pointed at the right three tables/events.
+
+**How you verify it's genuinely live, not just refetching on open:**
+1. Run `client-activity-feed.sql` in the SQL Editor.
+2. Open the coach's new Activity screen on one device/browser tab and leave it open.
+3. From a second device or client account, log a meal, complete a habit, or finish a workout — do this once per event type, since each is an independent subscription that could fail on its own.
+4. A new row should appear within a couple of seconds **without touching pull-to-refresh or reopening the screen**.
+5. Optional: toggle wifi off on the first device, log something from the second, toggle wifi back on — confirm the feed catches up on reconnect rather than staying stuck (a real outage's events aren't retroactively replayed, so briefly missing one while offline is expected; the subscription recovering afterward is what this checks).
+
 ## Project structure reference
 
 ```
@@ -1932,7 +1957,8 @@ src/
       login.tsx
       signup.tsx        # name/email/password only — no role choice; every signup is a client
     (app)/
-      home.tsx          # coach's home screen — a real dashboard (stat tiles, Needs Attention, a merged real Recent Activity feed) plus Manage/Coaching Hub nav grids covering every coach screen; redirects clients to /client
+      home.tsx          # coach's home screen — a real dashboard (stat tiles, Needs Attention, a merged real Recent Activity preview with a "View all →" into activity.tsx) plus Manage/Coaching Hub nav grids covering every coach screen; redirects clients to /client
+      activity.tsx      # coach-only "Client Activity" — the full, real-time, cross-client feed (meals/habits/completed workouts, each with that client's live Momentum + Compliance Score); see getClientActivityFeed()/subscribeToClientActivity() in coach-dashboard.ts
       messages/
         index.tsx        # coach-only inbox — every client, most-recently-messaged first, with a last-message preview and an online dot
         [clientId].tsx     # coach's per-client thread — same <ChatThread> the client's own Chat tab uses
@@ -2055,7 +2081,7 @@ src/
     momentum.ts                # getMomentumScore() — pure calculation, no new tables; getCurrentWeekRange() exported so other "this week" features (the Leaderboard's weekly XP ranking) share the exact same Monday, not a second copy of the date math
     chat.ts                      # getOrCreateConversation() / listMessages() / sendTextMessage() / sendVoiceMessage() / editMessage() / deleteMessageForMe() / deleteMessageForEveryone() / subscribeToConversation() (realtime) / updateLastSeen() / getLastSeen() / isOnline() / listCoachConversations() / getAnyCoach() / markConversationRead() / getReadReceipts()
     compliance.ts                # getComplianceScore() — pure calculation, no new tables; averages check-in punctuality and macro adherence over a trailing 28-day window; complianceColor() — the shared red/neutral/teal scale, used by the Clients list and the coach dashboard alike
-    coach-dashboard.ts            # getCoachDashboardStats() (active clients, avg Compliance Score, overdue check-ins, open community reports) / getClientsNeedingAttention() (sub-50% compliance, worst first) / getRecentClientActivity() (logged meals + completed workouts, merged and sorted, real data only)
+    coach-dashboard.ts            # getCoachDashboardStats() (active clients, avg Compliance Score, overdue check-ins, open community reports) / getClientsNeedingAttention() (sub-50% compliance, worst first) / getRecentClientActivity() (small dashboard preview: logged meals + completed workouts only) / getClientActivityFeed() (the full activity.tsx feed: meals + habits + completed workouts, each with that client's live Momentum/Compliance Score attached) / subscribeToClientActivity() (realtime: new food_logs, new habit_logs, assignments updated to completed)
     community.ts                   # listCommunityPosts() / createCommunityPost() / getCommunityEnabled() / setCommunityEnabled() / getCommunityHidden() / setCommunityHidden() / reportPost() / deletePost() / getOpenReports() / dismissReport() / blockClient() / unblockClient() / listBlockedClients() / isBlocked() — the Announcement-is-coach-only and blocked-can't-post rules live in RLS, not in this file; authorId/postAuthorId are string | null and render as "Deleted user" once a client is permanently deleted (see client-deletion.sql)
     leaderboard.ts                  # getWeeklyLeaderboard() / getLifetimeLeaderboard() (call SECURITY DEFINER SQL functions) / getMyTier() / setClientTier() / listClientTiers() / tierHasLeaderboardAccess() — CLIENT_TIERS mirrors the real Club/Accelerator/Precision Stripe products (Club shown in the app as "Base")
     recipes.ts                    # createRecipe() / listRecipes() / getRecipeDetail() / updateRecipeDetails() / deleteRecipe() / addRecipeIngredient() / removeRecipeIngredient() / uploadRecipePhoto() / computeMacroTotals() — the one place recipe macros are summed and divided by servings, pure and reused by both the list and detail screens
@@ -2122,4 +2148,5 @@ supabase/
   session-rpe.sql                                                                                   # paste in after readiness-client-access.sql — assignments.session_rpe (the client's overall rating of the whole session) + the column-level grant a client needs to actually save it
   client-status.sql                                                                                   # paste in after session-rpe.sql — profiles.status ('active'/'paused'), the coach-only update policy, and a trigger closing the column-grant gap it would otherwise open (a client could flip their own status via a direct API call)
   client-deletion.sql                                                                                   # paste in after client-status.sql — changes community_posts.author_id from on delete cascade to on delete set null, so permanently deleting a client anonymizes their posts instead of deleting them
+  client-activity-feed.sql                                                                                # paste in after client-deletion.sql — coach read access to habit_logs (also fixes Momentum Score's habit component when a coach computes it), adds food_logs/habit_logs/assignments to the realtime publication
 ```

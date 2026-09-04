@@ -216,7 +216,12 @@ export default function HomeScreen() {
                 <NavCard title="Check-in Forms" subtitle="Schedules & templates" href="/forms" />
               </View>
 
-              <SectionLabel>Recent Activity</SectionLabel>
+              <View style={styles.activityHeaderRow}>
+                <SectionLabel>Recent Activity</SectionLabel>
+                <Pressable onPress={() => router.push('/activity' as never)}>
+                  <ThemedText type="linkPrimary">View all →</ThemedText>
+                </Pressable>
+              </View>
               {activity.length === 0 ? (
                 <ThemedText themeColor="textSecondary" style={styles.allGoodText}>
                   Nothing logged yet.
@@ -291,6 +296,11 @@ const styles = StyleSheet.create({
   },
   allGoodText: {
     marginTop: -Spacing.one,
+  },
+  activityHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   attentionCard: {
     borderRadius: Spacing.two,
