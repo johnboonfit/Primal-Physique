@@ -1,4 +1,4 @@
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
 import { ThemedText } from '@/components/themed-text';
@@ -7,6 +7,9 @@ import { Colors, Glow, Spacing } from '@/constants/theme';
 type StatRingProps = {
   value: string;
   label: string;
+  /** A short caption under the label -- e.g. "out of 10", or "Coming
+   * soon" on a muted/placeholder ring. */
+  subtitle?: string;
   /** 0-1 fill fraction for the ring's arc, when this stat has a real cap
    * to measure against (e.g. session RPE out of 10). Omit for an
    * open-ended number with no natural ceiling (e.g. total weight
@@ -14,6 +17,14 @@ type StatRingProps = {
    * percentage. */
   progress?: number;
   size?: number;
+  /** A stat with no real data behind it yet (e.g. Readiness, Steps --
+   * see stat-tile.tsx's identical convention). Renders a dashed outline
+   * ring with no glow and a muted number instead of a real reading, so
+   * it visibly reads as "not tracked yet" rather than a fabricated
+   * zero. */
+  muted?: boolean;
+  onPress?: () => void;
+  style?: StyleProp<ViewStyle>;
 };
 
 const STROKE_WIDTH = 10;
@@ -26,7 +37,7 @@ const STROKE_WIDTH = 10;
  * for buttons/active states only (see theme.ts), so it never appears
  * here as decoration.
  */
-export function StatRing({ value, label, progress, size = 140 }: StatRingProps) {
+export function StatRing({ value, label, subtitle, progress, size = 140, muted, onPress, style }: StatRingProps) {
   const radius = (size - STROKE_WIDTH) / 2;
   const circumference = 2 * Math.PI * radius;
   const fraction = progress === undefined ? 1 : Math.min(1, Math.max(0, progress));
@@ -36,26 +47,36 @@ export function StatRing({ value, label, progress, size = 140 }: StatRingProps) 
   const valueFontSize = Math.round(size * 0.26);
 
   return (
-    <View style={styles.container}>
-      <View style={[styles.glowWrap, { width: size, height: size, borderRadius: size / 2 }]}>
+    <Pressable
+      style={({ pressed }) => [styles.container, style, pressed && onPress && styles.pressed]}
+      onPress={onPress}
+      disabled={!onPress}>
+      <View
+        style={[
+          styles.glowWrap,
+          { width: size, height: size, borderRadius: size / 2 },
+          muted && styles.glowWrapMuted,
+        ]}>
         <Svg width={size} height={size} style={styles.svg}>
+          {!muted && (
+            <Circle
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              stroke={Colors.backgroundSelected}
+              strokeWidth={STROKE_WIDTH}
+              fill="none"
+            />
+          )}
           <Circle
             cx={size / 2}
             cy={size / 2}
             r={radius}
-            stroke={Colors.backgroundSelected}
-            strokeWidth={STROKE_WIDTH}
-            fill="none"
-          />
-          <Circle
-            cx={size / 2}
-            cy={size / 2}
-            r={radius}
-            stroke={Colors.tealBright}
-            strokeWidth={STROKE_WIDTH}
+            stroke={muted ? Colors.backgroundSelected : Colors.tealBright}
+            strokeWidth={muted ? 1.5 : STROKE_WIDTH}
             strokeLinecap="round"
-            strokeDasharray={circumference}
-            strokeDashoffset={dashOffset}
+            strokeDasharray={muted ? '4, 7' : circumference}
+            strokeDashoffset={muted ? 0 : dashOffset}
             fill="none"
             // Starts the arc at the top (12 o'clock) instead of SVG's
             // default 3 o'clock, and fills clockwise. A plain SVG
@@ -68,17 +89,26 @@ export function StatRing({ value, label, progress, size = 140 }: StatRingProps) 
         </Svg>
         <View style={styles.center}>
           <ThemedText
-            style={[styles.value, { fontSize: valueFontSize, lineHeight: valueFontSize * 1.05 }]}
+            style={[
+              styles.value,
+              { fontSize: valueFontSize, lineHeight: valueFontSize * 1.05 },
+              muted && styles.mutedValue,
+            ]}
             numberOfLines={1}
             adjustsFontSizeToFit>
             {value}
           </ThemedText>
         </View>
       </View>
-      <ThemedText type="smallBold" style={styles.label}>
+      <ThemedText type="smallBold" style={[styles.label, muted && styles.mutedLabel]}>
         {label}
       </ThemedText>
-    </View>
+      {subtitle && (
+        <ThemedText type="small" themeColor="textSecondary" style={styles.subtitle}>
+          {subtitle}
+        </ThemedText>
+      )}
+    </Pressable>
   );
 }
 
@@ -92,6 +122,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  glowWrapMuted: {
+    shadowOpacity: 0,
+    elevation: 0,
+  },
   svg: {
     position: 'absolute',
   },
@@ -104,9 +138,21 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontWeight: '800',
   },
+  mutedValue: {
+    color: Colors.textSecondary,
+  },
   label: {
     textTransform: 'uppercase',
     letterSpacing: 1,
     textAlign: 'center',
+  },
+  mutedLabel: {
+    color: Colors.textSecondary,
+  },
+  subtitle: {
+    textAlign: 'center',
+  },
+  pressed: {
+    opacity: 0.85,
   },
 });

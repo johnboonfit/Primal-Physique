@@ -2191,6 +2191,22 @@ Shipped the same day as the badges above, after a real crash report from John's 
 
 **How you verify this yourself:** open Chat as a client — it should open normally with no red error screen, and the Chat tab badge should keep updating live afterward exactly as before.
 
+## Client Home redesign: a 2x2 ring grid, and streak/XP pulled into their own cards
+
+A visual redesign of the client's Home tab, requested against a reference dashboard mockup — same "greeting → Up Next → key stats → progress → habits/community" shape, but rebuilt entirely in Primal Physique's own palette rather than the mockup's colors: oxblood stays reserved for buttons/active states only (never a ring color), so every ring uses the app's existing single teal accent, distinguished by which are real data versus honest placeholders — not by borrowing new hues.
+
+**New order, top to bottom**: greeting + settings (unchanged) → logging nudge / auto-reschedule notices (unchanged) → Up Next (unchanged) → a new 2x2 ring grid → new stacked streak + XP cards → Today's Habits (unchanged) → Community (unchanged, still last).
+
+**The ring grid** replaces the old 3-tile hero row, built on `StatRing` (previously used for session RPE only), now extended with a `muted` variant:
+- **Momentum** and **Calories** get a real, solid teal ring with a live fill (Momentum's out of 10, Calories against the adaptive TDEE target) — same data these already pulled from before, just re-rendered as a ring instead of a flat tile.
+- **Readiness** and **Steps** get the new muted ring style: a thin dashed teal-gray outline, no glow, "--" value, and a small caption ("Coming soon" / "Sync a wearable") — the same honest-placeholder convention `StatTile` already used for Steps, now extended to `StatRing` and to a genuinely new concept (Readiness has no daily score anywhere in the app yet — distinct from the existing per-workout readiness gate before starting a session).
+
+**Streak + XP**, previously a cramped inline pill mid-screen, are now two proper stacked cards side by side beneath the ring grid: a streak card (flame + day count) and an XP card (Level + progress bar), same underlying data (`getCurrentStreak`, `getXpSummary`), just given their own visual weight.
+
+**Verified here**: a generic in-memory fake of `supabase.from()` (assignments, food/habit logs, tdee_estimates, profiles, etc.), seeded with a realistic week of activity, rendered through the real `ClientHomeScreen` component — confirmed the ring grid shows a real teal Momentum ring (4.4/10) and Calories ring (1450 of 2400) side by side with dashed muted Readiness/Steps rings, and the streak (🔥 3 day streak) and XP (Level 2, 150/500 XP) cards render correctly beneath, with Habits and Community unchanged below that.
+
+**How you verify this yourself:** open the client Home tab — Up Next at top, then a 2x2 ring grid (Readiness and Steps should look like dashed "coming soon" outlines; Momentum and Calories should be solid teal rings with real numbers), then a streak card and a level/XP card side by side, then Habits, then Community.
+
 ## Project structure reference
 
 ```

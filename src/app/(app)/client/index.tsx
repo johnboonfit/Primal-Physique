@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { StatTile } from '@/components/stat-tile';
+import { StatRing } from '@/components/stat-ring';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
@@ -478,56 +478,6 @@ export default function ClientHomeScreen() {
             </Pressable>
           </View>
 
-          <View style={styles.heroRow}>
-            {!momentumLoading && !momentumFeatureEnabled ? (
-              <StatTile value="--" label="Momentum" subtitle="Ask your coach" muted style={styles.heroTile} />
-            ) : (
-              <StatTile
-                value={momentumLoading || !momentum ? '--' : momentum.score.toFixed(1)}
-                label="Momentum"
-                subtitle="out of 10"
-                style={styles.heroTile}
-              />
-            )}
-            <StatTile value="--" label="Steps" subtitle="Sync a wearable" muted style={styles.heroTile} />
-            <StatTile
-              value={caloriesToday !== null ? String(Math.round(caloriesToday)) : '--'}
-              label="Calories"
-              subtitle={calorieTarget !== null ? `of ${Math.round(calorieTarget)}` : 'logged today'}
-              style={styles.heroTile}
-              onPress={() => router.push('/client/nutrition')}
-            />
-          </View>
-
-          {!momentumLoading && momentumError && <ThemedText style={styles.error}>{momentumError}</ThemedText>}
-
-          <View style={styles.progressRow}>
-            {streak !== null && (
-              <View style={styles.streakRow}>
-                <ThemedText type="smallBold" style={styles.streakText}>
-                  🔥 {streak}
-                </ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  day streak
-                </ThemedText>
-              </View>
-            )}
-
-            {!xpLoading && xp && (
-              <View style={styles.xpInline}>
-                <View style={styles.xpHeader}>
-                  <ThemedText type="smallBold">Level {xp.level}</ThemedText>
-                  <ThemedText type="small" themeColor="textSecondary">
-                    {xp.totalXp % 500}/500 XP
-                  </ThemedText>
-                </View>
-                <View style={styles.xpTrack}>
-                  <View style={[styles.xpFill, { width: `${((xp.totalXp % 500) / 500) * 100}%` }]} />
-                </View>
-              </View>
-            )}
-          </View>
-
           {loggingNudge && (
             <Pressable onPress={() => router.push(loggingNudge!.href)}>
               <ThemedView type="backgroundElement" style={styles.nudgeCard}>
@@ -630,6 +580,65 @@ export default function ClientHomeScreen() {
                 </Pressable>
               </ThemedView>
             ))}
+
+          {!momentumLoading && momentumError && <ThemedText style={styles.error}>{momentumError}</ThemedText>}
+
+          <View style={styles.ringGrid}>
+            <View style={styles.ringGridRow}>
+              <StatRing value="--" label="Readiness" subtitle="Coming soon" muted style={styles.ringTile} />
+              {!momentumLoading && !momentumFeatureEnabled ? (
+                <StatRing value="--" label="Momentum" subtitle="Ask your coach" muted style={styles.ringTile} />
+              ) : (
+                <StatRing
+                  value={momentumLoading || !momentum ? '--' : momentum.score.toFixed(1)}
+                  label="Momentum"
+                  subtitle="out of 10"
+                  progress={momentumLoading || !momentum ? undefined : momentum.score / 10}
+                  style={styles.ringTile}
+                />
+              )}
+            </View>
+            <View style={styles.ringGridRow}>
+              <StatRing value="--" label="Steps" subtitle="Sync a wearable" muted style={styles.ringTile} />
+              <StatRing
+                value={caloriesToday !== null ? String(Math.round(caloriesToday)) : '--'}
+                label="Calories"
+                subtitle={calorieTarget !== null ? `of ${Math.round(calorieTarget)}` : 'logged today'}
+                progress={
+                  caloriesToday !== null && calorieTarget ? Math.min(1, caloriesToday / calorieTarget) : undefined
+                }
+                style={styles.ringTile}
+                onPress={() => router.push('/client/nutrition')}
+              />
+            </View>
+          </View>
+
+          <View style={styles.progressRow}>
+            {streak !== null && (
+              <ThemedView type="backgroundElement" style={styles.progressCard}>
+                <ThemedText type="title" style={styles.streakValue}>
+                  🔥 {streak}
+                </ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  day streak
+                </ThemedText>
+              </ThemedView>
+            )}
+
+            {!xpLoading && xp && (
+              <ThemedView type="backgroundElement" style={styles.progressCard}>
+                <View style={styles.xpHeader}>
+                  <ThemedText type="smallBold">Level {xp.level}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {xp.totalXp % 500}/500 XP
+                  </ThemedText>
+                </View>
+                <View style={styles.xpTrack}>
+                  <View style={[styles.xpFill, { width: `${((xp.totalXp % 500) / 500) * 100}%` }]} />
+                </View>
+              </ThemedView>
+            )}
+          </View>
 
           <View style={styles.sectionHeaderRow}>
             <ThemedText type="smallBold">Today's Habits</ThemedText>
@@ -782,22 +791,26 @@ const styles = StyleSheet.create({
   habitCheckPending: {
     color: Colors.textSecondary,
   },
-  heroRow: {
-    flexDirection: 'row',
-    gap: Spacing.two,
+  ringGrid: {
+    gap: Spacing.three,
+    marginTop: Spacing.two,
   },
-  heroTile: {
+  ringGridRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  ringTile: {
     flex: 1,
   },
   progressRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.three,
+    gap: Spacing.two,
   },
-  xpInline: {
+  progressCard: {
     flex: 1,
-    gap: Spacing.half,
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.one,
   },
   xpHeader: {
     flexDirection: 'row',
@@ -816,13 +829,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: Colors.tealBright,
   },
-  streakRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: Spacing.half,
-  },
-  streakText: {
-    color: Colors.tealBright,
+  streakValue: {
+    fontSize: 28,
+    lineHeight: 32,
   },
   noticeCard: {
     borderRadius: Spacing.two,
