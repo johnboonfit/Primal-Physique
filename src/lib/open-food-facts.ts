@@ -247,14 +247,26 @@ export async function searchUKFoods(query: string): Promise<FoodSearchResult[]> 
   // cross-origin request) is worth surfacing rather than losing silently
   // — this is a background, best-effort pass, but a coach/client should
   // still be able to tell from the console why UK results never show up
-  // if Open Food Facts becomes unreachable.
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      headers: { 'User-Agent': 'PrimalPhysique-App - Fitness Coaching App' },
-    });
-  } catch (err) {
-    console.error(`[searchUKFoods] fetch itself failed for "${trimmed}" (network error or blocked by CORS):`, err, url);
+  // if Open Food Facts becomes unreachable. One retry after a short delay
+  // covers an ordinary transient blip (a dropped connection, a momentary
+  // DNS hiccup) without turning a real, persistent outage into a slower
+  // failure than it needs to be.
+  let response: Response | null = null;
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      response = await fetch(url, {
+        headers: { 'User-Agent': 'PrimalPhysique-App - Fitness Coaching App' },
+      });
+      break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (!response) {
+    console.error(`[searchUKFoods] fetch itself failed twice for "${trimmed}" (network error or blocked by CORS):`, lastError, url);
     return [];
   }
 
