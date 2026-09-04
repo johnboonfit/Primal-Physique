@@ -244,13 +244,19 @@ export async function searchUKFoods(query: string): Promise<FoodSearchResult[]> 
   const url = `${SEARCH_URL}?${params.toString()}`;
 
   // A caught fetch failure (network error, or the browser blocking a
-  // cross-origin request) is worth surfacing rather than losing silently
-  // — this is a background, best-effort pass, but a coach/client should
-  // still be able to tell from the console why UK results never show up
-  // if Open Food Facts becomes unreachable. One retry after a short delay
-  // covers an ordinary transient blip (a dropped connection, a momentary
-  // DNS hiccup) without turning a real, persistent outage into a slower
-  // failure than it needs to be.
+  // cross-origin request) is worth a trace for whoever's debugging this
+  // later -- but console.log, not console.error/warn. This is a
+  // background, best-effort pass that already degrades gracefully to
+  // USDA-only results, yet React Native's on-device LogBox intercepts
+  // every console.error/warn and shows it to whoever is actually using
+  // the app as an on-screen banner (a browser's devtools console stays
+  // silent for the exact same call, which is why this wasn't obvious
+  // until tested on a real phone) -- a real coach or client should never
+  // see an error toast over a UK-brand search pass quietly not finding
+  // anything this time. One retry after a short delay covers an ordinary
+  // transient blip (a dropped connection, a momentary DNS hiccup)
+  // without turning a real, persistent outage into a slower failure than
+  // it needs to be.
   let response: Response | null = null;
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -266,12 +272,12 @@ export async function searchUKFoods(query: string): Promise<FoodSearchResult[]> 
   }
 
   if (!response) {
-    console.error(`[searchUKFoods] fetch itself failed twice for "${trimmed}" (network error or blocked by CORS):`, lastError, url);
+    console.log(`[searchUKFoods] fetch itself failed twice for "${trimmed}" (network error or blocked by CORS):`, lastError, url);
     return [];
   }
 
   if (!response.ok) {
-    console.error(`[searchUKFoods] Open Food Facts returned HTTP ${response.status} for "${trimmed}":`, url);
+    console.log(`[searchUKFoods] Open Food Facts returned HTTP ${response.status} for "${trimmed}":`, url);
     return [];
   }
 

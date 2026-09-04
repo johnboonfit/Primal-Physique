@@ -61,9 +61,13 @@ export async function searchAllFoods(query: string): Promise<BlendedSearchResult
   } else {
     // searchUKFoods() itself catches its own fetch/HTTP errors and always
     // resolves — this branch firing at all means something unexpected
-    // threw, which is worth seeing rather than silently losing every UK
-    // result for the rest of the session.
-    console.error('[searchAllFoods] UK search rejected unexpectedly:', ukOutcome.reason);
+    // threw. console.log, not console.error/warn: this is a background,
+    // supplementary search pass (see searchUKFoods for why), and React
+    // Native's on-device LogBox turns console.error/warn into an
+    // on-screen banner a real coach/client would see, not just a
+    // developer's console — the USDA side of this search still works
+    // fine regardless.
+    console.log('[searchAllFoods] UK search rejected unexpectedly:', ukOutcome.reason);
   }
 
   const error =
