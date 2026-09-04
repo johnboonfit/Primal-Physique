@@ -33,6 +33,7 @@ import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit 
 import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
 import { getCurrentStreak } from '@/lib/streak';
 import { checkAndRecalculateTdeeIfDue, getCalorieTarget } from '@/lib/tdee';
+import { getTrainingReadiness, type TrainingReadinessBreakdown } from '@/lib/training-readiness';
 import { hasWeightLogForDate } from '@/lib/weight-logs';
 import { awardHabitXp, getXpSummary, type XpSummary } from '@/lib/xp';
 
@@ -80,6 +81,9 @@ export default function ClientHomeScreen() {
   const [momentumError, setMomentumError] = useState<string | null>(null);
   // Defaults to true (full access) until loaded — see feature-toggles.ts.
   const [momentumFeatureEnabled, setMomentumFeatureEnabled] = useState(true);
+
+  const [readiness, setReadiness] = useState<TrainingReadinessBreakdown | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(true);
 
   const [xp, setXp] = useState<XpSummary | null>(null);
   const [xpLoading, setXpLoading] = useState(true);
@@ -242,6 +246,27 @@ export default function ClientHomeScreen() {
         })
         .finally(() => {
           if (!cancelled) setMomentumLoading(false);
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [session])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+
+      setReadinessLoading(true);
+      getTrainingReadiness(session.user.id)
+        .then((data) => {
+          if (!cancelled) setReadiness(data);
+        })
+        .catch((err) => console.error('Failed to calculate training readiness:', err))
+        .finally(() => {
+          if (!cancelled) setReadinessLoading(false);
         });
 
       return () => {
@@ -585,7 +610,17 @@ export default function ClientHomeScreen() {
 
           <View style={styles.ringGrid}>
             <View style={styles.ringGridRow}>
-              <StatRing value="--" label="Readiness" subtitle="Coming soon" muted style={styles.ringTile} />
+              {!readinessLoading && !readiness ? (
+                <StatRing value="--" label="Readiness" subtitle="Log a workout to see this" muted style={styles.ringTile} />
+              ) : (
+                <StatRing
+                  value={readinessLoading || !readiness ? '--' : readiness.score.toFixed(1)}
+                  label="Readiness"
+                  subtitle="out of 10"
+                  progress={readinessLoading || !readiness ? undefined : readiness.score / 10}
+                  style={styles.ringTile}
+                />
+              )}
               {!momentumLoading && !momentumFeatureEnabled ? (
                 <StatRing value="--" label="Momentum" subtitle="Ask your coach" muted style={styles.ringTile} />
               ) : (
