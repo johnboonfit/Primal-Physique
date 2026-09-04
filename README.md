@@ -2000,12 +2000,37 @@ Three starter bundles on top of last chunk's feature toggles — **Base Plan def
 
 **How you verify it yourself**: open a client's Feature Access screen, apply "Base Plan defaults," confirm Form Check/Community/Challenges/Leaderboard/Chat all read Off and the rest read On. Then flip just one of them back — confirm only that one changes, and re-applying a preset later still works normally (nothing about one manual change breaks a future preset apply).
 
+## The External Builder: shareable forms with zero login, and a real PAR-Q
+
+A second form type alongside the Check-in Builder from Phase 8 — one-off and shareable via a public link, rather than recurring and tied to an existing client account. Fully reuses the same question-type system (`question-types.ts`, `ConfigFieldEditor`, `AnswerInput`) — no new question-type logic was written for this at all.
+
+**The interesting problem this chunk actually solves: letting a stranger submit data with no account, without opening a hole in the database.** Every other table in this app is protected by RLS keyed to a real signed-in `auth.uid()`. A visitor clicking a link has no identity at all. The wrong fix would be a blanket "anyone can read/write this table" RLS policy — that would let anyone holding this app's public API key (which ships in every install, by design) list *every* external form and *every* response ever submitted, not just the one they were sent.
+
+Instead, the three new tables (`external_forms`, `external_form_questions`, `external_form_responses`) have **no direct anonymous grant at all**. Every anonymous read and write goes through exactly two database functions — `get_external_form_by_token` and `submit_external_form_response`, both `SECURITY DEFINER` (the same mechanism this app already uses for leaderboards). A visitor can only ever see the one form whose `share_token` matches their exact link, and can only ever submit answers tied to that same form's real question IDs. There's no path from "have the public API key" to seeing or writing anyone else's data.
+
+**The PAR-Q template**, seeded via migration (same pattern the default Pre-Workout Readiness form already uses) so it exists from day one, not something the coach has to build by hand: two identifying questions (no login means no other way to know who answered), then the standard 7-question PAR-Q verbatim — heart condition, chest pain during activity, chest pain at rest in the past month, dizziness/loss of consciousness, bone or joint problems, blood pressure/heart medication, and a catch-all "any other reason." This is the template Onboarding will reference directly next.
+
+**New**: `supabase/external-forms.sql` (the 3 tables + the 2 gateway functions + the PAR-Q seed), `src/lib/external-forms.ts`, a new coach-only `/external-forms` section (list → builder → detail, the detail page showing the copyable link front and center plus every submission received, grouped one card per visitor), and `src/app/e/[token].tsx` — the public screen itself, deliberately outside the app's normal login-guarded area entirely, so it never touches `useAuth()` and never redirects anywhere.
+
+**Verified here**: a coach's detail view renders the share link, questions, and a real submission's answers correctly; the public screen loads and accepts a submission with zero login prompt anywhere in the page; and — the negative case that actually proves the security model — a wrong token shows a plain "not valid" message without leaking so much as the real form's name.
+
+**How you verify it yourself:**
+1. Run `external-forms.sql`, pull the latest code.
+2. Coach Home → **External Forms** → "PAR-Q Health Screening" should already be there.
+3. Open it, copy its link.
+4. Open that link in a private/incognito window (or log all the way out) — it should load immediately, no login prompt, no redirect.
+5. Answer all 9 questions, submit — confirm the "Thanks!" screen.
+6. Back in your own coach session, reopen that form — the submission should appear with the exact answers you gave.
+7. Edit one character of the link's token and reload — confirm it shows "not valid," not someone else's form.
+
 ## Project structure reference
 
 ```
 src/
   app/
     index.tsx          # routes to /login, coach /home, or client /client
+    e/
+      [token].tsx        # the public External Builder fill-out screen — outside every login-guarded group entirely, never touches useAuth(), resolves purely off the token in the URL (see external-forms.sql)
     (auth)/
       login.tsx
       signup.tsx        # name/email/password only — no role choice; every signup is a client
@@ -2070,6 +2095,11 @@ src/
         new.tsx          # form builder — name + ordered question list, each with a type (short text/number/single select/multi select/scale/measurement) and type-driven config
         [id].tsx          # read-only view of one saved form — every question's type and config, rendered generically off question-types.ts, not per-type
         assign/[id].tsx     # pick a client + day of week + due-window hours, live "Next 5 check-ins" preview, confirm — creates one form_assignments row (a rule, not per-occurrence rows)
+      external-forms/
+        _layout.tsx      # coach-only guard for everything below
+        index.tsx        # list of the coach's external (one-off, shareable, no-login) forms
+        new.tsx          # near-identical builder to forms/new.tsx, saving to external_forms/external_form_questions instead — same question-type system, deliberately not shared as one component with the check-in builder since the two save to genuinely different tables with different downstream behavior
+        [id].tsx          # one form's shareable link (copy button) + its questions (read-only) + every submission received, grouped one card per visitor, + a Danger Zone to delete the form/link/all its submissions
       assigned/
         [id].tsx          # client's live session screen — readiness gate first if unanswered, then per-SET checkboxes (weight/reps/RPE, prefilled: previous session > coach baseline > empty with a hint, always editable), tagged sets show their technique label + instructions, checking a set auto-starts an editable rest timer, a Swap link opens same-muscle-group alternatives (session-only), an overall session-RPE selector near the bottom, Mark Workout Complete saves it and navigates to the completion scorecard — every set is cached to on-device storage the instant it's checked and synced to Supabase in the background (see set-logging.ts), with a 10-minute full-screen snapshot (session-snapshot.ts) as a second safety net underneath that, so nothing is lost to a dropped connection or an app crash mid-set; reopening an already-completed session later (Training/Calendar) shows this same screen read-only, not the scorecard again
         complete/
@@ -2145,6 +2175,7 @@ src/
     xp.ts                       # awardWorkoutXp() / awardMealXp() / awardHabitXp() / getXpSummary()
     question-types.ts            # QUESTION_TYPES — the extensible question-type registry (label, configFields, defaultConfig, validateConfig, toStoredConfig, plus answerKind/validateAnswer/toStoredAnswer per type); adding a type is an entry here, not a UI rebuild
     form-templates.ts             # createFormTemplate() / listFormTemplates() / getFormTemplateDetail() database calls
+    external-forms.ts               # createExternalForm() / listExternalForms() / getExternalFormDetail() / deleteExternalForm() / listExternalFormResponses() (coach-side, normal RLS) / getExternalFormByToken() / submitExternalFormResponse() (the public side — both call the two SECURITY DEFINER functions in external-forms.sql, never a direct table read/write)
     form-assignments.ts            # createFormAssignment() / listClientFormAssignments() / archiveFormAssignment() database calls + listUpcomingCheckInDates() — pure, computes future dates from a recurrence rule, nothing stored per-occurrence
     form-check-ins.ts              # ensureCheckInsUpToDate() (lazy materialize + archive-as-missed sweep, run on client app open) / listUpNextCheckIns() / listVisibleCheckIns() / getCheckInDetail() / submitCheckIn() / listClientCheckInInstances() / archiveOrDeleteCheckIn() database calls
     readiness.ts                    # getReadinessFormId() / setReadinessFormId() (app_settings.readiness_form_id, the one active questionnaire) / getReadinessStatusForAssignment() (the active form's questions + whatever THIS session has answered so far) / submitReadinessResponses() -- deliberately not built on form_assignments/form_check_ins, see readiness.sql
@@ -2207,4 +2238,5 @@ supabase/
   client-activity-feed.sql                                                                                # paste in after client-deletion.sql — coach read access to habit_logs (also fixes Momentum Score's habit component when a coach computes it), adds food_logs/habit_logs/assignments to the realtime publication
   feature-toggles.sql                                                                                       # paste in after client-activity-feed.sql — feature_key (9 seeded rows, extensible) + client_feature_toggles (client + feature_key -> enabled, no row means enabled) + RLS
   toggle-presets.sql                                                                                          # paste in after feature-toggles.sql — toggle_preset (3 seeded bundles) + toggle_preset_value (the real plan-defaults matrix, all 9 features x all 3 presets), coach-only RLS
+  external-forms.sql                                                                                            # paste in after toggle-presets.sql — external_forms/external_form_questions/external_form_responses (no anonymous RLS grant at all), get_external_form_by_token()/submit_external_form_response() (the only anonymous access, both SECURITY DEFINER), seeds the real 9-question PAR-Q template
 ```
