@@ -176,13 +176,22 @@ export async function getNewCommunityPostCount(userId: string, since: string): P
   return (data ?? []).filter((row) => row.author_id !== userId).length;
 }
 
-/** Fires on any new/edited/deleted post — the same "subscribe while
+/**
+ * Fires on any new/edited/deleted post — the same "subscribe while
  * mounted, unsubscribe on cleanup" shape subscribeToConversation
  * already uses for Chat. Not filtered to one row's id, since this is
- * one shared feed, not a per-conversation channel. */
+ * one shared feed, not a per-conversation channel.
+ *
+ * A random suffix on the channel name (same reasoning as
+ * subscribeToConversation) means a second caller — a future screen
+ * that also wants to know when a post is added, say — can subscribe
+ * at the same time without Supabase's real client throwing "cannot
+ * add postgres_changes callbacks... after subscribe()" over two
+ * subscriptions sharing one channel name.
+ */
 export function subscribeToCommunityPosts(onChange: () => void): () => void {
   const channel = supabase
-    .channel('community_posts_badge')
+    .channel(`community_posts_badge:${Math.random().toString(36).slice(2)}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'community_posts' }, onChange)
     .subscribe();
 

@@ -225,12 +225,25 @@ export function canDeleteForEveryone(createdAt: string): boolean {
   return ageSeconds <= DELETE_FOR_EVERYONE_WINDOW_SECONDS;
 }
 
-/** Fires on every insert or update (new message, edit, either kind of
+/**
+ * Fires on every insert or update (new message, edit, either kind of
  * delete, or the other party's read receipt moving) in this
- * conversation. Returns an unsubscribe function. */
+ * conversation. Returns an unsubscribe function.
+ *
+ * Two independent callers subscribe to the same conversation at once —
+ * the Chat tab's unread badge (see client/_layout.tsx) stays subscribed
+ * the whole time the client is anywhere in the tab bar, while ChatThread
+ * subscribes separately whenever the thread itself is open. Supabase's
+ * real client throws ("cannot add postgres_changes callbacks... after
+ * subscribe()") if two subscriptions share the exact same channel name
+ * and one of them has already called subscribe() — the channel name is
+ * purely a client-side handle, not what actually scopes which rows you
+ * receive (the `filter` below does that), so giving each call its own
+ * unique name costs nothing and avoids the collision entirely.
+ */
 export function subscribeToConversation(conversationId: string, onChange: () => void): () => void {
   const channel = supabase
-    .channel(`messages:${conversationId}`)
+    .channel(`messages:${conversationId}:${Math.random().toString(36).slice(2)}`)
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` },

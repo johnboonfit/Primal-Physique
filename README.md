@@ -2179,6 +2179,18 @@ Neither badge counts the client's own messages or posts as unread — same reaso
 5. Open Community as that client (Posts tab) — confirm the post is there, then go back to Home and confirm the badge is gone.
 6. To check the "own content doesn't count" rule: as the client, send a message or make a post yourself — confirm neither badge increments for your own activity.
 
+## Fix: Chat crashed on open for clients, from the unread-badges chunk above
+
+Shipped the same day as the badges above, after a real crash report from John's own device: opening Chat as a client threw `cannot add \`postgres_changes\` callbacks for realtime:messages:{conversationId} after \`subscribe()\`` and the screen errored out.
+
+**Root cause**: Supabase's realtime client treats the channel name you pass to `.channel(...)` as a shared handle — call it twice with the same name and you get back the *same* channel object, not two independent ones. The Chat tab's new badge subscription (in `client/_layout.tsx`) and `ChatThread`'s own long-standing subscription both called `subscribeToConversation()` for the same conversation, and both used the exact same channel name (`messages:{conversationId}`). The badge subscription, being mounted the whole time the client sits in the tab bar, always won the race and subscribed first — so the moment `ChatThread` tried to attach its own listeners to that already-subscribed channel, it hit Supabase's guard against exactly that and crashed. The sandbox's fake realtime layer used to verify the badges chunk didn't enforce this restriction, which is exactly why it shipped uncaught.
+
+**Fix**: both `subscribeToConversation()` (`chat.ts`) and `subscribeToCommunityPosts()` (`community.ts`) now append a random suffix to their channel name on every call, so two independent subscribers never share one. The channel name is purely a client-side label — it's the `filter` option inside `.on('postgres_changes', ...)` that actually scopes which rows arrive — so giving each caller its own name is free and permanently rules out this entire class of collision, including any future screen that wants to listen in on the same data.
+
+**Verified here**: directly against the real `@supabase/supabase-js` client rather than the sandbox's usual fake (this particular check is synchronous, client-side logic that needs no live backend to trigger) — confirmed two raw subscriptions sharing one hardcoded channel name do throw the exact reported error, then confirmed `subscribeToConversation()` and `subscribeToCommunityPosts()` can both now be called twice back-to-back for the same conversation/feed with no error.
+
+**How you verify this yourself:** open Chat as a client — it should open normally with no red error screen, and the Chat tab badge should keep updating live afterward exactly as before.
+
 ## Project structure reference
 
 ```
