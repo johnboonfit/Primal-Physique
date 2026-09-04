@@ -2251,6 +2251,20 @@ A full visual redesign of `/assigned/[id]` (the screen a client actually logs a 
 
 **How you verify this yourself:** open any pending workout as a client — you should see the new header/summary bar/Heart Rate row, big weight/reps boxes with a "Last:" line once you have session history, a PR badge the moment you beat a real best, a working trash icon (with a confirmation) on each exercise, and a working "+ Add Set" link. Everything else — readiness, swap, rest timer, RPE, Mark Workout Complete — should work exactly as it did before.
 
+## Photos sub-tab cleanup: one compare mechanism, not two
+
+The Photos sub-tab had two ways to compare progress photos doing the same job: a gallery grid, and a separate before/after picker section underneath it with its own two horizontal-scroll thumbnail rows feeding the same `PhotoCompareSlider`. That second section is gone — tapping any two photos directly in the gallery now drives the exact same slider in its place.
+
+**How it works now**: tap a photo in the gallery to select it (oxblood border, same visual language as everywhere else selection is shown in this app). Tap a second one and the compare slider appears right below the gallery. Tap either selected photo again to deselect it; tap a third photo while two are already selected and it starts a fresh pair with just that one, rather than leaving it ambiguous which of the two gets bumped. A small caption above the gallery tracks the state in plain language: "Tap two photos to compare them" → "Tap another photo to compare it with" → "Comparing the two selected photos below." Switching angle (front/side/back) clears the selection, same as it already did before this change.
+
+**One thing worth knowing**: which photo reads as "before" and which as "after" is now decided by date, not by tap order — the earlier photo always renders on the left labeled with its own date, the later one on the right, regardless of which one you happened to tap first. The old picker let you assign Before/After arbitrarily by which thumbnail row you tapped; this is more honest and removes a way to accidentally build a backwards comparison.
+
+**Removed**: the separate "Compare {angle} photos" heading, its two Before/After thumbnail-picker rows, and the now-unused `PhotoThumbnailPicker` helper component — none of it is needed anymore since the gallery itself is the picker.
+
+**Verified here**: a generic in-memory fake of `supabase.from()`/`supabase.storage`, seeded with 3 front-angle photos and 1 side-angle photo, rendered through the real Photos sub-tab and driven with Playwright — confirmed the old "Compare front photos" heading and Before/After labels are completely gone; confirmed tapping two gallery photos shows the correct selected-state caption at each step and renders the compare slider with the two photos correctly ordered oldest-to-newest regardless of tap order; confirmed tapping a third photo restarts the selection instead of leaving the stale pair comparing; confirmed switching angle clears the selection.
+
+**How you verify this yourself:** open Progress → Photos with at least 2 photos of the same angle logged. Confirm there's no separate before/after section below the gallery anymore. Tap two photos in the gallery — the compare slider should appear right there, with the earlier date on the left. Tap a third photo and confirm it starts a new pair instead of showing a stale comparison. Switch angle and confirm the selection clears.
+
 ## Project structure reference
 
 ```
@@ -2356,7 +2370,7 @@ src/
     weight-trend-chart.tsx  # SVG line chart — actual weight (teal) + smoothed trend (red), used by MetricsPanel
     measurement-chart.tsx    # SVG single-line chart — raw body measurement values (no smoothing), used by MeasurePanel
     photo-compare-slider.tsx  # generic, reusable before/after image slider — drag to reveal, pinch either photo to resize it
-    photos-panel.tsx            # Progress → Photos sub-tab content (front/side/back upload, gallery, compare tool)
+    photos-panel.tsx            # Progress → Photos sub-tab content (front/side/back upload, gallery) — tap any two photos in the gallery to swipe-compare them right there (photo-compare-slider.tsx); one comparison mechanism, not a second duplicate before/after picker underneath
     session-calendar.tsx          # <SessionCalendar clientId role> — the real Week/Month calendar, shared by client/calendar.tsx and Programme Builder; also renders due/completed check-ins (own status marker, tappable only for role="client")
     time-range-toggle.tsx     # shared 1W/1M/6M/1Y/All Time chip row, used by both MetricsPanel and MeasurePanel
     metrics-panel.tsx          # Progress → Metrics sub-tab content (weight/body fat %/muscle % check-in, TDEE, trend chart + history)

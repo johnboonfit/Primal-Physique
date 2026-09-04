@@ -2,7 +2,7 @@ import { useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 
 import { PhotoCompareSlider } from '@/components/photo-compare-slider';
 import { ThemedText } from '@/components/themed-text';
@@ -33,10 +33,12 @@ const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
   aspect: [3, 4],
 };
 
-/** Front/side/back progress photo logging, gallery, and a swipe/slide
- * compare tool between any two photos of the same angle. One angle is
- * selected at a time — it drives what you're uploading as, what the
- * gallery shows, and which photos the compare tool can pick from. */
+/** Front/side/back progress photo logging, and a gallery that doubles
+ * as the compare tool -- tap any two photos of the same angle right in
+ * the grid to swipe/slide-compare them, rather than a second, separate
+ * before/after picker duplicating the same gallery underneath. One
+ * angle is selected at a time -- it drives what you're uploading as,
+ * what the gallery shows, and which two photos can be compared. */
 export function PhotosPanel() {
   const { session } = useAuth();
 
@@ -48,8 +50,11 @@ export function PhotosPanel() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  const [compareA, setCompareA] = useState<ProgressPhoto | null>(null);
-  const [compareB, setCompareB] = useState<ProgressPhoto | null>(null);
+  // Up to 2 photos picked straight from the gallery below -- ordered by
+  // logDate (earlier = before, later = after) when rendering the
+  // slider, not by which one was tapped first, so comparing them in
+  // either order always reads correctly.
+  const [compareSelection, setCompareSelection] = useState<ProgressPhoto[]>([]);
 
   const load = useCallback(() => {
     if (!session) return;
@@ -74,8 +79,20 @@ export function PhotosPanel() {
   const handleSelectAngle = (angle: PhotoAngle) => {
     setSelectedAngle(angle);
     setUploadError(null);
-    setCompareA(null);
-    setCompareB(null);
+    setCompareSelection([]);
+  };
+
+  /** Tapping a photo already in the selection deselects it. Tapping a
+   * new one while fewer than 2 are selected adds it. Tapping a new one
+   * with 2 already selected starts a fresh selection with just that
+   * photo, rather than leaving it ambiguous which of the two gets
+   * bumped. */
+  const handleTogglePhoto = (photo: ProgressPhoto) => {
+    setCompareSelection((current) => {
+      if (current.some((p) => p.id === photo.id)) return current.filter((p) => p.id !== photo.id);
+      if (current.length < 2) return [...current, photo];
+      return [photo];
+    });
   };
 
   const handlePick = async (source: 'camera' | 'library') => {
@@ -114,6 +131,14 @@ export function PhotosPanel() {
       setUploading(false);
     }
   };
+
+  // Earlier photo first regardless of tap order, so the slider always
+  // reads left-to-right as a real before/after, not whichever was
+  // tapped first.
+  const [before, after] =
+    compareSelection.length === 2
+      ? [...compareSelection].sort((a, b) => (a.logDate < b.logDate ? -1 : 1))
+      : [null, null];
 
   return (
     <>
@@ -164,6 +189,15 @@ export function PhotosPanel() {
       <ThemedText type="smallBold" style={styles.sectionLabel2}>
         {angleLabel(selectedAngle)} gallery
       </ThemedText>
+      {photosForAngle.length >= 2 && (
+        <ThemedText type="small" themeColor="textSecondary">
+          {compareSelection.length === 0
+            ? 'Tap two photos to compare them.'
+            : compareSelection.length === 1
+              ? 'Tap another photo to compare it with.'
+              : 'Comparing the two selected photos below.'}
+        </ThemedText>
+      )}
 
       {loading && <ActivityIndicator style={styles.loader} />}
       {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
@@ -173,73 +207,35 @@ export function PhotosPanel() {
 
       {!loading && !error && photosForAngle.length > 0 && (
         <View style={styles.gallery}>
-          {photosForAngle.map((photo) => (
-            <View key={photo.id} style={styles.galleryItem}>
-              <Image source={{ uri: photo.url }} style={styles.galleryImage} contentFit="cover" />
-              <ThemedText type="small" themeColor="textSecondary" style={styles.galleryDate}>
-                {photo.logDate}
-              </ThemedText>
-            </View>
-          ))}
+          {photosForAngle.map((photo) => {
+            const isSelected = compareSelection.some((p) => p.id === photo.id);
+            return (
+              <Pressable key={photo.id} onPress={() => handleTogglePhoto(photo)} style={styles.galleryItem}>
+                <Image
+                  source={{ uri: photo.url }}
+                  style={[styles.galleryImage, isSelected && styles.galleryImageSelected]}
+                  contentFit="cover"
+                />
+                <ThemedText type="small" themeColor="textSecondary" style={styles.galleryDate}>
+                  {photo.logDate}
+                </ThemedText>
+              </Pressable>
+            );
+          })}
         </View>
       )}
 
-      {photosForAngle.length >= 2 && (
-        <>
-          <ThemedText type="smallBold" style={styles.sectionLabel2}>
-            Compare {angleLabel(selectedAngle).toLowerCase()} photos
-          </ThemedText>
-
-          <ThemedText type="small" themeColor="textSecondary">
-            Before
-          </ThemedText>
-          <PhotoThumbnailPicker photos={photosForAngle} selected={compareA} onSelect={setCompareA} />
-
-          <ThemedText type="small" themeColor="textSecondary" style={styles.fieldLabel}>
-            After
-          </ThemedText>
-          <PhotoThumbnailPicker photos={photosForAngle} selected={compareB} onSelect={setCompareB} />
-
-          {compareA && compareB && (
-            <View style={styles.compareWrap}>
-              <PhotoCompareSlider
-                beforeUri={compareA.url}
-                afterUri={compareB.url}
-                beforeLabel={compareA.logDate}
-                afterLabel={compareB.logDate}
-              />
-            </View>
-          )}
-        </>
+      {before && after && (
+        <View style={styles.compareWrap}>
+          <PhotoCompareSlider
+            beforeUri={before.url}
+            afterUri={after.url}
+            beforeLabel={before.logDate}
+            afterLabel={after.logDate}
+          />
+        </View>
       )}
     </>
-  );
-}
-
-function PhotoThumbnailPicker({
-  photos,
-  selected,
-  onSelect,
-}: {
-  photos: ProgressPhoto[];
-  selected: ProgressPhoto | null;
-  onSelect: (photo: ProgressPhoto) => void;
-}) {
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.thumbRow}>
-      {photos.map((photo) => (
-        <Pressable key={photo.id} onPress={() => onSelect(photo)} style={styles.thumbWrap}>
-          <Image
-            source={{ uri: photo.url }}
-            style={[styles.thumbImage, selected?.id === photo.id && styles.thumbImageSelected]}
-            contentFit="cover"
-          />
-          <ThemedText type="small" themeColor="textSecondary">
-            {photo.logDate}
-          </ThemedText>
-        </Pressable>
-      ))}
-    </ScrollView>
   );
 }
 
@@ -250,9 +246,6 @@ const styles = StyleSheet.create({
   sectionLabel2: {
     marginTop: Spacing.three,
     marginBottom: Spacing.half,
-  },
-  fieldLabel: {
-    marginTop: Spacing.two,
   },
   angleRow: {
     flexDirection: 'row',
@@ -324,31 +317,17 @@ const styles = StyleSheet.create({
     width: '100%',
     aspectRatio: 3 / 4,
     borderRadius: Spacing.two,
-    backgroundColor: Colors.backgroundElement,
-  },
-  galleryDate: {
-    textAlign: 'center',
-  },
-  thumbRow: {
-    marginBottom: Spacing.one,
-  },
-  thumbWrap: {
-    alignItems: 'center',
-    marginRight: Spacing.two,
-    gap: Spacing.half,
-  },
-  thumbImage: {
-    width: 64,
-    height: 85,
-    borderRadius: Spacing.one,
     borderWidth: 2,
     borderColor: 'transparent',
     backgroundColor: Colors.backgroundElement,
   },
-  thumbImageSelected: {
+  galleryImageSelected: {
     borderColor: Accent,
   },
+  galleryDate: {
+    textAlign: 'center',
+  },
   compareWrap: {
-    marginTop: Spacing.two,
+    marginTop: Spacing.three,
   },
 });
