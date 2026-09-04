@@ -95,7 +95,7 @@ function ActivityRow({ event, isLast }: { event: ActivityEvent; isLast: boolean 
  * back either one honestly, so neither is faked here.
  */
 export default function HomeScreen() {
-  const { session, profile, loadingProfile, signOut } = useAuth();
+  const { session, profile, loadingProfile } = useAuth();
 
   const [stats, setStats] = useState<CoachDashboardStats | null>(null);
   const [attention, setAttention] = useState<ClientAttention[]>([]);
@@ -250,12 +250,6 @@ export default function HomeScreen() {
               </View>
             </>
           )}
-
-          <Pressable style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]} onPress={signOut}>
-            <ThemedText type="smallBold" style={styles.signOutText}>
-              Sign out
-            </ThemedText>
-          </Pressable>
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -364,17 +358,5 @@ const styles = StyleSheet.create({
   activityTextGroup: {
     flex: 1,
     gap: Spacing.half,
-  },
-  signOutButton: {
-    borderRadius: Spacing.two,
-    paddingVertical: Spacing.three,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: Accent,
-    marginTop: Spacing.three,
-  },
-  signOutText: {
-    color: Accent,
   },
 });

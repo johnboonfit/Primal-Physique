@@ -47,7 +47,7 @@ function initials(fullName: string | null, email: string): string {
 
 export default function SettingsScreen() {
   const theme = useTheme();
-  const { session, profile } = useAuth();
+  const { session, profile, signOut } = useAuth();
   const isCoach = profile?.role === 'coach';
 
   const [planLabel, setPlanLabel] = useState<string | null>(null);
@@ -312,6 +312,14 @@ export default function SettingsScreen() {
               built.
             </ThemedText>
           </ThemedView>
+
+          <ThemedView type="backgroundElement" style={[styles.card, styles.signOutCard]}>
+            <Pressable style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]} onPress={signOut}>
+              <ThemedText type="smallBold" style={styles.signOutText}>
+                Sign out
+              </ThemedText>
+            </Pressable>
+          </ThemedView>
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -438,5 +446,19 @@ const styles = StyleSheet.create({
   },
   wearableHint: {
     marginTop: -Spacing.one,
+  },
+  signOutCard: {
+    padding: 0,
+  },
+  signOutButton: {
+    borderRadius: Spacing.three,
+    paddingVertical: Spacing.three,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: Accent,
+  },
+  signOutText: {
+    color: Accent,
   },
 });

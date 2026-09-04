@@ -51,7 +51,7 @@ type UpNextItem = {
 };
 
 export default function ClientHomeScreen() {
-  const { session, profile, signOut } = useAuth();
+  const { session, profile } = useAuth();
   const theme = useTheme();
 
   const [assignments, setAssignments] = useState<ClientAssignmentSummary[]>([]);
@@ -424,14 +424,9 @@ export default function ClientHomeScreen() {
             <ThemedText type="title" style={styles.greeting}>
               {getGreeting()}, {displayName}
             </ThemedText>
-            <View style={styles.headerActions}>
-              <Pressable onPress={() => router.push('/settings')} hitSlop={8} accessibilityLabel="Settings">
-                <Ionicons name="settings-outline" size={22} color={theme.textSecondary} />
-              </Pressable>
-              <Pressable onPress={signOut}>
-                <ThemedText type="linkPrimary">Sign out</ThemedText>
-              </Pressable>
-            </View>
+            <Pressable onPress={() => router.push('/settings')} hitSlop={8} accessibilityLabel="Settings">
+              <Ionicons name="settings-outline" size={22} color={theme.textSecondary} />
+            </Pressable>
           </View>
 
           <View style={styles.heroRow}>
@@ -664,11 +659,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     gap: Spacing.two,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.three,
   },
   greeting: {
     flex: 1,

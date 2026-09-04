@@ -2147,6 +2147,14 @@ Two more cards on the Settings screen, after Hero and Profile settings.
 4. Flip it back on, reload again — confirm it's back on.
 5. Check the Wearable card shows "Not connected" and "Never," and that tapping Force Sync visibly does nothing (no loading state, no error, no change).
 
+## Sign out moved: Home screens to a card at the bottom of Settings
+
+A small relocation, not a new feature. Sign out no longer lives on either Home screen (it was a standalone button at the bottom of the coach's dashboard, and a header link next to the client's gear icon) — it's now the last card on the shared Settings screen, for both roles, styled the same oxblood-outlined way it already was on the coach's Home. Nothing about how sign-out actually works changed, just where the button lives.
+
+**Verified here** (fake backend, no live Supabase in this sandbox): "Sign out" no longer appears anywhere on either Home screen; it appears as its own card at the bottom of Settings for both a coach and a client account; and tapping it there genuinely calls the real sign-out and lands back on the login screen.
+
+**How you verify this yourself:** open Home (either account) — confirm there's no Sign out button anywhere on it. Open Settings via the gear icon, scroll to the bottom — confirm the Sign out card is there, and tapping it actually logs you out.
+
 ## Project structure reference
 
 ```
@@ -2164,8 +2172,8 @@ src/
       parq.tsx           # step 3 — the real PAR-Q template from external-forms.sql, answered by an authenticated client and written to onboarding_parq_responses; routes to /health-advisory or /client based on getOnboardingStatus() right after submitting
       health-advisory.tsx  # step 4, conditional — only reached when a PARQ answer flagged the account; a checkbox + optional clearance note, both converging on the same acknowledged-at timestamp; not a dead end, just held
     (app)/
-      home.tsx          # coach's home screen — a real dashboard (stat tiles, Needs Attention, a merged real Recent Activity preview with a "View all →" into activity.tsx) plus Manage/Coaching Hub nav grids covering every coach screen; a gear icon opens /settings; redirects clients to /client
-      settings.tsx      # shared coach/client Settings screen — Hero card (initials avatar, email, real tier or "Coach") + Profile settings card (name/email/phone, one Save; email changes go through Supabase Auth's real confirm-by-link flow, never an instant profiles.email overwrite) + Notification toggles card (4 switches, save-on-flip, preference storage only — no delivery built yet) + Wearable card (a genuinely static "Not connected"/"Never synced"/disabled Force Sync placeholder, no schema behind it yet)
+      home.tsx          # coach's home screen — a real dashboard (stat tiles, Needs Attention, a merged real Recent Activity preview with a "View all →" into activity.tsx) plus Manage/Coaching Hub nav grids covering every coach screen; a gear icon opens /settings (Sign out lives there now, not here); redirects clients to /client
+      settings.tsx      # shared coach/client Settings screen — Hero card (initials avatar, email, real tier or "Coach") + Profile settings card (name/email/phone, one Save; email changes go through Supabase Auth's real confirm-by-link flow, never an instant profiles.email overwrite) + Notification toggles card (4 switches, save-on-flip, preference storage only — no delivery built yet) + Wearable card (a genuinely static "Not connected"/"Never synced"/disabled Force Sync placeholder, no schema behind it yet) + a Sign out card, the last thing on the screen
       activity.tsx      # coach-only "Client Activity" — the full, real-time, cross-client feed (meals/habits/completed workouts, each with that client's live Momentum + Compliance Score); see getClientActivityFeed()/subscribeToClientActivity() in coach-dashboard.ts
       messages/
         index.tsx        # coach-only inbox — every client, most-recently-messaged first, with a last-message preview and an online dot
@@ -2238,7 +2246,7 @@ src/
         [id].tsx          # shared by both audiences: client's check-in fill-out screen (<AnswerInput> per question while pending) and the coach's read-only detail view once completed — a coach sees a client-name header the client's own view doesn't need, plus a "✓ Also saved to ..." note on any measurement question tagged to sync into weight_logs/body_measurements
       client/
         _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat), each with an @expo/vector-icons Ionicon (filled when active, outline otherwise) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable; also re-checks getOnboardingStatus() and redirects into onboarding if incomplete (belt-and-suspenders against a stale bookmark or deep link), and, when it finds onboarding complete, calls ensureClientProvisioned() as a safety net (a no-op once already provisioned) — a failed onboarding-status check shows a plain visible error instead of a permanently blank screen
-        index.tsx        # Home tab — greeting + a gear icon opening /settings + a 3-across hero row (Momentum [greyed like Steps if the coach has toggled it off] / Steps [muted placeholder] / Calories Today), streak + Level/XP combined into one row, daily logging nudge, weekly TDEE recalculation check, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
+        index.tsx        # Home tab — greeting + a gear icon opening /settings (Sign out lives there now, not here) + a 3-across hero row (Momentum [greyed like Steps if the coach has toggled it off] / Steps [muted placeholder] / Calories Today), streak + Level/XP combined into one row, daily logging nudge, weekly TDEE recalculation check, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
         training.tsx      # Training tab — Volume Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) directly under the hero stat, then Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — one glowing summary card (‹›date navigator + calories vs. real calorie target + macro rings), 4 meal sections, blended USDA + UK-supermarket search (food-search.ts) + camera barcode scan, quantity as grams / a real structured portion chip / a manual custom item
         progress.tsx       # Progress tab shell — Compliance/Metrics/Measure/Photos sub-tab switcher (Compliance first, and the default tab)
