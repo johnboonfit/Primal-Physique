@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
@@ -423,9 +424,14 @@ export default function ClientHomeScreen() {
             <ThemedText type="title" style={styles.greeting}>
               {getGreeting()}, {displayName}
             </ThemedText>
-            <Pressable onPress={signOut}>
-              <ThemedText type="linkPrimary">Sign out</ThemedText>
-            </Pressable>
+            <View style={styles.headerActions}>
+              <Pressable onPress={() => router.push('/settings')} hitSlop={8} accessibilityLabel="Settings">
+                <Ionicons name="settings-outline" size={22} color={theme.textSecondary} />
+              </Pressable>
+              <Pressable onPress={signOut}>
+                <ThemedText type="linkPrimary">Sign out</ThemedText>
+              </Pressable>
+            </View>
           </View>
 
           <View style={styles.heroRow}>
@@ -658,6 +664,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     gap: Spacing.two,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
   },
   greeting: {
     flex: 1,

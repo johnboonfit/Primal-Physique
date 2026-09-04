@@ -10,6 +10,7 @@ export type Profile = {
   email: string;
   role: UserRole;
   full_name: string | null;
+  phone_number: string | null;
 };
 
 type AuthContextValue = {
@@ -64,7 +65,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
     supabase
       .from('profiles')
-      .select('id, email, role, full_name')
+      .select('id, email, role, full_name, phone_number')
       .eq('id', userId)
       .single()
       .then(({ data, error }) => {

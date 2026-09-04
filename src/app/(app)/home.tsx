@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { Redirect, router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
@@ -146,6 +147,9 @@ export default function HomeScreen() {
               </ThemedText>
               <ThemedText themeColor="textSecondary">{todayLabel()}</ThemedText>
             </View>
+            <Pressable onPress={() => router.push('/settings')} hitSlop={8} accessibilityLabel="Settings">
+              <Ionicons name="settings-outline" size={24} color={Colors.textSecondary} />
+            </Pressable>
           </View>
 
           {loading && <ActivityIndicator style={styles.loader} />}
@@ -267,6 +271,9 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.six,
   },
   header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
     marginBottom: Spacing.one,
   },
   greeting: {

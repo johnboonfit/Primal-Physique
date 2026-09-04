@@ -1,9 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
 import { useEffect, useState } from 'react';
+import { StyleSheet } from 'react-native';
 import type { ColorValue } from 'react-native';
 
-import { Accent, Colors } from '@/constants/theme';
+import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import { Accent, Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { ensureClientProvisioned, getOnboardingStatus, type OnboardingStatus } from '@/lib/onboarding';
 
@@ -34,6 +37,7 @@ export default function ClientTabsLayout() {
 
   const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null);
   const [checkingOnboarding, setCheckingOnboarding] = useState(true);
+  const [onboardingCheckError, setOnboardingCheckError] = useState<string | null>(null);
 
   // Belt-and-suspenders with index.tsx's own check — a deep link or a
   // stale bookmark could otherwise land a not-yet-onboarded client
@@ -41,6 +45,7 @@ export default function ClientTabsLayout() {
   useEffect(() => {
     if (!session || profile?.role !== 'client') return;
     let cancelled = false;
+    setOnboardingCheckError(null);
     getOnboardingStatus(session.user.id)
       .then((status) => {
         if (!cancelled) setOnboardingStatus(status);
@@ -53,6 +58,13 @@ export default function ClientTabsLayout() {
         if (status === 'complete') {
           ensureClientProvisioned().catch((err) => console.error('Failed to provision client account:', err));
         }
+      })
+      .catch((err) => {
+        // Without this, a failed check left onboardingStatus stuck at
+        // null forever — checkingOnboarding still flips false below, so
+        // the render guard below would show a permanently blank screen,
+        // with no error and no way for the client to recover.
+        if (!cancelled) setOnboardingCheckError(err instanceof Error ? err.message : 'Failed to check your account status.');
       })
       .finally(() => {
         if (!cancelled) setCheckingOnboarding(false);
@@ -69,7 +81,15 @@ export default function ClientTabsLayout() {
   // background.
   if (loadingProfile && !profile) return null;
   if (profile?.role !== 'client') return <Redirect href="/home" />;
-  if (checkingOnboarding || onboardingStatus === null) return null;
+  if (checkingOnboarding) return null;
+  if (onboardingCheckError) {
+    return (
+      <ThemedView style={styles.errorContainer}>
+        <ThemedText style={styles.errorText}>{onboardingCheckError}</ThemedText>
+      </ThemedView>
+    );
+  }
+  if (onboardingStatus === null) return null;
   if (onboardingStatus !== 'complete') return <Redirect href={ONBOARDING_ROUTES[onboardingStatus] as never} />;
 
   return (
@@ -102,3 +122,16 @@ export default function ClientTabsLayout() {
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  errorContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.four,
+  },
+  errorText: {
+    color: Accent,
+    textAlign: 'center',
+  },
+});
