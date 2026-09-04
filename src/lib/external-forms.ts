@@ -45,7 +45,7 @@ export async function createExternalForm(coachId: string, name: string, question
 
   const rows = questions.map((question, index) => ({
     form_id: form.id as string,
-    position: index,
+    question_position: index,
     question_type: question.questionType,
     label: question.label,
     config: question.config,
@@ -90,9 +90,9 @@ export async function getExternalFormDetail(formId: string): Promise<ExternalFor
 
   const { data: questions, error: questionsError } = await supabase
     .from('external_form_questions')
-    .select('id, position, question_type, label, config')
+    .select('id, question_position, question_type, label, config')
     .eq('form_id', formId)
-    .order('position');
+    .order('question_position');
 
   if (questionsError) throw questionsError;
 
@@ -103,7 +103,7 @@ export async function getExternalFormDetail(formId: string): Promise<ExternalFor
     createdAt: data.created_at as string,
     questions: (questions ?? []).map((row) => ({
       id: row.id as string,
-      position: row.position as number,
+      position: row.question_position as number,
       questionType: row.question_type as QuestionType,
       label: row.label as string,
       config: (row.config as QuestionConfig) ?? {},
@@ -131,7 +131,7 @@ export type ExternalFormSubmission = {
 export async function listExternalFormResponses(formId: string): Promise<ExternalFormSubmission[]> {
   const { data, error } = await supabase
     .from('external_form_responses')
-    .select('submission_id, submitted_at, answer, external_form_questions(label, position)')
+    .select('submission_id, submitted_at, answer, external_form_questions(label, question_position)')
     .eq('form_id', formId)
     .order('submitted_at', { ascending: false });
 
@@ -140,9 +140,13 @@ export async function listExternalFormResponses(formId: string): Promise<Externa
   const bySubmission = new Map<string, SubmissionDraft>();
   for (const row of data ?? []) {
     const submissionId = row.submission_id as string;
-    const question = row.external_form_questions as unknown as { label: string; position: number } | null;
+    const question = row.external_form_questions as unknown as { label: string; question_position: number } | null;
     const existing = bySubmission.get(submissionId);
-    const entry: SubmissionAnswer = { label: question?.label ?? 'Unknown question', answer: row.answer, position: question?.position ?? 0 };
+    const entry: SubmissionAnswer = {
+      label: question?.label ?? 'Unknown question',
+      answer: row.answer,
+      position: question?.question_position ?? 0,
+    };
     if (existing) {
       existing.answers.push(entry);
     } else {
@@ -181,7 +185,7 @@ export async function getExternalFormByToken(token: string): Promise<PublicExter
     form_id: string;
     form_name: string;
     question_id: string;
-    position: number;
+    question_position: number;
     question_type: QuestionType;
     label: string;
     config: QuestionConfig;
@@ -194,7 +198,7 @@ export async function getExternalFormByToken(token: string): Promise<PublicExter
     formName: rows[0].form_name,
     questions: rows.map((row) => ({
       id: row.question_id,
-      position: row.position,
+      position: row.question_position,
       questionType: row.question_type,
       label: row.label,
       config: row.config ?? {},

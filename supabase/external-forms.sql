@@ -38,7 +38,13 @@ create table if not exists public.external_forms (
 create table if not exists public.external_form_questions (
   id uuid primary key default gen_random_uuid(),
   form_id uuid not null references public.external_forms (id) on delete cascade,
-  position int not null,
+  -- Named question_position, not position -- position is a reserved
+  -- word in Postgres (it doubles as the POSITION(substring IN string)
+  -- function), which breaks unquoted in some contexts (a function's
+  -- RETURNS TABLE column list, in particular) even though a plain
+  -- CREATE TABLE tolerates it. Renaming avoids needing to remember to
+  -- quote it correctly forever after.
+  question_position int not null,
   question_type text not null,
   label text not null,
   config jsonb not null default '{}'::jsonb
@@ -103,7 +109,7 @@ returns table (
   form_id uuid,
   form_name text,
   question_id uuid,
-  position int,
+  question_position int,
   question_type text,
   label text,
   config jsonb
@@ -112,11 +118,11 @@ language sql
 security definer
 set search_path = public
 as $$
-  select f.id, f.name, q.id, q.position, q.question_type, q.label, q.config
+  select f.id, f.name, q.id, q.question_position, q.question_type, q.label, q.config
   from public.external_forms f
   join public.external_form_questions q on q.form_id = f.id
   where f.share_token = p_token
-  order by q.position;
+  order by q.question_position;
 $$;
 
 grant execute on function public.get_external_form_by_token(text) to anon, authenticated;
@@ -175,7 +181,7 @@ begin
       values (default_coach_id, 'PAR-Q Health Screening')
       returning id into new_form_id;
 
-      insert into public.external_form_questions (form_id, position, question_type, label, config) values
+      insert into public.external_form_questions (form_id, question_position, question_type, label, config) values
         (new_form_id, 0, 'short_text', 'Full name', '{}'::jsonb),
         (new_form_id, 1, 'short_text', 'Email', '{}'::jsonb),
         (new_form_id, 2, 'single_select', 'Has your doctor ever said that you have a heart condition and that you should only do physical activity recommended by a doctor?', '{"options": ["Yes", "No"]}'::jsonb),
