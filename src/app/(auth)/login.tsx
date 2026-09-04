@@ -80,7 +80,7 @@ export default function LoginScreen() {
           )}
         </Pressable>
 
-        <Link href="/signup" style={styles.linkButton}>
+        <Link href="/welcome" style={styles.linkButton}>
           <ThemedText type="linkPrimary">Don&apos;t have an account? Sign up</ThemedText>
         </Link>
       </SafeAreaView>

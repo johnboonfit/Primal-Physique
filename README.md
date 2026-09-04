@@ -2023,17 +2023,57 @@ Instead, the three new tables (`external_forms`, `external_form_questions`, `ext
 6. Back in your own coach session, reopen that form — the submission should appear with the exact answers you gave.
 7. Edit one character of the link's token and reload — confirm it shows "not valid," not someone else's form.
 
+## Onboarding: welcome, in-app signup, PARQ, and a resumable health-advisory hold
+
+The start of the client-facing onboarding sequence — four screens (`(onboarding)/welcome.tsx` → `signup.tsx` → `parq.tsx` → `health-advisory.tsx`), all flat routes (`/welcome`, `/signup`, `/parq`, `/health-advisory` — Expo Router groups like `(onboarding)` never add a path segment, they're purely organizational).
+
+**Account creation is real, not a stub**: `signup.tsx` calls `supabase.auth.signUp()` directly — every signup becomes a client (coach accounts are still granted by hand in Supabase, never chosen at signup) and `profiles` rows are created automatically by the existing `handle_new_user()` trigger. On success it continues straight into PARQ rather than dropping the client at Home.
+
+**The PARQ step reuses last chunk's External Builder template**, not the anonymous response table that powers it — onboarding's PARQ is filled out by an authenticated client, and the safety gate needs to know exactly whose account to hold, so it gets its own table (`onboarding_parq_responses`, keyed to `client_id`) while reading the same question definitions and reusing the exact same `<AnswerInput>` every other question screen in this app uses.
+
+**A real RLS gap this surfaced**: `external_forms`/`external_form_questions` only ever had coach-only read policies — an authenticated client during onboarding had zero access to read the PARQ questions at all, the exact same class of bug `readiness-client-access.sql` fixed for the pre-workout questionnaire. Fixed the identical way: an additive policy granting read access specifically to whichever form `app_settings.parq_form_id` currently points at.
+
+**The safety gate is a database trigger, not app code** (`flag_onboarding_health_risk_trigger` in `onboarding.sql`): any `single_select` question answered exactly "Yes" flags the account, checked by reading that question's real `question_type` off `external_form_questions` rather than a hardcoded list of question IDs — the rule keeps working even if a coach edits the template later, and can't be silently bypassed by some future code path writing to this table. A flagged account isn't blocked or dead-ended: `health-advisory.tsx` shows the advisory, a checkbox ("I acknowledge this advisory and choose to proceed"), and an optional free-text clearance note — either path (a bare acknowledgment or one with a note) sets the same `onboarding_health_acknowledged_at` timestamp, since the real effect is identical either way. No document-upload subsystem — a clearance note is a plain text field, deliberately not a new feature area for this chunk.
+
+**Resume works by re-deriving status from real data, not a tracked step column.** `getOnboardingStatus(clientId)` looks at whether a PARQ response exists yet, and whether the account is flagged-and-unacknowledged, and returns `needs_parq` / `needs_health_review` / `complete` fresh every time — called from `index.tsx` (the main router), `client/_layout.tsx` (belt-and-suspenders against a stale bookmark or deep link), `welcome.tsx` (so an already-signed-in visitor who lands there gets routed to where they actually are), and `parq.tsx` itself right after a submission, so "first time through" and "resuming after abandoning" both route through the exact same logic — no separate resume-tracking code exists to drift out of sync.
+
+**New**: `supabase/onboarding.sql` (`app_settings.parq_form_id`, `profiles.onboarding_health_flagged/onboarding_health_acknowledged_at/onboarding_clearance_note`, `onboarding_parq_responses`, the two client-access RLS policies on `external_forms`/`external_form_questions`, and the flagging trigger), `src/lib/onboarding.ts` (`getOnboardingStatus`/`getParqForm`/`submitOnboardingParq`/`acknowledgeHealthAdvisory`), the whole `(onboarding)/` route group. The old standalone `(auth)/signup.tsx` is gone — `login.tsx`'s sign-up link now points at `/welcome`.
+
+**A real bug found and fixed along the way**: `parq.tsx` originally showed the load error (network failure, RLS denial, anything `getParqForm()` could throw) only inside the same conditional block as the loaded form itself — so if loading genuinely failed, the client saw a misleading "No health screening form is configured yet" instead of the real error. Fixed by tracking the load failure in its own state and showing it as its own message, ahead of the "not configured" fallback.
+
+**Verified here** (via a temporary debug harness patching `supabase` with an in-memory fake and then driving REAL navigation through the real routes, so the actual routing/guard logic executed genuinely — not a live Supabase project, see the sandbox note below): the clean path (PARQ answered "No") lands directly on `/client`; the flagged path (PARQ answered "Yes") lands on `/health-advisory`, and only proceeds to `/client` once acknowledged — the Continue button stays disabled until then; and the resume guarantee itself — creating an account, reaching PARQ, leaving it unsubmitted, then re-entering the app — lands back on `/parq`, not Welcome and not a blank state.
+
+**How you verify the safety gate yourself:**
+1. Run `onboarding.sql` in the Supabase SQL Editor (after `external-forms.sql`).
+2. From a fresh browser session (logged all the way out), go to Welcome → Get started → create an account.
+3. On the PARQ, answer "Yes" to any of the yes/no health questions, submit.
+4. Confirm you land on the Health Advisory screen, not Home and not an error.
+5. Try leaving — you should not be able to reach `/client` (via the tab bar, a direct URL, or a reload) until you return and check the acknowledgment box.
+6. Check the box (with or without a clearance note) and continue — confirm you land on `/client` from here on, including after a fresh login.
+
+**How you verify the resume behaviour yourself:**
+1. Create a new account, reach the PARQ screen, and close the tab (or just navigate elsewhere) without submitting.
+2. Log back in with that same account.
+3. Confirm you land back on the PARQ screen — not Welcome, and not a blank page — with the form ready to fill in again (answers themselves aren't saved mid-form, only which step you're on).
+
+**What this sandbox could verify vs. what needs your real Supabase project**: the resume-routing logic, the flag/acknowledge data flow, and every screen's rendering were all verified end-to-end against a faked backend in this sandbox (no live Supabase/Postgres is available here). What still needs confirming against your real project: the `flag_onboarding_health_risk_trigger` actually firing in real Postgres, the new RLS policies actually enforcing (not just modeled in the fake), and the real email-confirmation flow (if "Confirm email" is on in your Supabase project, a client sees a "check your email" screen instead of an immediate session — they confirm, log in, and land wherever `getOnboardingStatus` says next, but that hop through a real inbox can only be confirmed on your end).
+
 ## Project structure reference
 
 ```
 src/
   app/
-    index.tsx          # routes to /login, coach /home, or client /client
+    index.tsx          # routes to /login, coach /home, a pending onboarding step (/welcome, /parq, /health-advisory), or client /client — see getOnboardingStatus() in onboarding.ts
     e/
       [token].tsx        # the public External Builder fill-out screen — outside every login-guarded group entirely, never touches useAuth(), resolves purely off the token in the URL (see external-forms.sql)
     (auth)/
-      login.tsx
-      signup.tsx        # name/email/password only — no role choice; every signup is a client
+      login.tsx          # sign-up link points at /welcome, not a standalone signup screen
+    (onboarding)/
+      _layout.tsx        # no blanket redirect — each screen below self-guards, since this group serves both pre-session (welcome/signup) and mid-session (parq/health-advisory) visitors
+      welcome.tsx        # step 1 — static intro; an already-signed-in visitor who lands here gets sent to wherever getOnboardingStatus() says they actually are, not shown the intro again
+      signup.tsx         # step 2 — name/email/password only, no role choice; every signup becomes a client; continues straight to /parq (or shows "check your email" if email confirmation is required)
+      parq.tsx           # step 3 — the real PAR-Q template from external-forms.sql, answered by an authenticated client and written to onboarding_parq_responses; routes to /health-advisory or /client based on getOnboardingStatus() right after submitting
+      health-advisory.tsx  # step 4, conditional — only reached when a PARQ answer flagged the account; a checkbox + optional clearance note, both converging on the same acknowledged-at timestamp; not a dead end, just held
     (app)/
       home.tsx          # coach's home screen — a real dashboard (stat tiles, Needs Attention, a merged real Recent Activity preview with a "View all →" into activity.tsx) plus Manage/Coaching Hub nav grids covering every coach screen; redirects clients to /client
       activity.tsx      # coach-only "Client Activity" — the full, real-time, cross-client feed (meals/habits/completed workouts, each with that client's live Momentum + Compliance Score); see getClientActivityFeed()/subscribeToClientActivity() in coach-dashboard.ts
@@ -2107,7 +2147,7 @@ src/
       checkins/
         [id].tsx          # client's check-in fill-out screen — <AnswerInput> per question while pending, read-only submitted answers once completed
       client/
-        _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat), each with an @expo/vector-icons Ionicon (filled when active, outline otherwise) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable
+        _layout.tsx      # client-only guard + the 5-tab bar (Home/Training/Nutrition/Progress/Chat), each with an @expo/vector-icons Ionicon (filled when active, outline otherwise) — calendar.tsx stays registered via href: null, hidden from the tab bar but still routable; also re-checks getOnboardingStatus() and redirects into onboarding if incomplete, belt-and-suspenders against a stale bookmark or deep link
         index.tsx        # Home tab — greeting + a 3-across hero row (Momentum [greyed like Steps if the coach has toggled it off] / Steps [muted placeholder] / Calories Today), streak + Level/XP combined into one row, daily logging nudge, weekly TDEE recalculation check, Up Next (merges pending workouts + due check-ins), Today's Habits checklist, Community card with its own eye-icon hide toggle
         training.tsx      # Training tab — Volume Analyser card (this week's per-muscle-group set counts, see muscle-group-analysis.ts) directly under the hero stat, then Your Programme card (week counter, day row, next workout) + full assignment history + "View Calendar →" link
         nutrition.tsx      # Nutrition tab — one glowing summary card (‹›date navigator + calories vs. real calorie target + macro rings), 4 meal sections, blended USDA + UK-supermarket search (food-search.ts) + camera barcode scan, quantity as grams / a real structured portion chip / a manual custom item
@@ -2187,6 +2227,7 @@ src/
     streak.ts                    # getCurrentStreak() — pure calculation, no new tables
     feature-toggles.ts             # getClientFeatureToggles() (all 9 feature_key rows + this client's real on/off state) / setClientFeatureToggle() (coach-only) / isFeatureEnabled() — the one function every gated screen calls; no row for a feature means enabled / listPresets() / applyPresetToClient() — a one-time bulk write of all 9, not an ongoing link, so every toggle stays individually adjustable right after
     client-deletion.ts             # deleteClient() — calls the delete-client Edge Function, surfaces its real {error} message instead of supabase-js's generic "non-2xx status" text
+    onboarding.ts                # getOnboardingStatus() (derived, not tracked -- needs_parq/needs_health_review/complete off real data every time) / getParqForm() / submitOnboardingParq() (upserts, so a retried submission re-fires the flagging trigger safely) / acknowledgeHealthAdvisory()
 supabase/
   functions/
     delete-client/
@@ -2239,4 +2280,5 @@ supabase/
   feature-toggles.sql                                                                                       # paste in after client-activity-feed.sql — feature_key (9 seeded rows, extensible) + client_feature_toggles (client + feature_key -> enabled, no row means enabled) + RLS
   toggle-presets.sql                                                                                          # paste in after feature-toggles.sql — toggle_preset (3 seeded bundles) + toggle_preset_value (the real plan-defaults matrix, all 9 features x all 3 presets), coach-only RLS
   external-forms.sql                                                                                            # paste in after toggle-presets.sql — external_forms/external_form_questions/external_form_responses (no anonymous RLS grant at all), get_external_form_by_token()/submit_external_form_response() (the only anonymous access, both SECURITY DEFINER), seeds the real 9-question PAR-Q template
+  onboarding.sql                                                                                                  # paste in after external-forms.sql — app_settings.parq_form_id, profiles.onboarding_health_flagged/onboarding_health_acknowledged_at/onboarding_clearance_note, onboarding_parq_responses, client read-access policies on external_forms/external_form_questions (the same RLS gap class readiness-client-access.sql fixed), and the flag_onboarding_health_risk_trigger safety gate
 ```

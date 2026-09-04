@@ -1,9 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
+import { useEffect, useState } from 'react';
 import type { ColorValue } from 'react-native';
 
 import { Accent, Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { getOnboardingStatus, type OnboardingStatus } from '@/lib/onboarding';
+
+const ONBOARDING_ROUTES: Record<Exclude<OnboardingStatus, 'complete'>, string> = {
+  needs_parq: '/parq',
+  needs_health_review: '/health-advisory',
+};
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -23,7 +30,28 @@ function tabIcon(active: IconName, inactive: IconName) {
  * here (e.g. by typing the URL) gets sent back to their own home instead.
  */
 export default function ClientTabsLayout() {
-  const { profile, loadingProfile } = useAuth();
+  const { session, profile, loadingProfile } = useAuth();
+
+  const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null);
+  const [checkingOnboarding, setCheckingOnboarding] = useState(true);
+
+  // Belt-and-suspenders with index.tsx's own check — a deep link or a
+  // stale bookmark could otherwise land a not-yet-onboarded client
+  // straight here, skipping the gate entirely.
+  useEffect(() => {
+    if (!session || profile?.role !== 'client') return;
+    let cancelled = false;
+    getOnboardingStatus(session.user.id)
+      .then((status) => {
+        if (!cancelled) setOnboardingStatus(status);
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingOnboarding(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, profile?.role]);
 
   // Only block on a profile we don't have yet — not on a later re-fetch
   // (e.g. after a token refresh on app resume) of a profile we already
@@ -32,6 +60,8 @@ export default function ClientTabsLayout() {
   // background.
   if (loadingProfile && !profile) return null;
   if (profile?.role !== 'client') return <Redirect href="/home" />;
+  if (checkingOnboarding || onboardingStatus === null) return null;
+  if (onboardingStatus !== 'complete') return <Redirect href={ONBOARDING_ROUTES[onboardingStatus] as never} />;
 
   return (
     <Tabs

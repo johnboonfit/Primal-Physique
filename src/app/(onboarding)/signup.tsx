@@ -9,7 +9,16 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { supabase } from '@/lib/supabase';
 
-export default function SignUpScreen() {
+/**
+ * Step 2 — identical account-creation logic to the old standalone
+ * /signup screen, just relocated inside the onboarding sequence: success
+ * now continues straight to PARQ instead of dropping the client at Home.
+ * If email confirmation is required (this project has "Confirm email"
+ * turned on in Supabase), there's no session yet to continue onboarding
+ * with — the client confirms by email, logs in, and index.tsx's own
+ * onboarding check picks them right back up at PARQ from there.
+ */
+export default function OnboardingSignUpScreen() {
   const theme = useTheme();
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -33,7 +42,7 @@ export default function SignUpScreen() {
       return;
     }
     setLoading(true);
-    // Every signup becomes a client — there's no role choice here anymore.
+    // Every signup becomes a client — there's no role choice here.
     // Coach accounts are granted by hand in Supabase, not chosen at signup.
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: email.trim(),
@@ -48,13 +57,11 @@ export default function SignUpScreen() {
     }
 
     if (!data.session) {
-      // Supabase has "Confirm email" turned on for this project, so the
-      // account exists but can't log in until the link in that email is clicked.
       setConfirmationSent(true);
       return;
     }
 
-    router.replace('/home');
+    router.replace('/parq');
   };
 
   if (confirmationSent) {
@@ -65,7 +72,8 @@ export default function SignUpScreen() {
             Check your email
           </ThemedText>
           <ThemedText themeColor="textSecondary" style={styles.subtitle}>
-            We sent a confirmation link to {email}. Click it, then come back and log in.
+            We sent a confirmation link to {email}. Click it, then come back and log in — we&apos;ll pick up right
+            where you left off.
           </ThemedText>
           <Pressable style={styles.linkButton} onPress={() => router.replace('/login')}>
             <ThemedText type="linkPrimary">Back to login</ThemedText>
