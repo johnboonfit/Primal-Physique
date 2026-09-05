@@ -1,15 +1,17 @@
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as WebBrowser from 'expo-web-browser';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import { CLIENT_TIERS, getMyTier } from '@/lib/leaderboard';
+import { CLIENT_TIERS, getMyTier, type ClientTier } from '@/lib/leaderboard';
+import { PLAN_UPGRADE_OPTIONS, startPlanUpgrade } from '@/lib/plan-upgrades';
 import {
   requestEmailChange,
   setNotificationPreference,
@@ -99,6 +101,11 @@ export default function SettingsScreen() {
 
   const [wearableConnections, setWearableConnections] = useState<WearableConnection[]>([]);
 
+  const [upgradeMenuOpen, setUpgradeMenuOpen] = useState(false);
+  const [upgradingTier, setUpgradingTier] = useState<ClientTier | null>(null);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
+  const [upgradeNotice, setUpgradeNotice] = useState<string | null>(null);
+
   useEffect(() => {
     if (!profile || formInitialized) return;
     setFullName(profile.full_name ?? '');
@@ -178,6 +185,32 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleSelectUpgrade = async (tier: ClientTier) => {
+    if (!session) return;
+    setUpgradeError(null);
+    setUpgradeNotice(null);
+    setUpgradingTier(tier);
+    try {
+      const url = await startPlanUpgrade(session.user.id, tier);
+      // Opens Stripe's own hosted checkout as an in-app browser, closing
+      // itself the moment it navigates to either success_url or
+      // cancel_url (see create-checkout-session.ts) -- the redirect
+      // itself is just this app's own primalphysique:// scheme, so
+      // there's nothing real for it to land on the web.
+      const result = await WebBrowser.openAuthSessionAsync(url, 'primalphysique://settings');
+      setUpgradeMenuOpen(false);
+      if (result.type === 'success') {
+        setUpgradeNotice(
+          "Payment received — your plan updates automatically once Stripe confirms it, usually within a few seconds. Pull down to refresh if it doesn't show right away."
+        );
+      }
+    } catch (err) {
+      setUpgradeError(err instanceof Error ? err.message : 'Something went wrong starting that upgrade.');
+    } finally {
+      setUpgradingTier(null);
+    }
+  };
+
   if (!profile) {
     return (
       <ThemedView style={styles.container}>
@@ -215,6 +248,19 @@ export default function SettingsScreen() {
               </ThemedText>
             </View>
           </ThemedView>
+
+          {!isCoach && (
+            <>
+              <Pressable
+                style={({ pressed }) => [styles.upgradeButton, Glow.oxblood, pressed && styles.pressed]}
+                onPress={() => setUpgradeMenuOpen(true)}>
+                <ThemedText type="smallBold" style={styles.upgradeButtonText}>
+                  ⭐ Upgrade Plan
+                </ThemedText>
+              </Pressable>
+              {upgradeNotice && <ThemedText style={styles.success}>{upgradeNotice}</ThemedText>}
+            </>
+          )}
 
           <ThemedText type="smallBold" style={styles.sectionLabel}>
             Profile settings
@@ -369,6 +415,45 @@ export default function SettingsScreen() {
           </ThemedView>
         </ScrollView>
       </SafeAreaView>
+
+      <Modal
+        visible={upgradeMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setUpgradeMenuOpen(false)}>
+        <View style={styles.modalOverlay}>
+          <ThemedView type="backgroundElement" style={styles.modalCard}>
+            <ThemedText type="smallBold" style={styles.modalTitle}>
+              Choose a plan
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.modalSubtitle}>
+              You'll pay securely through Stripe — your plan updates automatically once payment is confirmed.
+            </ThemedText>
+
+            {PLAN_UPGRADE_OPTIONS.map((option) => (
+              <Pressable
+                key={option.tier}
+                style={({ pressed }) => [styles.planOption, pressed && styles.pressed]}
+                onPress={() => handleSelectUpgrade(option.tier)}
+                disabled={upgradingTier !== null}>
+                {upgradingTier === option.tier ? (
+                  <ActivityIndicator color={Colors.text} />
+                ) : (
+                  <ThemedText type="smallBold" style={styles.planOptionText}>
+                    {option.label}
+                  </ThemedText>
+                )}
+              </Pressable>
+            ))}
+
+            {upgradeError && <ThemedText style={styles.error}>{upgradeError}</ThemedText>}
+
+            <Pressable style={styles.cancelButton} onPress={() => setUpgradeMenuOpen(false)} disabled={upgradingTier !== null}>
+              <ThemedText themeColor="textSecondary">Cancel</ThemedText>
+            </Pressable>
+          </ThemedView>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -411,6 +496,18 @@ const styles = StyleSheet.create({
   heroInfo: {
     flex: 1,
     gap: Spacing.half,
+  },
+  upgradeButton: {
+    backgroundColor: Accent,
+    borderRadius: Spacing.three,
+    paddingVertical: Spacing.three,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing.three,
+  },
+  upgradeButtonText: {
+    color: Colors.text,
+    fontSize: 16,
   },
   sectionLabel: {
     marginTop: Spacing.three,
@@ -512,5 +609,41 @@ const styles = StyleSheet.create({
   },
   signOutText: {
     color: Accent,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.four,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: Spacing.four,
+    padding: Spacing.four,
+    gap: Spacing.two,
+  },
+  modalTitle: {
+    marginBottom: Spacing.half,
+  },
+  modalSubtitle: {
+    marginBottom: Spacing.one,
+  },
+  planOption: {
+    borderWidth: 1,
+    borderColor: Accent,
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.three,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  planOptionText: {
+    color: Accent,
+  },
+  cancelButton: {
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
+    marginTop: Spacing.one,
   },
 });
