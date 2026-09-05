@@ -24,6 +24,11 @@ const AUDIO_BUCKET = 'chat-audio';
 const ATTACHMENT_BUCKET = 'chat-attachments';
 const SIGNED_URL_EXPIRY_SECONDS = 60 * 60;
 
+export type MessageReaction = {
+  userId: string;
+  emoji: string;
+};
+
 export type ChatMessage = {
   id: string;
   conversationId: string;
@@ -41,6 +46,7 @@ export type ChatMessage = {
   editedAt: string | null;
   deletedForEveryone: boolean;
   createdAt: string;
+  reactions: MessageReaction[];
 };
 
 type MessageRow = {
@@ -62,7 +68,12 @@ type MessageRow = {
   profiles: { full_name: string | null; email: string } | null;
 };
 
-function toChatMessage(row: MessageRow, audioUrlByPath: Map<string, string>, attachmentUrlByPath: Map<string, string>): ChatMessage {
+function toChatMessage(
+  row: MessageRow,
+  audioUrlByPath: Map<string, string>,
+  attachmentUrlByPath: Map<string, string>,
+  reactionsByMessageId: Map<string, MessageReaction[]>
+): ChatMessage {
   const sender = row.profiles;
   return {
     id: row.id,
@@ -81,6 +92,7 @@ function toChatMessage(row: MessageRow, audioUrlByPath: Map<string, string>, att
     editedAt: row.edited_at,
     deletedForEveryone: row.deleted_for_everyone_at !== null,
     createdAt: row.created_at,
+    reactions: reactionsByMessageId.get(row.id) ?? [],
   };
 }
 
@@ -127,32 +139,47 @@ export async function listMessages(conversationId: string, viewerId: string): Pr
 
   const hiddenIds = new Set((hiddenRes.data ?? []).map((row) => row.message_id as string));
   const rows = (messagesRes.data ?? []).filter((row) => !hiddenIds.has(row.id as string)) as unknown as MessageRow[];
+  const messageIds = rows.map((row) => row.id);
 
-  const audioPaths = rows.map((row) => row.audio_storage_path).filter((p): p is string => p !== null);
+  const [audioSignRes, attachmentSignRes, reactionsRes] = await Promise.all([
+    (async () => {
+      const audioPaths = rows.map((row) => row.audio_storage_path).filter((p): p is string => p !== null);
+      if (audioPaths.length === 0) return { data: [], error: null };
+      return supabase.storage.from(AUDIO_BUCKET).createSignedUrls(audioPaths, SIGNED_URL_EXPIRY_SECONDS);
+    })(),
+    (async () => {
+      const attachmentPaths = rows.map((row) => row.attachment_storage_path).filter((p): p is string => p !== null);
+      if (attachmentPaths.length === 0) return { data: [], error: null };
+      return supabase.storage.from(ATTACHMENT_BUCKET).createSignedUrls(attachmentPaths, SIGNED_URL_EXPIRY_SECONDS);
+    })(),
+    messageIds.length === 0
+      ? Promise.resolve({ data: [], error: null })
+      : supabase.from('message_reactions').select('message_id, user_id, emoji').in('message_id', messageIds),
+  ]);
+
+  if (audioSignRes.error) throw audioSignRes.error;
+  if (attachmentSignRes.error) throw attachmentSignRes.error;
+  if (reactionsRes.error) throw reactionsRes.error;
+
   const audioUrlByPath = new Map<string, string>();
-  if (audioPaths.length > 0) {
-    const { data: signedUrls, error: signError } = await supabase.storage
-      .from(AUDIO_BUCKET)
-      .createSignedUrls(audioPaths, SIGNED_URL_EXPIRY_SECONDS);
-    if (signError) throw signError;
-    (signedUrls ?? []).forEach((entry) => {
-      if (entry.path && entry.signedUrl) audioUrlByPath.set(entry.path, entry.signedUrl);
-    });
-  }
+  (audioSignRes.data ?? []).forEach((entry) => {
+    if (entry.path && entry.signedUrl) audioUrlByPath.set(entry.path, entry.signedUrl);
+  });
 
-  const attachmentPaths = rows.map((row) => row.attachment_storage_path).filter((p): p is string => p !== null);
   const attachmentUrlByPath = new Map<string, string>();
-  if (attachmentPaths.length > 0) {
-    const { data: signedUrls, error: signError } = await supabase.storage
-      .from(ATTACHMENT_BUCKET)
-      .createSignedUrls(attachmentPaths, SIGNED_URL_EXPIRY_SECONDS);
-    if (signError) throw signError;
-    (signedUrls ?? []).forEach((entry) => {
-      if (entry.path && entry.signedUrl) attachmentUrlByPath.set(entry.path, entry.signedUrl);
-    });
-  }
+  (attachmentSignRes.data ?? []).forEach((entry) => {
+    if (entry.path && entry.signedUrl) attachmentUrlByPath.set(entry.path, entry.signedUrl);
+  });
 
-  return rows.map((row) => toChatMessage(row, audioUrlByPath, attachmentUrlByPath));
+  const reactionsByMessageId = new Map<string, MessageReaction[]>();
+  (reactionsRes.data ?? []).forEach((row) => {
+    const messageId = row.message_id as string;
+    const list = reactionsByMessageId.get(messageId) ?? [];
+    list.push({ userId: row.user_id as string, emoji: row.emoji as string });
+    reactionsByMessageId.set(messageId, list);
+  });
+
+  return rows.map((row) => toChatMessage(row, audioUrlByPath, attachmentUrlByPath, reactionsByMessageId));
 }
 
 export async function sendTextMessage(conversationId: string, senderId: string, body: string): Promise<void> {
@@ -369,11 +396,36 @@ export function subscribeToConversation(conversationId: string, onChange: () => 
       { event: '*', schema: 'public', table: 'conversation_reads', filter: `conversation_id=eq.${conversationId}` },
       onChange
     )
+    // message_reactions carries no conversation_id column to filter by
+    // server-side (just message_id) -- unfiltered subscribe, then let
+    // the listMessages() refetch this triggers naturally scope itself
+    // to this conversation, same broad-subscribe-then-narrow-refetch
+    // shape subscribeToCommunityPosts() already uses.
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'message_reactions' }, onChange)
     .subscribe();
 
   return () => {
     supabase.removeChannel(channel);
   };
+}
+
+/**
+ * Reacts to a message with an emoji -- one reaction per person per
+ * message (message_reactions' own primary key enforces that, this is
+ * just the upsert that makes "react again with a different emoji"
+ * replace rather than fail). Toggling the SAME emoji back off is
+ * removeReaction() below, not this function.
+ */
+export async function reactToMessage(messageId: string, userId: string, emoji: string): Promise<void> {
+  const { error } = await supabase
+    .from('message_reactions')
+    .upsert({ message_id: messageId, user_id: userId, emoji }, { onConflict: 'message_id,user_id' });
+  if (error) throw error;
+}
+
+export async function removeReaction(messageId: string, userId: string): Promise<void> {
+  const { error } = await supabase.from('message_reactions').delete().eq('message_id', messageId).eq('user_id', userId);
+  if (error) throw error;
 }
 
 /**

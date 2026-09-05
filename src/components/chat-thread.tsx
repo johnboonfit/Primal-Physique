@@ -33,6 +33,8 @@ import {
   isOnline,
   listMessages,
   markConversationRead,
+  reactToMessage,
+  removeReaction,
   sendFileMessage,
   sendImageMessage,
   sendTextMessage,
@@ -40,13 +42,35 @@ import {
   subscribeToConversation,
   updateLastSeen,
   type ChatMessage,
+  type MessageReaction,
 } from '@/lib/chat';
+
+const DOUBLE_TAP_WINDOW_MS = 300;
 
 const IMAGE_PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
   mediaTypes: 'images',
   base64: true,
   quality: 0.7,
 };
+
+/** One pill per distinct emoji on a message, with a count and whether
+ * the current viewer is among the reactors (so their own reaction can
+ * be visually distinguished and tapping it means "remove mine" rather
+ * than "add another"). */
+function groupReactions(reactions: MessageReaction[], viewerId: string | null) {
+  const order: string[] = [];
+  const byEmoji = new Map<string, { count: number; mine: boolean }>();
+  reactions.forEach((r) => {
+    if (!byEmoji.has(r.emoji)) {
+      order.push(r.emoji);
+      byEmoji.set(r.emoji, { count: 0, mine: false });
+    }
+    const entry = byEmoji.get(r.emoji)!;
+    entry.count += 1;
+    if (r.userId === viewerId) entry.mine = true;
+  });
+  return order.map((emoji) => ({ emoji, ...byEmoji.get(emoji)! }));
+}
 
 function formatFileSize(bytes: number | null): string {
   if (!bytes) return '';
@@ -127,6 +151,13 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
   const [actionsFor, setActionsFor] = useState<ChatMessage | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ message: ChatMessage; mode: 'me' | 'everyone' } | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Reactions: double-tap a bubble to open this same EmojiPicker,
+  // scoped to whichever message was tapped. lastTapRef is a plain ref,
+  // not state -- it only needs to survive between two rapid taps, never
+  // triggers a render itself, and state would lag one tap behind here.
+  const [reactingTo, setReactingTo] = useState<ChatMessage | null>(null);
+  const lastTapRef = useRef<{ messageId: string; time: number } | null>(null);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 200);
@@ -344,6 +375,57 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
     Linking.openURL(url).catch((err) => setActionError(err instanceof Error ? err.message : 'Failed to open attachment.'));
   };
 
+  /** Single tap does whatever it always did (open an attachment, or
+   * nothing); a second tap on the SAME message within the window opens
+   * the reaction picker instead. lastTapRef, not state, since this only
+   * needs to survive between two rapid taps and never itself causes a
+   * render. */
+  const handleBubbleTap = (item: ChatMessage) => {
+    if (item.deletedForEveryone) return;
+    const now = Date.now();
+    const last = lastTapRef.current;
+    if (last && last.messageId === item.id && now - last.time < DOUBLE_TAP_WINDOW_MS) {
+      lastTapRef.current = null;
+      setReactingTo(item);
+      return;
+    }
+    lastTapRef.current = { messageId: item.id, time: now };
+
+    const canOpenAttachment = (item.kind === 'image' || item.kind === 'file') && item.attachmentUrl;
+    if (canOpenAttachment) handleOpenAttachment(item.attachmentUrl!);
+  };
+
+  const handleSelectReaction = async (emoji: string) => {
+    if (!currentUserId || !reactingTo) return;
+    const target = reactingTo;
+    setReactingTo(null);
+    try {
+      await reactToMessage(target.id, currentUserId, emoji);
+      load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to react to that message.');
+    }
+  };
+
+  /** Tapping an existing reaction pill toggles YOUR OWN reaction on
+   * that message: adds it (or switches to it) if you hadn't reacted
+   * with this emoji, removes it if this was already your reaction --
+   * it never touches anyone else's. */
+  const handleTapReactionPill = async (item: ChatMessage, emoji: string) => {
+    if (!currentUserId) return;
+    const own = item.reactions.find((r) => r.userId === currentUserId);
+    try {
+      if (own?.emoji === emoji) {
+        await removeReaction(item.id, currentUserId);
+      } else {
+        await reactToMessage(item.id, currentUserId, emoji);
+      }
+      load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update that reaction.');
+    }
+  };
+
   const handleSend = async () => {
     if (!currentUserId) return;
     const text = composerText.trim();
@@ -439,11 +521,10 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
           contentContainerStyle={styles.listContent}
           renderItem={({ item }) => {
             const isOwn = item.senderId === currentUserId;
-            const canOpenAttachment = !item.deletedForEveryone && (item.kind === 'image' || item.kind === 'file') && item.attachmentUrl;
             return (
               <Pressable
                 onLongPress={() => !item.deletedForEveryone && setActionsFor(item)}
-                onPress={canOpenAttachment ? () => handleOpenAttachment(item.attachmentUrl!) : undefined}
+                onPress={() => handleBubbleTap(item)}
                 style={[styles.bubbleRow, isOwn && styles.bubbleRowOwn]}>
                 <ThemedView type={isOwn ? 'tealDeep' : 'backgroundElement'} style={styles.bubble}>
                   {item.deletedForEveryone ? (
@@ -493,6 +574,22 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
                       ))}
                   </View>
                 </ThemedView>
+
+                {!item.deletedForEveryone && item.reactions.length > 0 && (
+                  <View style={[styles.reactionRow, isOwn && styles.reactionRowOwn]}>
+                    {groupReactions(item.reactions, currentUserId).map(({ emoji, count, mine }) => (
+                      <Pressable
+                        key={emoji}
+                        onPress={() => handleTapReactionPill(item, emoji)}
+                        style={[styles.reactionPill, mine && styles.reactionPillMine]}>
+                        <ThemedText type="small">
+                          {emoji}
+                          {count > 1 ? ` ${count}` : ''}
+                        </ThemedText>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
               </Pressable>
             );
           }}
@@ -576,6 +673,10 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
         onSelect={(emoji) => setComposerText((current) => current + emoji)}
         onClose={() => setEmojiOpen(false)}
       />
+
+      {/* Same picker, reused -- double-tapping a message opens this one
+       * instead, scoped to whichever message is in reactingTo. */}
+      <EmojiPicker visible={reactingTo !== null} onSelect={handleSelectReaction} onClose={() => setReactingTo(null)} />
 
       <Modal visible={attachmentMenuOpen} transparent animationType="fade" onRequestClose={() => setAttachmentMenuOpen(false)}>
         <View style={styles.actionsOverlay}>
@@ -704,6 +805,26 @@ const styles = StyleSheet.create({
   },
   tombstone: {
     fontStyle: 'italic',
+  },
+  reactionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.one,
+    marginTop: -Spacing.one,
+    marginBottom: Spacing.one,
+  },
+  reactionRowOwn: {
+    justifyContent: 'flex-end',
+  },
+  reactionPill: {
+    borderWidth: 1,
+    borderColor: Colors.backgroundSelected,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 2,
+  },
+  reactionPillMine: {
+    borderColor: Accent,
   },
   voiceRow: {
     flexDirection: 'row',
