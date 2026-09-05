@@ -393,3 +393,90 @@ export async function archiveOrDeleteCheckIn(checkInId: string): Promise<'delete
   if (archiveError) throw archiveError;
   return 'archived';
 }
+
+export type CoachCheckInSubmission = {
+  id: string;
+  clientId: string;
+  clientName: string;
+  formName: string;
+  scheduledDate: string;
+  completedAt: string;
+};
+
+/** Every completed check-in across every client, most recent first —
+ * the coach's own review queue. No dedicated coach-facing check-ins
+ * list existed before this chunk (only checkins/[id].tsx, a shared
+ * detail view reached from a client's own page); this is the new
+ * screen's own data source. */
+export async function listCompletedCheckIns(limit = 30): Promise<CoachCheckInSubmission[]> {
+  const { data, error } = await supabase
+    .from('form_check_ins')
+    .select('id, client_id, scheduled_date, completed_at, form_templates(name), profiles!client_id(full_name, email)')
+    .eq('status', 'completed')
+    .eq('archived', false)
+    .order('completed_at', { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => {
+    const form = row.form_templates as unknown as { name: string } | null;
+    const client = row.profiles as unknown as { full_name: string | null; email: string } | null;
+    return {
+      id: row.id as string,
+      clientId: row.client_id as string,
+      clientName: client?.full_name || client?.email?.split('@')[0] || 'A client',
+      formName: form?.name ?? 'Unknown form',
+      scheduledDate: row.scheduled_date as string,
+      completedAt: row.completed_at as string,
+    };
+  });
+}
+
+/** The coach's own checkins_last_viewed_at — how far back "new
+ * completion" counts from. Same last-viewed-timestamp shape
+ * community.ts's getCommunityLastViewedAt() already established. */
+export async function getCheckinsLastViewedAt(coachId: string): Promise<string> {
+  const { data, error } = await supabase.from('profiles').select('checkins_last_viewed_at').eq('id', coachId).single();
+  if (error) throw error;
+  return data.checkins_last_viewed_at as string;
+}
+
+/** Call the instant the coach's check-ins list actually becomes visible
+ * — same "opening it and seeing what's there counts as reading it" rule
+ * every other last-viewed marker in this app follows. */
+export async function markCheckinsViewed(coachId: string): Promise<void> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ checkins_last_viewed_at: new Date().toISOString() })
+    .eq('id', coachId);
+  if (error) throw error;
+}
+
+/** Check-ins completed since the given timestamp — the Home dashboard's
+ * "Check-ins" nav card badge count. */
+export async function getNewCompletedCheckInCount(since: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('form_check_ins')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'completed')
+    .eq('archived', false)
+    .gt('completed_at', since);
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** Fires on any change to a check-in (a new completion, most notably) —
+ * same "subscribe while mounted, unsubscribe on cleanup" shape every
+ * other realtime badge in this app already uses. */
+export function subscribeToCoachCheckIns(onChange: () => void): () => void {
+  const channel = supabase
+    .channel(`coach-checkins:${Math.random().toString(36).slice(2)}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'form_check_ins' }, onChange)
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}

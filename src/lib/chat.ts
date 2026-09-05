@@ -486,6 +486,56 @@ export async function getUnreadMessageCount(conversationId: string, viewerId: st
   }).length;
 }
 
+/**
+ * The same unread count as getUnreadMessageCount() above, just summed
+ * across every conversation the coach is in at once rather than one at
+ * a time — the Home dashboard's "Messages" nav card badge. Each
+ * conversation gets its OWN last_read_at threshold (a client the coach
+ * hasn't messaged in weeks doesn't retroactively count as unread just
+ * because a different conversation was read more recently) — no row
+ * in conversation_reads yet for a given conversation just means "never
+ * read," same as the single-conversation version.
+ */
+export async function getCoachUnreadMessageCount(coachId: string): Promise<number> {
+  const [readsRes, messagesRes, hiddenRes] = await Promise.all([
+    supabase.from('conversation_reads').select('conversation_id, last_read_at').eq('user_id', coachId),
+    supabase.from('messages').select('id, conversation_id, created_at, deleted_for_everyone_at').neq('sender_id', coachId),
+    supabase.from('message_hidden_for').select('message_id').eq('user_id', coachId),
+  ]);
+
+  if (readsRes.error) throw readsRes.error;
+  if (messagesRes.error) throw messagesRes.error;
+  if (hiddenRes.error) throw hiddenRes.error;
+
+  const lastReadByConversation = new Map<string, string>();
+  (readsRes.data ?? []).forEach((row) => {
+    lastReadByConversation.set(row.conversation_id as string, row.last_read_at as string);
+  });
+  const hiddenIds = new Set((hiddenRes.data ?? []).map((row) => row.message_id as string));
+
+  return (messagesRes.data ?? []).filter((row) => {
+    if (hiddenIds.has(row.id as string)) return false;
+    if (row.deleted_for_everyone_at) return false;
+    const lastReadAt = lastReadByConversation.get(row.conversation_id as string);
+    return !lastReadAt || (row.created_at as string) > lastReadAt;
+  }).length;
+}
+
+/** Fires on any change to any conversation's messages or read state —
+ * broad subscribe, narrow refetch, same shape subscribeToCommunityPosts()
+ * uses for one shared feed instead of a per-row channel. */
+export function subscribeToCoachInbox(onChange: () => void): () => void {
+  const channel = supabase
+    .channel(`coach-inbox:${Math.random().toString(36).slice(2)}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'conversation_reads' }, onChange)
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
 /** Both participants' read cursors for this conversation, keyed by
  * user id — a message counts as read by someone if their cursor here
  * is at or after that message's created_at. */

@@ -32,7 +32,7 @@ export default function LoginScreen() {
       setError(signInError.message);
       return;
     }
-    router.replace('/home');
+    router.replace('/splash');
   };
 
   return (

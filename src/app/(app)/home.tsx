@@ -9,6 +9,15 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import {
+  getCoachUnreadMessageCount,
+  subscribeToCoachInbox,
+} from '@/lib/chat';
+import {
+  getNewClientCount,
+  getRosterLastViewedAt,
+  subscribeToNewClients,
+} from '@/lib/clients';
 import { complianceColor } from '@/lib/compliance';
 import {
   getClientsNeedingAttention,
@@ -19,6 +28,11 @@ import {
   type CoachDashboardStats,
 } from '@/lib/coach-dashboard';
 import { getErrorMessage } from '@/lib/errors';
+import {
+  getCheckinsLastViewedAt,
+  getNewCompletedCheckInCount,
+  subscribeToCoachCheckIns,
+} from '@/lib/form-check-ins';
 
 function greeting(): string {
   const hour = new Date().getHours();
@@ -43,7 +57,7 @@ function formatRelativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function NavCard({ title, subtitle, href }: { title: string; subtitle: string; href: string }) {
+function NavCard({ title, subtitle, href, badge }: { title: string; subtitle: string; href: string; badge?: number }) {
   return (
     <Pressable style={({ pressed }) => [styles.navCard, pressed && styles.pressed]} onPress={() => router.push(href as never)}>
       <ThemedView type="backgroundElement" style={styles.navCardInner}>
@@ -52,6 +66,13 @@ function NavCard({ title, subtitle, href }: { title: string; subtitle: string; h
           {subtitle}
         </ThemedText>
       </ThemedView>
+      {!!badge && badge > 0 && (
+        <View style={styles.navCardBadge}>
+          <ThemedText type="small" style={styles.navCardBadgeText}>
+            {badge > 99 ? '99+' : badge}
+          </ThemedText>
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -111,6 +132,10 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [newClientCount, setNewClientCount] = useState(0);
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const [newCheckInCount, setNewCheckInCount] = useState(0);
+
   useFocusEffect(
     useCallback(() => {
       if (!profile || profile.role !== 'coach') return;
@@ -136,6 +161,82 @@ export default function HomeScreen() {
         cancelled = true;
       };
     }, [profile])
+  );
+
+  // Three Home nav card badges, each the same shape: fetch the count
+  // once on focus, then keep it live with a realtime subscription while
+  // the screen is mounted — same pattern the client-side Community badge
+  // established. Only meaningful for a coach; a client never reaches
+  // this screen (redirected below).
+  useFocusEffect(
+    useCallback(() => {
+      if (!session || profile?.role !== 'coach') return;
+      let cancelled = false;
+
+      const refresh = () => {
+        getRosterLastViewedAt(session.user.id)
+          .then((since) => getNewClientCount(since))
+          .then((count) => {
+            if (!cancelled) setNewClientCount(count);
+          })
+          .catch((err) => console.error('Failed to load new client count:', err));
+      };
+
+      refresh();
+      const unsubscribe = subscribeToNewClients(refresh);
+
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }, [session, profile])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!session || profile?.role !== 'coach') return;
+      let cancelled = false;
+
+      const refresh = () => {
+        getCoachUnreadMessageCount(session.user.id)
+          .then((count) => {
+            if (!cancelled) setUnreadMessageCount(count);
+          })
+          .catch((err) => console.error('Failed to load unread message count:', err));
+      };
+
+      refresh();
+      const unsubscribe = subscribeToCoachInbox(refresh);
+
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }, [session, profile])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!session || profile?.role !== 'coach') return;
+      let cancelled = false;
+
+      const refresh = () => {
+        getCheckinsLastViewedAt(session.user.id)
+          .then((since) => getNewCompletedCheckInCount(since))
+          .then((count) => {
+            if (!cancelled) setNewCheckInCount(count);
+          })
+          .catch((err) => console.error('Failed to load new check-in count:', err));
+      };
+
+      refresh();
+      const unsubscribe = subscribeToCoachCheckIns(refresh);
+
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }, [session, profile])
   );
 
   if (!loadingProfile && profile?.role === 'client') {
@@ -221,10 +322,11 @@ export default function HomeScreen() {
 
               <SectionLabel>Manage</SectionLabel>
               <View style={styles.navGrid}>
-                <NavCard title="Clients" subtitle="Roster & tiers" href="/clients" />
-                <NavCard title="Messages" subtitle="Client conversations" href="/messages" />
+                <NavCard title="Clients" subtitle="Roster & tiers" href="/clients" badge={newClientCount} />
+                <NavCard title="Messages" subtitle="Client conversations" href="/messages" badge={unreadMessageCount} />
                 <NavCard title="Assignments" subtitle="Assign & review" href="/assignments" />
                 <NavCard title="Community" subtitle="Feed & moderation" href="/community" />
+                <NavCard title="Check-ins" subtitle="Client submissions" href="/checkins" badge={newCheckInCount} />
                 <NavCard title="Check-in Forms" subtitle="Schedules & templates" href="/forms" />
               </View>
 
@@ -343,6 +445,24 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     padding: Spacing.three,
     gap: Spacing.half,
+  },
+  navCardBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 5,
+    backgroundColor: Accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navCardBadgeText: {
+    color: Colors.text,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '700',
   },
   activityCard: {
     borderRadius: Spacing.two,

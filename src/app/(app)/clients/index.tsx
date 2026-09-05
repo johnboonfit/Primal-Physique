@@ -6,12 +6,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
+import { useAuth } from '@/context/auth-context';
 import { complianceColor, getComplianceScore } from '@/lib/compliance';
-import { listClients, setClientStatus, type ClientSummary } from '@/lib/clients';
+import { listClients, markRosterViewed, setClientStatus, type ClientSummary } from '@/lib/clients';
 import { getErrorMessage } from '@/lib/errors';
 import { CLIENT_TIERS, listClientTiers, setClientTier, type ClientTier } from '@/lib/leaderboard';
 
 export default function ClientsListScreen() {
+  const { session } = useAuth();
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +73,17 @@ export default function ClientsListScreen() {
         cancelled = true;
       };
     }, [])
+  );
+
+  // Separate from the data-loading effect above -- opening this list
+  // and seeing what's there counts as reading it, same rule every other
+  // last-viewed marker in this app follows, clearing Home's "Clients"
+  // nav card badge.
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      markRosterViewed(session.user.id).catch((err) => console.error('Failed to mark roster viewed:', err));
+    }, [session])
   );
 
   const handleSetTier = async (clientId: string, tier: ClientTier) => {

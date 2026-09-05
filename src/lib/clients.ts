@@ -64,3 +64,50 @@ export async function setClientStatus(clientId: string, status: ClientStatus): P
   const { error } = await supabase.from('profiles').update({ status }).eq('id', clientId);
   if (error) throw error;
 }
+
+/** The coach's own roster_last_viewed_at — how far back "new client"
+ * counts from. Same last-viewed-timestamp shape community.ts's
+ * getCommunityLastViewedAt() already established for the client side. */
+export async function getRosterLastViewedAt(coachId: string): Promise<string> {
+  const { data, error } = await supabase.from('profiles').select('roster_last_viewed_at').eq('id', coachId).single();
+  if (error) throw error;
+  return data.roster_last_viewed_at as string;
+}
+
+/** Call the instant the Clients list actually becomes visible — same
+ * "opening it and seeing what's there counts as reading it" rule
+ * markCommunityViewed()/markConversationRead() already follow. */
+export async function markRosterViewed(coachId: string): Promise<void> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ roster_last_viewed_at: new Date().toISOString() })
+    .eq('id', coachId);
+  if (error) throw error;
+}
+
+/** Clients who signed up since the given timestamp — the Home
+ * dashboard's "Clients" nav card badge count. */
+export async function getNewClientCount(since: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('profiles')
+    .select('id', { count: 'exact', head: true })
+    .eq('role', 'client')
+    .gt('created_at', since);
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** Fires whenever a new client profile is created — the same "subscribe
+ * while mounted, unsubscribe on cleanup" shape subscribeToCommunityPosts()
+ * already uses for the client's Community badge. */
+export function subscribeToNewClients(onChange: () => void): () => void {
+  const channel = supabase
+    .channel(`new-clients:${Math.random().toString(36).slice(2)}`)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'profiles', filter: 'role=eq.client' }, onChange)
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
