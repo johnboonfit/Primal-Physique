@@ -1,11 +1,11 @@
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Glow, Spacing } from '@/constants/theme';
+import { Accent, Spacing } from '@/constants/theme';
 
 const DISPLAY_MS = 3000;
 
@@ -29,9 +29,7 @@ export default function SplashScreen() {
       <ThemedText type="subtitle" themeColor="textSecondary" style={styles.welcome}>
         Welcome To
       </ThemedText>
-      <View style={[styles.logoWrap, Glow.oxblood]}>
-        <Image source={require('@/assets/images/logo.jpg')} style={styles.logo} contentFit="contain" />
-      </View>
+      <Image source={require('@/assets/images/logo.jpg')} style={styles.logo} contentFit="contain" />
       <ThemedText type="title" style={styles.wordmark}>
         PRIMAL PHYSIQUE
       </ThemedText>
@@ -50,16 +48,9 @@ const styles = StyleSheet.create({
   welcome: {
     textAlign: 'center',
   },
-  logoWrap: {
-    width: 140,
-    height: 140,
-    borderRadius: Spacing.three,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   logo: {
-    width: 140,
-    height: 140,
+    width: 240,
+    height: 240,
   },
   wordmark: {
     color: Accent,
