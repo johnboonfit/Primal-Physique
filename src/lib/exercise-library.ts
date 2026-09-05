@@ -28,6 +28,7 @@ export type ExerciseDetail = ExerciseSummary & {
   description: string | null;
   videoUrl: string | null;
   imageUrl: string | null;
+  imageUrls: string[];
   attribution: string;
 };
 
@@ -63,7 +64,7 @@ export async function getExerciseDetail(id: string): Promise<ExerciseDetail> {
   const { data, error } = await supabase
     .from('exercise_library')
     .select(
-      'id, name, muscle_group, category, equipment, primary_muscles, secondary_muscles, instructions, description, video_url, image_url, attribution'
+      'id, name, muscle_group, category, equipment, primary_muscles, secondary_muscles, instructions, description, video_url, image_url, image_urls, attribution'
     )
     .eq('id', id)
     .single();
@@ -82,6 +83,7 @@ export async function getExerciseDetail(id: string): Promise<ExerciseDetail> {
     description: data.description as string | null,
     videoUrl: data.video_url as string | null,
     imageUrl: data.image_url as string | null,
+    imageUrls: (data.image_urls as string[] | null) ?? [],
     attribution: data.attribution as string,
   };
 }

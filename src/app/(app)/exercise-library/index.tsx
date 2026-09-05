@@ -1,6 +1,7 @@
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -172,6 +173,13 @@ export default function ExerciseLibraryScreen() {
                         )}
                         {detail && (
                           <>
+                            {detail.imageUrls.length > 0 && (
+                              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.imageRow}>
+                                {detail.imageUrls.map((url) => (
+                                  <Image key={url} source={{ uri: url }} style={styles.exerciseImage} contentFit="cover" />
+                                ))}
+                              </ScrollView>
+                            )}
                             {detail.description && (
                               <ThemedText type="small" themeColor="textSecondary">
                                 {detail.description}
@@ -286,6 +294,15 @@ const styles = StyleSheet.create({
   },
   detailLoader: {
     marginVertical: Spacing.two,
+  },
+  imageRow: {
+    marginBottom: Spacing.two,
+  },
+  exerciseImage: {
+    width: 160,
+    height: 160,
+    borderRadius: Spacing.two,
+    marginRight: Spacing.two,
   },
   instructionStep: {
     lineHeight: 20,
