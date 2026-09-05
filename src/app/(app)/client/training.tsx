@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { FeatureLockedCard } from '@/components/feature-locked-card';
 import { HeroStat } from '@/components/hero-stat';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -11,6 +12,7 @@ import { WorkoutAnalyserCard } from '@/components/workout-analyser-card';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
+import { isFeatureEnabled } from '@/lib/feature-toggles';
 import { getWeeklyMuscleGroupSetCounts, type MuscleGroupCounts } from '@/lib/muscle-group-analysis';
 import { getClientProgramme, GOAL_TYPES, type ClientProgrammeView } from '@/lib/programmes';
 
@@ -119,6 +121,20 @@ export default function ClientTrainingScreen() {
 
   const [muscleCounts, setMuscleCounts] = useState<MuscleGroupCounts | null>(null);
 
+  // Defaults to true while loading -- same reasoning LeaderboardPanel's
+  // own featureEnabled default follows -- so the card doesn't flash
+  // locked for a moment before the real value comes back.
+  const [formCheckEnabled, setFormCheckEnabled] = useState(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      isFeatureEnabled(session.user.id, 'form_check')
+        .then(setFormCheckEnabled)
+        .catch(() => setFormCheckEnabled(true));
+    }, [session])
+  );
+
   useFocusEffect(
     useCallback(() => {
       if (!session) return;
@@ -213,6 +229,22 @@ export default function ClientTrainingScreen() {
                 </>
               )}
 
+              <ThemedText type="smallBold" style={styles.sectionLabel}>
+                Form Check
+              </ThemedText>
+              {formCheckEnabled ? (
+                <Pressable onPress={() => router.push('/client/form-check')}>
+                  <ThemedView type="backgroundElement" style={styles.formCheckCard}>
+                    <ThemedText type="smallBold">Record or upload a video</ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Get your coach's eyes on your technique
+                    </ThemedText>
+                  </ThemedView>
+                </Pressable>
+              ) : (
+                <FeatureLockedCard title="Form Check" message="Your coach has turned off Form Check access for your account." />
+              )}
+
               {programmeLoading && <ActivityIndicator style={styles.loader} />}
               {!programmeLoading && programmeError && <ThemedText style={styles.error}>{programmeError}</ThemedText>}
               {!programmeLoading && !programmeError && programme && (
@@ -304,6 +336,11 @@ const styles = StyleSheet.create({
   },
   statusCompleted: {
     color: Colors.tealBright,
+  },
+  formCheckCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.half,
   },
   programmeCard: {
     borderRadius: Spacing.two,

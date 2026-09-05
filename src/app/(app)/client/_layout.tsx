@@ -245,6 +245,10 @@ export default function ClientTabsLayout() {
        * The screen name Expo Router assigns a nested dynamic route is
        * its full relative path, not just the folder name. */}
       <Tabs.Screen name="exercise-progress/[id]" options={{ href: null }} />
+      {/* Reached from Training's Form Check card, not a tab -- same
+       * href: null treatment as every other pushed-but-not-tabbed
+       * screen above. */}
+      <Tabs.Screen name="form-check" options={{ href: null }} />
     </Tabs>
   );
 }

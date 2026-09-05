@@ -249,6 +249,7 @@ export default function HomeScreen() {
                 <NavCard title="External Forms" subtitle="Shareable, no login" href="/external-forms" />
                 <NavCard title="Challenges" subtitle="Create & manage" href="/challenges" />
                 <NavCard title="Resource Library" subtitle="Docs & links" href="/resources" />
+                <NavCard title="Form Check" subtitle="Review submissions" href="/form-check" />
               </View>
             </>
           )}
