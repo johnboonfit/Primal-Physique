@@ -1,14 +1,15 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ExerciseProgressPanel } from '@/components/exercise-progress-panel';
 import { MeasurePanel } from '@/components/measure-panel';
 import { MetricsPanel } from '@/components/metrics-panel';
 import { PhotosPanel } from '@/components/photos-panel';
+import { PillRow } from '@/components/pill-row';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Colors, Spacing } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
 
 type SubTab = 'metrics' | 'measure' | 'exercise' | 'photos';
 
@@ -30,19 +31,10 @@ export default function ProgressScreen() {
             Progress
           </ThemedText>
 
-          <View style={styles.subTabRow}>
-            {SUB_TABS.map((tab) => (
-              <Pressable key={tab.key} onPress={() => setActiveTab(tab.key)}>
-                <View style={[styles.subTab, activeTab === tab.key && styles.subTabActive]}>
-                  <ThemedText
-                    type="smallBold"
-                    style={activeTab === tab.key ? styles.subTabActiveText : styles.subTabText}>
-                    {tab.label}
-                  </ThemedText>
-                </View>
-              </Pressable>
-            ))}
-          </View>
+          <PillRow
+            activeKey={activeTab}
+            items={SUB_TABS.map((tab) => ({ key: tab.key, label: tab.label, onPress: () => setActiveTab(tab.key) }))}
+          />
 
           {activeTab === 'metrics' && <MetricsPanel />}
           {activeTab === 'measure' && <MeasurePanel />}
@@ -63,26 +55,5 @@ const styles = StyleSheet.create({
   },
   title: {
     marginBottom: Spacing.two,
-  },
-  subTabRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two,
-    marginBottom: Spacing.two,
-  },
-  subTab: {
-    borderRadius: 999,
-    paddingVertical: Spacing.one,
-    paddingHorizontal: Spacing.three,
-    backgroundColor: Colors.backgroundElement,
-  },
-  subTabActive: {
-    backgroundColor: Accent,
-  },
-  subTabText: {
-    color: Colors.textSecondary,
-  },
-  subTabActiveText: {
-    color: Colors.text,
   },
 });

@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CalorieRing } from '@/components/calorie-ring';
 import { MacroBar } from '@/components/macro-bar';
+import { PillRow } from '@/components/pill-row';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
@@ -492,20 +493,15 @@ export default function NutritionScreen() {
                 Nutrition
               </ThemedText>
             </View>
-            <View style={styles.headerActions}>
-              <Pressable onPress={() => router.push('/client/saved-meals')} hitSlop={8}>
-                <ThemedText type="linkPrimary" style={styles.savedMealsLink}>
-                  Saved Meals
-                </ThemedText>
-              </Pressable>
-              <Pressable
-                onPress={() => openAddEntry(currentMealByTime())}
-                hitSlop={8}
-                accessibilityLabel="Quick-add a food">
-                <Ionicons name="search-outline" size={22} color={theme.textSecondary} />
-              </Pressable>
-            </View>
+            <Pressable
+              onPress={() => openAddEntry(currentMealByTime())}
+              hitSlop={8}
+              accessibilityLabel="Quick-add a food">
+              <Ionicons name="search-outline" size={22} color={theme.textSecondary} />
+            </Pressable>
           </View>
+
+          <PillRow items={[{ key: 'saved-meals', label: 'Saved Meals', onPress: () => router.push('/client/saved-meals') }]} />
 
           <View style={styles.dateNavRow}>
             <Pressable onPress={handlePrevDay} style={styles.dateNavButton} hitSlop={8}>
@@ -996,14 +992,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.three,
-  },
-  savedMealsLink: {
-    fontSize: 14,
   },
   title: {},
   date: {

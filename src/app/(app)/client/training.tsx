@@ -4,9 +4,9 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { FeatureLockedCard } from '@/components/feature-locked-card';
 import { HeroStat } from '@/components/hero-stat';
 import { LogActivityModal } from '@/components/log-activity-modal';
+import { PillRow } from '@/components/pill-row';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { WorkoutAnalyserCard } from '@/components/workout-analyser-card';
@@ -14,7 +14,6 @@ import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { activityLabel, deleteActivityLog, listMyActivityLogs, type ActivityLogEntry } from '@/lib/activity-logs';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
-import { isFeatureEnabled } from '@/lib/feature-toggles';
 import { getWeeklyMuscleGroupSetCounts, type MuscleGroupCounts } from '@/lib/muscle-group-analysis';
 import { getClientProgramme, GOAL_TYPES, type ClientProgrammeView } from '@/lib/programmes';
 
@@ -135,20 +134,6 @@ export default function ClientTrainingScreen() {
   const [activitiesLoading, setActivitiesLoading] = useState(true);
   const [deletingActivityId, setDeletingActivityId] = useState<string | null>(null);
 
-  // Defaults to true while loading -- same reasoning LeaderboardPanel's
-  // own featureEnabled default follows -- so the card doesn't flash
-  // locked for a moment before the real value comes back.
-  const [formCheckEnabled, setFormCheckEnabled] = useState(true);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!session) return;
-      isFeatureEnabled(session.user.id, 'form_check')
-        .then(setFormCheckEnabled)
-        .catch(() => setFormCheckEnabled(true));
-    }, [session])
-  );
-
   useFocusEffect(
     useCallback(() => {
       if (!session) return;
@@ -246,16 +231,17 @@ export default function ClientTrainingScreen() {
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        <View style={styles.header}>
-          <ThemedText type="title" style={styles.title}>
-            Training
-          </ThemedText>
-          <Pressable style={styles.calendarPill} onPress={() => router.push('/client/calendar')}>
-            <ThemedText type="small" style={styles.calendarPillText}>
-              View Calendar →
-            </ThemedText>
-          </Pressable>
-        </View>
+        <ThemedText type="title" style={styles.title}>
+          Training
+        </ThemedText>
+
+        <PillRow
+          items={[
+            { key: 'calendar', label: 'View Calendar', onPress: () => router.push('/client/calendar') },
+            { key: 'log-activity', label: 'Log Activity', onPress: () => setActivityModalVisible(true) },
+            { key: 'form-check', label: 'Form Check', onPress: () => router.push('/client/form-check') },
+          ]}
+        />
 
         {!loading && !error && <HeroStat value={assignments.length} label="Workouts Assigned" />}
 
@@ -275,30 +261,8 @@ export default function ClientTrainingScreen() {
               )}
 
               <ThemedText type="smallBold" style={styles.sectionLabel}>
-                Form Check
+                Recent Activities
               </ThemedText>
-              {formCheckEnabled ? (
-                <Pressable onPress={() => router.push('/client/form-check')}>
-                  <ThemedView type="backgroundElement" style={styles.formCheckCard}>
-                    <ThemedText type="smallBold">Record or upload a video</ThemedText>
-                    <ThemedText type="small" themeColor="textSecondary">
-                      Get your coach's eyes on your technique
-                    </ThemedText>
-                  </ThemedView>
-                </Pressable>
-              ) : (
-                <FeatureLockedCard title="Form Check" message="Your coach has turned off Form Check access for your account." />
-              )}
-
-              <ThemedText type="smallBold" style={styles.sectionLabel}>
-                Log Activity
-              </ThemedText>
-              <Pressable style={styles.logActivityPill} onPress={() => setActivityModalVisible(true)}>
-                <ThemedText type="smallBold" style={styles.logActivityPillText}>
-                  + Log Activity
-                </ThemedText>
-              </Pressable>
-
               {activitiesLoading && <ActivityIndicator style={styles.loader} />}
               {!activitiesLoading && recentActivities.length === 0 && (
                 <ThemedText type="small" themeColor="textSecondary" style={styles.noActivities}>
@@ -392,38 +356,12 @@ export default function ClientTrainingScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1, paddingHorizontal: Spacing.four, paddingTop: Spacing.four },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.three,
-  },
-  title: {},
-  calendarPill: {
-    borderWidth: 1,
-    borderColor: Colors.backgroundSelected,
-    borderRadius: 999,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.one,
-  },
-  calendarPillText: {
-    color: Colors.tealBright,
+  title: {
+    marginBottom: Spacing.two,
   },
   sectionLabel: {
     marginTop: Spacing.three,
     marginBottom: Spacing.two,
-  },
-  logActivityPill: {
-    ...Glow.oxblood,
-    alignSelf: 'flex-start',
-    backgroundColor: Accent,
-    borderRadius: 999,
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two,
-    marginBottom: Spacing.two,
-  },
-  logActivityPillText: {
-    color: Colors.text,
   },
   noActivities: {
     marginBottom: Spacing.two,
@@ -470,11 +408,6 @@ const styles = StyleSheet.create({
   },
   statusCompleted: {
     color: Colors.tealBright,
-  },
-  formCheckCard: {
-    borderRadius: Spacing.two,
-    padding: Spacing.three,
-    gap: Spacing.half,
   },
   programmeCard: {
     borderRadius: Spacing.two,
