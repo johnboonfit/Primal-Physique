@@ -488,7 +488,6 @@ export default function NutritionScreen() {
         <ScrollView contentContainerStyle={styles.scrollContent}>
           <View style={styles.header}>
             <View style={styles.headerTitleRow}>
-              <Ionicons name="restaurant-outline" size={20} color={Accent} />
               <ThemedText type="title" style={styles.title}>
                 Nutrition
               </ThemedText>
