@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { Redirect, router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
@@ -7,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useTheme } from '@/hooks/use-theme';
 import { isOnline, listCoachConversations, type CoachInboxEntry } from '@/lib/chat';
 
 function initial(name: string) {
@@ -23,6 +25,7 @@ function formatPreviewTime(iso: string) {
 /** Coach-only, same inline-guard shape as community/moderation.tsx —
  * this folder has no _layout.tsx of its own. */
 export default function MessagesInboxScreen() {
+  const theme = useTheme();
   const { profile, loadingProfile } = useAuth();
 
   const [entries, setEntries] = useState<CoachInboxEntry[]>([]);
@@ -45,9 +48,17 @@ export default function MessagesInboxScreen() {
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
-        <ThemedText type="title" style={styles.title}>
-          Messages
-        </ThemedText>
+        <View style={styles.titleRow}>
+          <ThemedText type="title">Messages</ThemedText>
+          <View style={styles.titleActions}>
+            <Pressable onPress={() => router.push('/messages/bulk-send')} hitSlop={8} accessibilityLabel="Send Bulk Message">
+              <Ionicons name="megaphone-outline" size={22} color={theme.textSecondary} />
+            </Pressable>
+            <Pressable onPress={() => router.push('/messages/scheduled')} hitSlop={8} accessibilityLabel="Scheduled Messages">
+              <Ionicons name="calendar-outline" size={22} color={theme.textSecondary} />
+            </Pressable>
+          </View>
+        </View>
 
         {loading && <ActivityIndicator style={styles.loader} />}
 
@@ -101,8 +112,15 @@ export default function MessagesInboxScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1, paddingHorizontal: Spacing.four, paddingTop: Spacing.four },
-  title: {
+  titleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: Spacing.three,
+  },
+  titleActions: {
+    flexDirection: 'row',
+    gap: Spacing.three,
   },
   loader: {
     marginTop: Spacing.five,

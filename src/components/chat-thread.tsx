@@ -1,14 +1,19 @@
 import {
   RecordingPresets,
   requestRecordingPermissionsAsync,
+  setAudioModeAsync,
   useAudioPlayer,
   useAudioPlayerStatus,
   useAudioRecorder,
   useAudioRecorderState,
 } from 'expo-audio';
+import * as DocumentPicker from 'expo-document-picker';
+import { Image } from 'expo-image';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, FlatList, Linking, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { EmojiPicker } from '@/components/emoji-picker';
@@ -28,12 +33,26 @@ import {
   isOnline,
   listMessages,
   markConversationRead,
+  sendFileMessage,
+  sendImageMessage,
   sendTextMessage,
   sendVoiceMessage,
   subscribeToConversation,
   updateLastSeen,
   type ChatMessage,
 } from '@/lib/chat';
+
+const IMAGE_PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
+  mediaTypes: 'images',
+  base64: true,
+  quality: 0.7,
+};
+
+function formatFileSize(bytes: number | null): string {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function formatDuration(totalSeconds: number) {
   const clamped = Math.max(0, Math.round(totalSeconds));
@@ -89,7 +108,12 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Two different kinds of "something's wrong": loadError means there's
+  // nothing to show at all (so it replaces the list); actionError is a
+  // transient failure (send, attach, delete) shown as a banner above
+  // whatever's already loaded, never hiding messages that loaded fine.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const [otherOnline, setOtherOnline] = useState(false);
   const [readReceipts, setReadReceipts] = useState<Record<string, string>>({});
@@ -99,6 +123,7 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
   const [sending, setSending] = useState(false);
 
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [actionsFor, setActionsFor] = useState<ChatMessage | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ message: ChatMessage; mode: 'me' | 'everyone' } | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -109,6 +134,16 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
   const wasRecordingRef = useRef(false);
   const discardNextRef = useRef(false);
 
+  // The actual voice-message bug: recording never worked on a real
+  // device because the app never told the OS it was allowed to record
+  // at all — expo-audio requires this once, before the first
+  // recorder.record() call, or the recorder silently fails/errors.
+  useEffect(() => {
+    setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true }).catch((err) =>
+      console.error('Failed to set audio mode for recording:', err)
+    );
+  }, []);
+
   const load = useCallback(() => {
     if (!currentUserId) return;
     Promise.all([listMessages(conversationId, currentUserId), getReadReceipts(conversationId)])
@@ -116,7 +151,7 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
         setMessages(messageData);
         setReadReceipts(receipts);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load messages.'))
+      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load messages.'))
       .finally(() => setLoading(false));
   }, [conversationId, currentUserId]);
 
@@ -178,7 +213,7 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
         setSending(true);
         sendVoiceMessage(conversationId, currentUserId, uri, durationSeconds)
           .then(load)
-          .catch((err) => setError(err instanceof Error ? err.message : 'Failed to send voice message.'))
+          .catch((err) => setActionError(err instanceof Error ? err.message : 'Failed to send voice message.'))
           .finally(() => setSending(false));
       }
       discardNextRef.current = false;
@@ -188,10 +223,10 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
   }, [recorderState.isRecording]);
 
   const handleStartRecording = async () => {
-    setError(null);
+    setActionError(null);
     const permission = await requestRecordingPermissionsAsync();
     if (!permission.granted) {
-      setError('Microphone access is needed to record a voice message.');
+      setActionError('Microphone access is needed to record a voice message.');
       return;
     }
     await recorder.prepareToRecordAsync();
@@ -209,13 +244,75 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
     await recorder.stop();
   };
 
+  const handlePickPhoto = async (source: 'camera' | 'library') => {
+    setAttachmentMenuOpen(false);
+    if (!currentUserId) return;
+    setActionError(null);
+
+    const permission =
+      source === 'camera'
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setActionError(source === 'camera' ? 'Camera access is needed to take a photo.' : 'Photo library access is needed to choose a photo.');
+      return;
+    }
+
+    const result =
+      source === 'camera'
+        ? await ImagePicker.launchCameraAsync(IMAGE_PICKER_OPTIONS)
+        : await ImagePicker.launchImageLibraryAsync(IMAGE_PICKER_OPTIONS);
+    if (result.canceled || !result.assets?.[0]?.base64) return;
+
+    setSending(true);
+    sendImageMessage(conversationId, currentUserId, result.assets[0].base64, result.assets[0].mimeType ?? 'image/jpeg')
+      .then(load)
+      .catch((err) => setActionError(err instanceof Error ? err.message : 'Failed to send photo.'))
+      .finally(() => setSending(false));
+  };
+
+  const handlePickDocument = async () => {
+    setAttachmentMenuOpen(false);
+    if (!currentUserId) return;
+    setActionError(null);
+
+    const result = await DocumentPicker.getDocumentAsync({ type: '*/*', base64: true });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+
+    setSending(true);
+    try {
+      // expo-document-picker only hands back base64 on web (the
+      // environment this whole flow is verified in); on a real device
+      // it hands back a local uri instead, which needs reading here.
+      const base64 = asset.base64 ?? (await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' }));
+      await sendFileMessage(
+        conversationId,
+        currentUserId,
+        base64,
+        asset.name,
+        asset.mimeType ?? 'application/octet-stream',
+        asset.size ?? null
+      );
+      load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to send document.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleOpenAttachment = (url: string) => {
+    Linking.openURL(url).catch((err) => setActionError(err instanceof Error ? err.message : 'Failed to open attachment.'));
+  };
+
   const handleSend = async () => {
     if (!currentUserId) return;
     const text = composerText.trim();
     if (!text) return;
 
     setSending(true);
-    setError(null);
+    setActionError(null);
     try {
       if (editingMessageId) {
         await editMessage(editingMessageId, text);
@@ -226,7 +323,7 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
       setComposerText('');
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send that.');
+      setActionError(err instanceof Error ? err.message : 'Failed to send that.');
     } finally {
       setSending(false);
     }
@@ -255,7 +352,7 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
       setPendingDelete(null);
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete that message.');
+      setActionError(err instanceof Error ? err.message : 'Failed to delete that message.');
     } finally {
       setDeleting(false);
     }
@@ -287,24 +384,28 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
 
       {loading && <ActivityIndicator style={styles.loader} />}
 
-      {!loading && error && <ThemedText style={styles.error}>{error}</ThemedText>}
+      {!loading && loadError && <ThemedText style={styles.error}>{loadError}</ThemedText>}
 
-      {!loading && !error && messages.length === 0 && (
+      {!loading && actionError && <ThemedText style={styles.error}>{actionError}</ThemedText>}
+
+      {!loading && !loadError && messages.length === 0 && (
         <ThemedText themeColor="textSecondary" style={styles.empty}>
           No messages yet — say hello.
         </ThemedText>
       )}
 
-      {!loading && !error && messages.length > 0 && (
+      {!loading && !loadError && messages.length > 0 && (
         <FlatList
           data={messages}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
           renderItem={({ item }) => {
             const isOwn = item.senderId === currentUserId;
+            const canOpenAttachment = !item.deletedForEveryone && (item.kind === 'image' || item.kind === 'file') && item.attachmentUrl;
             return (
               <Pressable
                 onLongPress={() => !item.deletedForEveryone && setActionsFor(item)}
+                onPress={canOpenAttachment ? () => handleOpenAttachment(item.attachmentUrl!) : undefined}
                 style={[styles.bubbleRow, isOwn && styles.bubbleRowOwn]}>
                 <ThemedView type={isOwn ? 'tealDeep' : 'backgroundElement'} style={styles.bubble}>
                   {item.deletedForEveryone ? (
@@ -313,6 +414,22 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
                     </ThemedText>
                   ) : item.kind === 'voice' && item.audioUrl ? (
                     <VoiceBubbleContent url={item.audioUrl} durationSeconds={item.audioDurationSeconds} />
+                  ) : item.kind === 'image' && item.attachmentUrl ? (
+                    <Image source={{ uri: item.attachmentUrl }} style={styles.imageThumbnail} contentFit="cover" />
+                  ) : item.kind === 'file' ? (
+                    <View style={styles.fileRow}>
+                      <ThemedText type="smallBold">📎</ThemedText>
+                      <View style={styles.fileInfo}>
+                        <ThemedText type="smallBold" numberOfLines={1}>
+                          {item.attachmentFileName ?? 'Document'}
+                        </ThemedText>
+                        {item.attachmentSizeBytes !== null && (
+                          <ThemedText type="small" themeColor="textSecondary">
+                            {formatFileSize(item.attachmentSizeBytes)}
+                          </ThemedText>
+                        )}
+                      </View>
+                    </View>
                   ) : (
                     <ThemedText>{item.body}</ThemedText>
                   )}
@@ -383,9 +500,6 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
             </View>
           )}
           <View style={styles.composerRow}>
-            <Pressable onPress={() => setEmojiOpen(true)} style={styles.iconButton}>
-              <ThemedText style={styles.iconText}>😊</ThemedText>
-            </Pressable>
             <TextInput
               value={composerText}
               onChangeText={setComposerText}
@@ -394,6 +508,12 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
               multiline
               style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
             />
+            <Pressable onPress={() => setEmojiOpen(true)} style={styles.iconButton}>
+              <ThemedText style={styles.iconText}>😊</ThemedText>
+            </Pressable>
+            <Pressable onPress={() => setAttachmentMenuOpen(true)} disabled={sending} style={styles.iconButton}>
+              <ThemedText style={styles.iconText}>📎</ThemedText>
+            </Pressable>
             {composerText.trim().length > 0 ? (
               <Pressable onPress={handleSend} disabled={sending} style={styles.sendButton}>
                 {sending ? (
@@ -418,6 +538,25 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
         onSelect={(emoji) => setComposerText((current) => current + emoji)}
         onClose={() => setEmojiOpen(false)}
       />
+
+      <Modal visible={attachmentMenuOpen} transparent animationType="fade" onRequestClose={() => setAttachmentMenuOpen(false)}>
+        <View style={styles.actionsOverlay}>
+          <ThemedView type="backgroundElement" style={styles.actionsCard}>
+            <Pressable style={styles.actionRow} onPress={() => handlePickPhoto('library')}>
+              <ThemedText type="smallBold">Photo from library</ThemedText>
+            </Pressable>
+            <Pressable style={styles.actionRow} onPress={() => handlePickPhoto('camera')}>
+              <ThemedText type="smallBold">Take a photo</ThemedText>
+            </Pressable>
+            <Pressable style={styles.actionRow} onPress={handlePickDocument}>
+              <ThemedText type="smallBold">Document</ThemedText>
+            </Pressable>
+            <Pressable style={styles.actionRow} onPress={() => setAttachmentMenuOpen(false)}>
+              <ThemedText themeColor="textSecondary">Cancel</ThemedText>
+            </Pressable>
+          </ThemedView>
+        </View>
+      </Modal>
 
       <Modal visible={actionsFor !== null} transparent animationType="fade" onRequestClose={() => setActionsFor(null)}>
         <View style={styles.actionsOverlay}>
@@ -545,6 +684,22 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 999,
     backgroundColor: Colors.tealBright,
+  },
+  imageThumbnail: {
+    width: 220,
+    height: 220,
+    borderRadius: Spacing.two,
+  },
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    minWidth: 160,
+    maxWidth: 220,
+  },
+  fileInfo: {
+    flex: 1,
+    gap: Spacing.half,
   },
   recordingBar: {
     flexDirection: 'row',

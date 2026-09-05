@@ -3,7 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 import { supabase } from '@/lib/supabase';
 
-export type MessageKind = 'text' | 'voice';
+export type MessageKind = 'text' | 'voice' | 'image' | 'file';
 
 /** Voice recordings auto-stop at exactly this length. */
 export const MAX_VOICE_MESSAGE_SECONDS = 15 * 60;
@@ -21,6 +21,7 @@ const DELETE_FOR_EVERYONE_WINDOW_SECONDS = 30 * 60;
 const ONLINE_THRESHOLD_SECONDS = 90;
 
 const AUDIO_BUCKET = 'chat-audio';
+const ATTACHMENT_BUCKET = 'chat-attachments';
 const SIGNED_URL_EXPIRY_SECONDS = 60 * 60;
 
 export type ChatMessage = {
@@ -33,6 +34,10 @@ export type ChatMessage = {
   originalBody: string | null;
   audioUrl: string | null;
   audioDurationSeconds: number | null;
+  attachmentUrl: string | null;
+  attachmentFileName: string | null;
+  attachmentMimeType: string | null;
+  attachmentSizeBytes: number | null;
   editedAt: string | null;
   deletedForEveryone: boolean;
   createdAt: string;
@@ -47,13 +52,17 @@ type MessageRow = {
   original_body: string | null;
   audio_storage_path: string | null;
   audio_duration_seconds: number | null;
+  attachment_storage_path: string | null;
+  attachment_file_name: string | null;
+  attachment_mime_type: string | null;
+  attachment_size_bytes: number | null;
   edited_at: string | null;
   deleted_for_everyone_at: string | null;
   created_at: string;
   profiles: { full_name: string | null; email: string } | null;
 };
 
-function toChatMessage(row: MessageRow, urlByPath: Map<string, string>): ChatMessage {
+function toChatMessage(row: MessageRow, audioUrlByPath: Map<string, string>, attachmentUrlByPath: Map<string, string>): ChatMessage {
   const sender = row.profiles;
   return {
     id: row.id,
@@ -63,8 +72,12 @@ function toChatMessage(row: MessageRow, urlByPath: Map<string, string>): ChatMes
     kind: row.kind,
     body: row.body,
     originalBody: row.original_body,
-    audioUrl: row.audio_storage_path ? (urlByPath.get(row.audio_storage_path) ?? null) : null,
+    audioUrl: row.audio_storage_path ? (audioUrlByPath.get(row.audio_storage_path) ?? null) : null,
     audioDurationSeconds: row.audio_duration_seconds,
+    attachmentUrl: row.attachment_storage_path ? (attachmentUrlByPath.get(row.attachment_storage_path) ?? null) : null,
+    attachmentFileName: row.attachment_file_name,
+    attachmentMimeType: row.attachment_mime_type,
+    attachmentSizeBytes: row.attachment_size_bytes,
     editedAt: row.edited_at,
     deletedForEveryone: row.deleted_for_everyone_at !== null,
     createdAt: row.created_at,
@@ -102,7 +115,7 @@ export async function listMessages(conversationId: string, viewerId: string): Pr
     supabase
       .from('messages')
       .select(
-        'id, conversation_id, sender_id, kind, body, original_body, audio_storage_path, audio_duration_seconds, edited_at, deleted_for_everyone_at, created_at, profiles!sender_id(full_name, email)'
+        'id, conversation_id, sender_id, kind, body, original_body, audio_storage_path, audio_duration_seconds, attachment_storage_path, attachment_file_name, attachment_mime_type, attachment_size_bytes, edited_at, deleted_for_everyone_at, created_at, profiles!sender_id(full_name, email)'
       )
       .eq('conversation_id', conversationId)
       .order('created_at', { ascending: true }),
@@ -115,19 +128,31 @@ export async function listMessages(conversationId: string, viewerId: string): Pr
   const hiddenIds = new Set((hiddenRes.data ?? []).map((row) => row.message_id as string));
   const rows = (messagesRes.data ?? []).filter((row) => !hiddenIds.has(row.id as string)) as unknown as MessageRow[];
 
-  const paths = rows.map((row) => row.audio_storage_path).filter((p): p is string => p !== null);
-  const urlByPath = new Map<string, string>();
-  if (paths.length > 0) {
+  const audioPaths = rows.map((row) => row.audio_storage_path).filter((p): p is string => p !== null);
+  const audioUrlByPath = new Map<string, string>();
+  if (audioPaths.length > 0) {
     const { data: signedUrls, error: signError } = await supabase.storage
       .from(AUDIO_BUCKET)
-      .createSignedUrls(paths, SIGNED_URL_EXPIRY_SECONDS);
+      .createSignedUrls(audioPaths, SIGNED_URL_EXPIRY_SECONDS);
     if (signError) throw signError;
     (signedUrls ?? []).forEach((entry) => {
-      if (entry.path && entry.signedUrl) urlByPath.set(entry.path, entry.signedUrl);
+      if (entry.path && entry.signedUrl) audioUrlByPath.set(entry.path, entry.signedUrl);
     });
   }
 
-  return rows.map((row) => toChatMessage(row, urlByPath));
+  const attachmentPaths = rows.map((row) => row.attachment_storage_path).filter((p): p is string => p !== null);
+  const attachmentUrlByPath = new Map<string, string>();
+  if (attachmentPaths.length > 0) {
+    const { data: signedUrls, error: signError } = await supabase.storage
+      .from(ATTACHMENT_BUCKET)
+      .createSignedUrls(attachmentPaths, SIGNED_URL_EXPIRY_SECONDS);
+    if (signError) throw signError;
+    (signedUrls ?? []).forEach((entry) => {
+      if (entry.path && entry.signedUrl) attachmentUrlByPath.set(entry.path, entry.signedUrl);
+    });
+  }
+
+  return rows.map((row) => toChatMessage(row, audioUrlByPath, attachmentUrlByPath));
 }
 
 export async function sendTextMessage(conversationId: string, senderId: string, body: string): Promise<void> {
@@ -175,6 +200,78 @@ export async function sendVoiceMessage(
   }
 }
 
+/**
+ * Uploads a photo (already base64-encoded by the picker, same
+ * convention community.ts/progress-photos.ts already use) and inserts
+ * its message row.
+ */
+export async function sendImageMessage(
+  conversationId: string,
+  senderId: string,
+  base64: string,
+  mimeType: string
+): Promise<void> {
+  const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+  const path = `${conversationId}/${senderId}-${Date.now()}.${ext}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(ATTACHMENT_BUCKET)
+    .upload(path, decode(base64), { contentType: mimeType });
+  if (uploadError) throw uploadError;
+
+  const { error } = await supabase.from('messages').insert({
+    conversation_id: conversationId,
+    sender_id: senderId,
+    kind: 'image',
+    attachment_storage_path: path,
+    attachment_mime_type: mimeType,
+  });
+
+  if (error) {
+    await supabase.storage.from(ATTACHMENT_BUCKET).remove([path]);
+    throw error;
+  }
+}
+
+/**
+ * Uploads a document (PDF, etc.) picked via expo-document-picker.
+ * Takes base64 rather than a local uri — expo-document-picker only
+ * returns base64 itself on web, so the caller reads the file via
+ * FileSystem on native and passes whichever base64 string it ends up
+ * with, the same shape sendImageMessage() already takes.
+ */
+export async function sendFileMessage(
+  conversationId: string,
+  senderId: string,
+  base64: string,
+  fileName: string,
+  mimeType: string,
+  sizeBytes: number | null
+): Promise<void> {
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const path = `${conversationId}/${senderId}-${Date.now()}-${safeName}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(ATTACHMENT_BUCKET)
+    .upload(path, decode(base64), { contentType: mimeType });
+  if (uploadError) throw uploadError;
+
+  const { error } = await supabase.from('messages').insert({
+    conversation_id: conversationId,
+    sender_id: senderId,
+    kind: 'file',
+    attachment_storage_path: path,
+    attachment_file_name: fileName,
+    attachment_mime_type: mimeType,
+    attachment_size_bytes: sizeBytes,
+  });
+
+  if (error) {
+    await supabase.storage.from(ATTACHMENT_BUCKET).remove([path]);
+    throw error;
+  }
+}
+
 /** original_body and edited_at are set automatically by
  * messages_track_edit (chat.sql) the first time body actually changes —
  * this just writes the new text. */
@@ -199,14 +296,22 @@ export async function deleteMessageForMe(messageId: string, userId: string): Pro
 export async function deleteMessageForEveryone(messageId: string): Promise<void> {
   const { data: existing, error: fetchError } = await supabase
     .from('messages')
-    .select('audio_storage_path')
+    .select('audio_storage_path, attachment_storage_path')
     .eq('id', messageId)
     .single();
   if (fetchError) throw fetchError;
 
   const { error } = await supabase
     .from('messages')
-    .update({ deleted_for_everyone_at: new Date().toISOString(), body: null, audio_storage_path: null })
+    .update({
+      deleted_for_everyone_at: new Date().toISOString(),
+      body: null,
+      audio_storage_path: null,
+      attachment_storage_path: null,
+      attachment_file_name: null,
+      attachment_mime_type: null,
+      attachment_size_bytes: null,
+    })
     .eq('id', messageId);
   if (error) throw error;
 
@@ -214,6 +319,16 @@ export async function deleteMessageForEveryone(messageId: string): Promise<void>
   if (audioPath) {
     const { error: removeError } = await supabase.storage.from(AUDIO_BUCKET).remove([audioPath]);
     if (removeError) console.error('Failed to remove chat audio after delete-for-everyone:', removeError);
+  }
+
+  // A bulk-blasted attachment (path starts "bulk/...") is one shared
+  // file referenced by every recipient's own message row — deleting
+  // this one person's message must never remove it out from under
+  // everyone else who was sent the same thing.
+  const attachmentPath = existing?.attachment_storage_path as string | null;
+  if (attachmentPath && !attachmentPath.startsWith('bulk/')) {
+    const { error: removeError } = await supabase.storage.from(ATTACHMENT_BUCKET).remove([attachmentPath]);
+    if (removeError) console.error('Failed to remove chat attachment after delete-for-everyone:', removeError);
   }
 }
 
@@ -405,7 +520,13 @@ export async function listCoachConversations(): Promise<CoachInboxEntry[]> {
     const clientId = (row.conversations as unknown as { client_id: string }).client_id;
     if (latestByClient.has(clientId)) return;
     const preview =
-      row.kind === 'voice' ? '🎤 Voice message' : ((row.body as string | null) ?? '(message deleted)');
+      row.kind === 'voice'
+        ? '🎤 Voice message'
+        : row.kind === 'image'
+          ? '📷 Photo'
+          : row.kind === 'file'
+            ? '📎 Document'
+            : ((row.body as string | null) ?? '(message deleted)');
     latestByClient.set(clientId, { preview, at: row.created_at as string });
   });
 
