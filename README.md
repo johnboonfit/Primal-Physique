@@ -2620,7 +2620,9 @@ Reproduced directly: a generic in-memory fake of `supabase.from()`, seeded with 
 
 ## Welcome splash screen after login
 
-A brief, fixed 3-second brand moment (`src/app/splash.tsx`) now shows immediately after a successful login — "Welcome To" over the app's actual emblem mark (the same file `BrandLogo` already uses in the top-left corner everywhere) over the "PRIMAL PHYSIQUE" wordmark in the accent red, on the same carbon-black background every other screen uses. `login.tsx` now routes to `/splash` instead of straight to `/home`; the splash screen itself hands off to `/home` after its timer (which still redirects a client to `/client`, unchanged). It only ever shows right after the login action itself — reopening the app with an already-signed-in session skips it, same as it should.
+A brief, fixed 3-second brand moment (`src/app/splash.tsx`) now shows immediately after a successful login — "Welcome To" over the real **PRIMAL** wordmark, on the same carbon-black background every other screen uses. `login.tsx` now routes to `/splash` instead of straight to `/home`; the splash screen itself hands off to `/home` after its timer (which still redirects a client to `/client`, unchanged). It only ever shows right after the login action itself — reopening the app with an already-signed-in session skips it, same as it should.
+
+**Two follow-up passes, same day.** First version used the existing black-background emblem mark (`BrandLogo`'s own `logo.jpg`, boxed in a small rounded/glowing card) plus a plain-text "PRIMAL PHYSIQUE" fallback, since no real wordmark asset existed in the repo yet. Second pass dropped that box and enlarged the emblem, per feedback. Third pass replaced it entirely: the user uploaded the real wordmark artwork straight to GitHub (`assets/images/82F7775F-E050-4432-AAAF-435FE1041935.PNG` — flat white background, no transparency, as exported). Using it as-is would've put a big white rectangle behind the text on a black screen — the exact "box" look the prior feedback was asking to remove — so it's chroma-keyed instead: every near-white pixel (allowing for the small amount of compression noise the original had, not a clean 255,255,255) drops to fully transparent, every other pixel gets un-premultiplied against white to recover its true color at full opacity, and the result is cropped tight to the wordmark's real bounding box. That processed cutout is `assets/images/primal-wordmark.png` — RGBA, transparent background, sized by its own real aspect ratio (981x144) so it never stretches — and is what `splash.tsx` actually renders now, floating directly on the black background at a fixed 320px width, no container at all.
 
 ## Project structure reference
 
@@ -2628,7 +2630,7 @@ A brief, fixed 3-second brand moment (`src/app/splash.tsx`) now shows immediatel
 src/
   app/
     index.tsx          # routes to /login, coach /home, a pending onboarding step (/welcome, /parq, /health-advisory), or client /client — see getOnboardingStatus() in onboarding.ts
-    splash.tsx         # fixed 3-second "Welcome To" + logo brand moment, shown once right after a successful login (login.tsx routes here instead of straight to /home) — no auth checks of its own, just a timer that hands off to /home
+    splash.tsx         # fixed 3-second "Welcome To" + the real PRIMAL wordmark (primal-wordmark.png, a transparent-background cutout — see the dated section for how), shown once right after a successful login (login.tsx routes here instead of straight to /home) — no auth checks of its own, just a timer that hands off to /home
     e/
       [token].tsx        # the public External Builder fill-out screen — outside every login-guarded group entirely, never touches useAuth(), resolves purely off the token in the URL (see external-forms.sql)
     (auth)/

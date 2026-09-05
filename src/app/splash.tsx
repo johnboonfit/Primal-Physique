@@ -5,9 +5,15 @@ import { StyleSheet } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Spacing } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
 
 const DISPLAY_MS = 3000;
+
+// Real aspect ratio of primal-wordmark.png (981x144, background already
+// removed — see the dated README section) — keeps it from stretching at
+// any width.
+const WORDMARK_ASPECT_RATIO = 981 / 144;
+const WORDMARK_WIDTH = 320;
 
 /**
  * Shown once, right after a successful login (see (auth)/login.tsx) — never
@@ -29,10 +35,7 @@ export default function SplashScreen() {
       <ThemedText type="subtitle" themeColor="textSecondary" style={styles.welcome}>
         Welcome To
       </ThemedText>
-      <Image source={require('@/assets/images/logo.jpg')} style={styles.logo} contentFit="contain" />
-      <ThemedText type="title" style={styles.wordmark}>
-        PRIMAL PHYSIQUE
-      </ThemedText>
+      <Image source={require('@/assets/images/primal-wordmark.png')} style={styles.wordmark} contentFit="contain" />
     </ThemedView>
   );
 }
@@ -48,15 +51,8 @@ const styles = StyleSheet.create({
   welcome: {
     textAlign: 'center',
   },
-  logo: {
-    width: 240,
-    height: 240,
-  },
   wordmark: {
-    color: Accent,
-    textAlign: 'center',
-    fontSize: 30,
-    lineHeight: 36,
-    letterSpacing: 2,
+    width: WORDMARK_WIDTH,
+    height: WORDMARK_WIDTH / WORDMARK_ASPECT_RATIO,
   },
 });
