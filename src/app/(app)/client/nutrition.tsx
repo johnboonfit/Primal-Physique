@@ -12,7 +12,15 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
-import { addFoodLog, deleteFoodLog, listFoodLogsForDate, type FoodLogEntry, type FoodSource, type Meal } from '@/lib/food-logs';
+import {
+  addFoodLog,
+  deleteFoodLog,
+  listFoodLogsForDate,
+  updateFoodLogQuantity,
+  type FoodLogEntry,
+  type FoodSource,
+  type Meal,
+} from '@/lib/food-logs';
 import { searchAllFoods, type BlendedFoodResult } from '@/lib/food-search';
 import { getMacroTargets, type MacroTargets } from '@/lib/macros';
 import { getProductByBarcode, type FoodSearchResult } from '@/lib/open-food-facts';
@@ -129,6 +137,11 @@ export default function NutritionScreen() {
   const [formError, setFormError] = useState<string | null>(null);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const [editingEntry, setEditingEntry] = useState<FoodLogEntry | null>(null);
+  const [editQuantityInput, setEditQuantityInput] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const [scanning, setScanning] = useState(false);
   const [barcodeLoading, setBarcodeLoading] = useState(false);
@@ -438,6 +451,37 @@ export default function NutritionScreen() {
     }
   };
 
+  const openEditEntry = (entry: FoodLogEntry) => {
+    setEditingEntry(entry);
+    setEditQuantityInput(String(round(entry.quantityGrams)));
+    setEditError(null);
+  };
+
+  const closeEditModal = () => {
+    setEditingEntry(null);
+    setEditQuantityInput('');
+    setEditError(null);
+  };
+
+  const parsedEditQuantity = Number(editQuantityInput);
+  const hasValidEditQuantity =
+    editQuantityInput.trim().length > 0 && !Number.isNaN(parsedEditQuantity) && parsedEditQuantity > 0;
+
+  const handleSaveEditQuantity = async () => {
+    if (!editingEntry || !hasValidEditQuantity) return;
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      await updateFoodLogQuantity(editingEntry, parsedEditQuantity);
+      closeEditModal();
+      load();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Failed to update that entry.');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -562,15 +606,22 @@ export default function NutritionScreen() {
                             {macroSummary(entry)}
                           </ThemedText>
                         </View>
-                        <Pressable onPress={() => handleDeleteEntry(entry.id)} disabled={deletingId === entry.id}>
-                          {deletingId === entry.id ? (
-                            <ActivityIndicator size="small" color={Accent} />
-                          ) : (
-                            <ThemedText type="small" style={styles.deleteText}>
-                              Delete
+                        <View style={styles.entryActions}>
+                          <Pressable onPress={() => openEditEntry(entry)}>
+                            <ThemedText type="small" style={styles.editText}>
+                              Edit
                             </ThemedText>
-                          )}
-                        </Pressable>
+                          </Pressable>
+                          <Pressable onPress={() => handleDeleteEntry(entry.id)} disabled={deletingId === entry.id}>
+                            {deletingId === entry.id ? (
+                              <ActivityIndicator size="small" color={Accent} />
+                            ) : (
+                              <ThemedText type="small" style={styles.deleteText}>
+                                Delete
+                              </ThemedText>
+                            )}
+                          </Pressable>
+                        </View>
                       </ThemedView>
                     ))
                   )}
@@ -884,6 +935,48 @@ export default function NutritionScreen() {
           </ThemedView>
         </View>
       </Modal>
+
+      <Modal visible={editingEntry !== null} transparent animationType="fade" onRequestClose={closeEditModal}>
+        <View style={styles.modalOverlay}>
+          <ThemedView type="backgroundElement" style={styles.modalCard}>
+            <ThemedText type="smallBold" style={styles.modalTitle}>
+              Edit {editingEntry?.foodName}
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.modalSubtitle}>
+              Change how many grams you actually had — calories and macros rescale automatically.
+            </ThemedText>
+
+            <TextInput
+              value={editQuantityInput}
+              onChangeText={setEditQuantityInput}
+              placeholder="100"
+              placeholderTextColor={theme.textSecondary}
+              keyboardType="decimal-pad"
+              autoFocus
+              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+            />
+
+            {editError && <ThemedText style={styles.error}>{editError}</ThemedText>}
+
+            <Pressable
+              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+              onPress={handleSaveEditQuantity}
+              disabled={savingEdit || !hasValidEditQuantity}>
+              {savingEdit ? (
+                <ActivityIndicator color={Colors.text} />
+              ) : (
+                <ThemedText type="smallBold" style={styles.primaryButtonText}>
+                  Save
+                </ThemedText>
+              )}
+            </Pressable>
+
+            <Pressable style={styles.cancelButton} onPress={closeEditModal}>
+              <ThemedText themeColor="textSecondary">Cancel</ThemedText>
+            </Pressable>
+          </ThemedView>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -997,6 +1090,13 @@ const styles = StyleSheet.create({
   entryInfo: {
     flex: 1,
     gap: Spacing.half,
+  },
+  entryActions: {
+    flexDirection: 'row',
+    gap: Spacing.three,
+  },
+  editText: {
+    color: Colors.tealBright,
   },
   deleteText: {
     color: Colors.textSecondary,

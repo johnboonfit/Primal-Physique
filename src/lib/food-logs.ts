@@ -126,6 +126,34 @@ export async function deleteFoodLog(logId: string) {
 }
 
 /**
+ * Edits how much of a food was logged, rescaling calories/protein/carbs/
+ * fat proportionally. Every number on this row was already "per-gram
+ * rate x quantity_grams" the moment it was saved (see
+ * food-log-quantity.sql/food-log-macros.sql) — scaling the CURRENT
+ * stored numbers by the new/old quantity ratio reproduces exactly what
+ * logging fresh at the new quantity would have saved, with no need to
+ * re-fetch from USDA/Open Food Facts (this table's whole point is that
+ * nothing here ever does that). Client-only — see
+ * food-log-edit-quantity.sql's column-level grant, which deliberately
+ * doesn't extend to food_name/meal/log_date, so changing what an entry
+ * IS (not just how much of it) stays a delete-and-re-add.
+ */
+export async function updateFoodLogQuantity(entry: FoodLogEntry, newQuantityGrams: number): Promise<void> {
+  const ratio = newQuantityGrams / entry.quantityGrams;
+  const { error } = await supabase
+    .from('food_logs')
+    .update({
+      quantity_grams: newQuantityGrams,
+      calories: Math.round(entry.calories * ratio),
+      protein: entry.protein !== null ? entry.protein * ratio : null,
+      carbs: entry.carbs !== null ? entry.carbs * ratio : null,
+      fat: entry.fat !== null ? entry.fat * ratio : null,
+    })
+    .eq('id', entry.id);
+  if (error) throw error;
+}
+
+/**
  * Saves a snapshot of the food's macros exactly as they were at the
  * moment it was picked and scaled to the logged quantity — calories,
  * protein, carbs, fat, all copied in as plain numbers already
