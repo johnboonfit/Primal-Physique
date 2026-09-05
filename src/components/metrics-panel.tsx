@@ -136,7 +136,7 @@ export function MetricsPanel() {
         onChangeText={setWeightInput}
         placeholder="Weight"
         placeholderTextColor={theme.textSecondary}
-        keyboardType="numeric"
+        keyboardType="decimal-pad"
         style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
       />
 
@@ -148,7 +148,7 @@ export function MetricsPanel() {
         onChangeText={setBodyFatInput}
         placeholder="e.g. 18.5"
         placeholderTextColor={theme.textSecondary}
-        keyboardType="numeric"
+        keyboardType="decimal-pad"
         style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
       />
 
@@ -160,7 +160,7 @@ export function MetricsPanel() {
         onChangeText={setMuscleInput}
         placeholder="e.g. 42"
         placeholderTextColor={theme.textSecondary}
-        keyboardType="numeric"
+        keyboardType="decimal-pad"
         style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
       />
 

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ExerciseProgressPanel } from '@/components/exercise-progress-panel';
 import { MeasurePanel } from '@/components/measure-panel';
 import { MetricsPanel } from '@/components/metrics-panel';
 import { PhotosPanel } from '@/components/photos-panel';
@@ -9,11 +10,12 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 
-type SubTab = 'metrics' | 'measure' | 'photos';
+type SubTab = 'metrics' | 'measure' | 'exercise' | 'photos';
 
 const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'metrics', label: 'Metrics' },
   { key: 'measure', label: 'Measure' },
+  { key: 'exercise', label: 'Exercise' },
   { key: 'photos', label: 'Photos' },
 ];
 
@@ -44,6 +46,7 @@ export default function ProgressScreen() {
 
           {activeTab === 'metrics' && <MetricsPanel />}
           {activeTab === 'measure' && <MeasurePanel />}
+          {activeTab === 'exercise' && <ExerciseProgressPanel />}
           {activeTab === 'photos' && <PhotosPanel />}
         </ScrollView>
       </SafeAreaView>

@@ -131,6 +131,7 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 200);
   const [recordingActive, setRecordingActive] = useState(false);
+  const [recordingBusy, setRecordingBusy] = useState(false);
   const wasRecordingRef = useRef(false);
   const discardNextRef = useRef(false);
 
@@ -223,25 +224,62 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
   }, [recorderState.isRecording]);
 
   const handleStartRecording = async () => {
+    // Guards a double-tap on the mic icon from firing prepareToRecordAsync()
+    // and record() twice concurrently — the second call can race the
+    // first's setup and throw "Cannot start an audio recording without
+    // initializing a MediaRecorder" instead of silently no-oping.
+    if (recordingBusy || recordingActive) return;
     setActionError(null);
-    const permission = await requestRecordingPermissionsAsync();
-    if (!permission.granted) {
-      setActionError('Microphone access is needed to record a voice message.');
-      return;
+    setRecordingBusy(true);
+    try {
+      const permission = await requestRecordingPermissionsAsync();
+      if (!permission.granted) {
+        setActionError('Microphone access is needed to record a voice message.');
+        return;
+      }
+      await recorder.prepareToRecordAsync();
+      discardNextRef.current = false;
+      recorder.record({ forDuration: MAX_VOICE_MESSAGE_SECONDS });
+      setRecordingActive(true);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to start recording.');
+    } finally {
+      setRecordingBusy(false);
     }
-    await recorder.prepareToRecordAsync();
-    discardNextRef.current = false;
-    recorder.record({ forDuration: MAX_VOICE_MESSAGE_SECONDS });
-    setRecordingActive(true);
   };
 
   const handleStopRecording = async () => {
-    await recorder.stop();
+    // recorderState.isRecording (not just the recordingActive UI flag) is
+    // the live source of truth — this, plus recordingBusy, is what stops a
+    // double-tap on "Stop & send" (or a near-simultaneous tap of both Stop
+    // and Cancel) from calling recorder.stop() a second time on a recorder
+    // that already stopped and reset itself, which is exactly what used to
+    // surface as an uncaught "Cannot start an audio recording without
+    // initializing a MediaRecorder" crash instead of just doing nothing.
+    if (recordingBusy || !recorderState.isRecording) return;
+    setRecordingBusy(true);
+    try {
+      await recorder.stop();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to stop the recording.');
+      setRecordingActive(false);
+    } finally {
+      setRecordingBusy(false);
+    }
   };
 
   const handleCancelRecording = async () => {
+    if (recordingBusy || !recorderState.isRecording) return;
     discardNextRef.current = true;
-    await recorder.stop();
+    setRecordingBusy(true);
+    try {
+      await recorder.stop();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to cancel the recording.');
+      setRecordingActive(false);
+    } finally {
+      setRecordingBusy(false);
+    }
   };
 
   const handlePickPhoto = async (source: 'camera' | 'library') => {
@@ -475,10 +513,10 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
             </ThemedText>
           )}
           <View style={styles.recordingActions}>
-            <Pressable onPress={handleCancelRecording}>
+            <Pressable onPress={handleCancelRecording} disabled={recordingBusy}>
               <ThemedText themeColor="textSecondary">Cancel</ThemedText>
             </Pressable>
-            <Pressable onPress={handleStopRecording} style={styles.stopButton}>
+            <Pressable onPress={handleStopRecording} disabled={recordingBusy} style={styles.stopButton}>
               <ThemedText type="smallBold" style={{ color: Colors.text }}>
                 Stop &amp; send
               </ThemedText>
@@ -525,7 +563,7 @@ export function ChatThread({ conversationId, otherPartyId, otherPartyName }: Cha
                 )}
               </Pressable>
             ) : (
-              <Pressable onPress={handleStartRecording} disabled={sending} style={styles.iconButton}>
+              <Pressable onPress={handleStartRecording} disabled={sending || recordingBusy} style={styles.iconButton}>
                 <ThemedText style={styles.iconText}>🎤</ThemedText>
               </Pressable>
             )}

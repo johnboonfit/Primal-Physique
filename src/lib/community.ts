@@ -117,8 +117,7 @@ export async function createCommunityPost(params: {
 }
 
 /** The coach's app-wide switch — false means Community is unavailable
- * to every client, regardless of any individual client's own
- * community_hidden preference below. */
+ * to every client. */
 export async function getCommunityEnabled(): Promise<boolean> {
   const { data, error } = await supabase.from('app_settings').select('community_enabled').eq('id', true).single();
   if (error) throw error;
@@ -130,20 +129,6 @@ export async function getCommunityEnabled(): Promise<boolean> {
  * hiding the control from clients. */
 export async function setCommunityEnabled(enabled: boolean): Promise<void> {
   const { error } = await supabase.from('app_settings').update({ community_enabled: enabled }).eq('id', true);
-  if (error) throw error;
-}
-
-/** One person's own "hide Community for me" preference — independent
- * of the coach's app-wide switch above, and only ever readable/settable
- * for your own account (auth.uid() = id, same as every profile field). */
-export async function getCommunityHidden(userId: string): Promise<boolean> {
-  const { data, error } = await supabase.from('profiles').select('community_hidden').eq('id', userId).single();
-  if (error) throw error;
-  return data.community_hidden as boolean;
-}
-
-export async function setCommunityHidden(userId: string, hidden: boolean): Promise<void> {
-  const { error } = await supabase.from('profiles').update({ community_hidden: hidden }).eq('id', userId);
   if (error) throw error;
 }
 

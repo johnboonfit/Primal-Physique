@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Redirect, Tabs } from 'expo-router';
+import { Redirect, Tabs, usePathname } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { StyleSheet } from 'react-native';
 import type { ColorValue } from 'react-native';
@@ -9,6 +9,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { getOrCreateConversation, getUnreadMessageCount, subscribeToConversation } from '@/lib/chat';
+import { getCommunityLastViewedAt, getNewCommunityPostCount, subscribeToCommunityPosts } from '@/lib/community';
 import { isFeatureEnabled } from '@/lib/feature-toggles';
 import { ensureClientProvisioned, getOnboardingStatus, type OnboardingStatus } from '@/lib/onboarding';
 
@@ -36,12 +37,14 @@ function tabIcon(active: IconName, inactive: IconName) {
  */
 export default function ClientTabsLayout() {
   const { session, profile, loadingProfile } = useAuth();
+  const pathname = usePathname();
 
   const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null);
   const [checkingOnboarding, setCheckingOnboarding] = useState(true);
   const [onboardingCheckError, setOnboardingCheckError] = useState<string | null>(null);
 
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const [newCommunityPostCount, setNewCommunityPostCount] = useState(0);
 
   // Belt-and-suspenders with index.tsx's own check — a deep link or a
   // stale bookmark could otherwise land a not-yet-onboarded client
@@ -118,6 +121,56 @@ export default function ClientTabsLayout() {
     };
   }, [session, profile?.role, onboardingStatus]);
 
+  // Community tab badge — same "live subscription while mounted" shape
+  // as the Chat badge above, moved here (was previously Home's own
+  // Community card badge) now that Community is a persistent tab rather
+  // than a card on Home.
+  useEffect(() => {
+    if (!session || profile?.role !== 'client' || onboardingStatus !== 'complete') {
+      setNewCommunityPostCount(0);
+      return;
+    }
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
+    isFeatureEnabled(session.user.id, 'community')
+      .then((enabled) => {
+        if (cancelled || !enabled) return;
+        const refresh = () => {
+          getCommunityLastViewedAt(session.user.id)
+            .then((lastViewedAt) => getNewCommunityPostCount(session.user.id, lastViewedAt))
+            .then((count) => {
+              if (!cancelled) setNewCommunityPostCount(count);
+            })
+            .catch((err) => console.error('Failed to check for new Community posts:', err));
+        };
+        refresh();
+        unsubscribe = subscribeToCommunityPosts(refresh);
+      })
+      .catch((err) => console.error('Failed to set up the Community badge:', err));
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [session, profile?.role, onboardingStatus]);
+
+  // The subscription above only catches a new post arriving — it can't
+  // catch the OTHER direction, viewing Community moving this client's
+  // own last-viewed cursor forward (markCommunityViewed() is a plain
+  // profiles update, not something realtime-subscribed). A screen would
+  // normally pick that up via useFocusEffect on refocus, but this badge
+  // lives in the tab layout itself, which never blurs/refocuses — so it
+  // re-checks on every navigation change instead, which covers "just
+  // switched away from the Community tab" the same way.
+  useEffect(() => {
+    if (!session || profile?.role !== 'client' || onboardingStatus !== 'complete') return;
+    getCommunityLastViewedAt(session.user.id)
+      .then((lastViewedAt) => getNewCommunityPostCount(session.user.id, lastViewedAt))
+      .then(setNewCommunityPostCount)
+      .catch((err) => console.error('Failed to refresh new Community post count:', err));
+  }, [pathname, session, profile?.role, onboardingStatus]);
+
   // Only block on a profile we don't have yet — not on a later re-fetch
   // (e.g. after a token refresh on app resume) of a profile we already
   // have. Unmounting <Tabs> here on every re-fetch was exactly what reset
@@ -154,6 +207,15 @@ export default function ClientTabsLayout() {
       <Tabs.Screen name="nutrition" options={{ title: 'Nutrition', tabBarIcon: tabIcon('nutrition', 'nutrition-outline') }} />
       <Tabs.Screen name="progress" options={{ title: 'Progress', tabBarIcon: tabIcon('trending-up', 'trending-up-outline') }} />
       <Tabs.Screen
+        name="community"
+        options={{
+          title: 'Community',
+          tabBarIcon: tabIcon('people', 'people-outline'),
+          tabBarBadge: newCommunityPostCount > 0 ? newCommunityPostCount : undefined,
+          tabBarBadgeStyle: { backgroundColor: Accent, color: Colors.text },
+        }}
+      />
+      <Tabs.Screen
         name="chat"
         options={{
           title: 'Chat',
@@ -171,6 +233,18 @@ export default function ClientTabsLayout() {
        * tab, since Tabs includes every file in this directory regardless
        * of whether it's declared here. */}
       <Tabs.Screen name="calendar" options={{ href: null }} />
+      {/* saved-meals.tsx (reached from Nutrition's own header link) had
+       * no entry here at all — meaning it was never actually hidden the
+       * way calendar is above, and was quietly showing up as an
+       * undeclared, icon-less 7th tab (React Navigation's default
+       * fallback glyph, a small ▼) this whole time. This is that fix. */}
+      <Tabs.Screen name="saved-meals" options={{ href: null }} />
+      {/* Same reasoning as calendar above — exercise-progress/[id].tsx
+       * needs to stay a real, routable screen (Progress's Exercise
+       * sub-tab cards push into it) without becoming its own 7th tab.
+       * The screen name Expo Router assigns a nested dynamic route is
+       * its full relative path, not just the folder name. */}
+      <Tabs.Screen name="exercise-progress/[id]" options={{ href: null }} />
     </Tabs>
   );
 }
