@@ -6,11 +6,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { FeatureLockedCard } from '@/components/feature-locked-card';
 import { HeroStat } from '@/components/hero-stat';
+import { LogActivityModal } from '@/components/log-activity-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { WorkoutAnalyserCard } from '@/components/workout-analyser-card';
 import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { activityLabel, deleteActivityLog, listMyActivityLogs, type ActivityLogEntry } from '@/lib/activity-logs';
 import { listMyAssignments, type ClientAssignmentSummary } from '@/lib/assignments';
 import { isFeatureEnabled } from '@/lib/feature-toggles';
 import { getWeeklyMuscleGroupSetCounts, type MuscleGroupCounts } from '@/lib/muscle-group-analysis';
@@ -28,6 +30,13 @@ function displayDate(iso: string) {
     month: 'short',
     day: 'numeric',
   });
+}
+
+function activitySummary(entry: ActivityLogEntry): string {
+  const parts = [`${entry.durationMinutes} min`];
+  if (entry.distance !== null) parts.push(`${entry.distance}${entry.distanceUnit ?? ''}`);
+  if (entry.calories !== null) parts.push(`${entry.calories} cal`);
+  return parts.join(' · ');
 }
 
 function ProgrammeCard({ programme }: { programme: ClientProgrammeView }) {
@@ -121,6 +130,11 @@ export default function ClientTrainingScreen() {
 
   const [muscleCounts, setMuscleCounts] = useState<MuscleGroupCounts | null>(null);
 
+  const [activityModalVisible, setActivityModalVisible] = useState(false);
+  const [recentActivities, setRecentActivities] = useState<ActivityLogEntry[]>([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(true);
+  const [deletingActivityId, setDeletingActivityId] = useState<string | null>(null);
+
   // Defaults to true while loading -- same reasoning LeaderboardPanel's
   // own featureEnabled default follows -- so the card doesn't flash
   // locked for a moment before the real value comes back.
@@ -200,6 +214,35 @@ export default function ClientTrainingScreen() {
     }, [session])
   );
 
+  const loadActivities = useCallback(() => {
+    if (!session) return;
+    setActivitiesLoading(true);
+    listMyActivityLogs(session.user.id)
+      .then(setRecentActivities)
+      .catch(() => {
+        // Non-critical list -- fail quietly rather than blocking the rest of the tab.
+      })
+      .finally(() => setActivitiesLoading(false));
+  }, [session]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadActivities();
+    }, [loadActivities])
+  );
+
+  const handleDeleteActivity = async (id: string) => {
+    setDeletingActivityId(id);
+    try {
+      await deleteActivityLog(id);
+      setRecentActivities((current) => current.filter((entry) => entry.id !== id));
+    } catch {
+      // Non-critical list -- leave the entry in place rather than showing a blocking error.
+    } finally {
+      setDeletingActivityId(null);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -207,8 +250,10 @@ export default function ClientTrainingScreen() {
           <ThemedText type="title" style={styles.title}>
             Training
           </ThemedText>
-          <Pressable onPress={() => router.push('/client/calendar')}>
-            <ThemedText type="linkPrimary">View Calendar →</ThemedText>
+          <Pressable style={styles.calendarPill} onPress={() => router.push('/client/calendar')}>
+            <ThemedText type="small" style={styles.calendarPillText}>
+              View Calendar →
+            </ThemedText>
           </Pressable>
         </View>
 
@@ -244,6 +289,42 @@ export default function ClientTrainingScreen() {
               ) : (
                 <FeatureLockedCard title="Form Check" message="Your coach has turned off Form Check access for your account." />
               )}
+
+              <ThemedText type="smallBold" style={styles.sectionLabel}>
+                Log Activity
+              </ThemedText>
+              <Pressable style={styles.logActivityPill} onPress={() => setActivityModalVisible(true)}>
+                <ThemedText type="smallBold" style={styles.logActivityPillText}>
+                  + Log Activity
+                </ThemedText>
+              </Pressable>
+
+              {activitiesLoading && <ActivityIndicator style={styles.loader} />}
+              {!activitiesLoading && recentActivities.length === 0 && (
+                <ThemedText type="small" themeColor="textSecondary" style={styles.noActivities}>
+                  Nothing logged yet — a run, ride, swim or anything else you did outside your programme.
+                </ThemedText>
+              )}
+              {!activitiesLoading &&
+                recentActivities.map((entry) => (
+                  <ThemedView key={entry.id} type="backgroundElement" style={styles.activityRow}>
+                    <View style={styles.activityRowText}>
+                      <ThemedText type="smallBold">{activityLabel(entry.activityType, entry.customLabel)}</ThemedText>
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {activitySummary(entry)}
+                      </ThemedText>
+                    </View>
+                    <Pressable onPress={() => handleDeleteActivity(entry.id)} disabled={deletingActivityId === entry.id} hitSlop={8}>
+                      {deletingActivityId === entry.id ? (
+                        <ActivityIndicator size="small" color={Accent} />
+                      ) : (
+                        <ThemedText type="small" style={styles.deleteActivityText}>
+                          Delete
+                        </ThemedText>
+                      )}
+                    </Pressable>
+                  </ThemedView>
+                ))}
 
               {programmeLoading && <ActivityIndicator style={styles.loader} />}
               {!programmeLoading && programmeError && <ThemedText style={styles.error}>{programmeError}</ThemedText>}
@@ -292,6 +373,18 @@ export default function ClientTrainingScreen() {
           )}
         />
       </SafeAreaView>
+
+      {session && (
+        <LogActivityModal
+          visible={activityModalVisible}
+          clientId={session.user.id}
+          onClose={() => setActivityModalVisible(false)}
+          onSaved={() => {
+            setActivityModalVisible(false);
+            loadActivities();
+          }}
+        />
+      )}
     </ThemedView>
   );
 }
@@ -306,9 +399,50 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.three,
   },
   title: {},
+  calendarPill: {
+    borderWidth: 1,
+    borderColor: Colors.backgroundSelected,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+  },
+  calendarPillText: {
+    color: Colors.tealBright,
+  },
   sectionLabel: {
     marginTop: Spacing.three,
     marginBottom: Spacing.two,
+  },
+  logActivityPill: {
+    ...Glow.oxblood,
+    alignSelf: 'flex-start',
+    backgroundColor: Accent,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.two,
+    marginBottom: Spacing.two,
+  },
+  logActivityPillText: {
+    color: Colors.text,
+  },
+  noActivities: {
+    marginBottom: Spacing.two,
+  },
+  activityRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.two,
+    marginBottom: Spacing.two,
+  },
+  activityRowText: {
+    flex: 1,
+    gap: Spacing.half,
+  },
+  deleteActivityText: {
+    color: Colors.textSecondary,
   },
   loader: {
     marginTop: Spacing.two,

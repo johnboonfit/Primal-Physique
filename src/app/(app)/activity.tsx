@@ -33,6 +33,12 @@ function eventDescription(event: ClientActivityEvent): string {
   if (event.kind === 'habit') {
     return `completed "${event.habitName}"`;
   }
+  if (event.kind === 'activity') {
+    const parts = [`logged ${event.activityLabel}`, `${event.durationMinutes}min`];
+    if (event.distance !== null) parts.push(`${event.distance}${event.distanceUnit ?? ''}`);
+    if (event.calories !== null) parts.push(`${event.calories} cal`);
+    return parts.join(' · ');
+  }
   const parts = [`completed ${event.workoutName}`];
   if (event.durationMinutes !== null) parts.push(`${event.durationMinutes}min`);
   if (event.totalWeightLifted > 0) parts.push(`${(event.totalWeightLifted / 1000).toFixed(1)}t lifted`);
@@ -43,6 +49,7 @@ function eventDescription(event: ClientActivityEvent): string {
 function dotStyle(kind: ClientActivityEvent['kind']) {
   if (kind === 'workout') return styles.dotWorkout;
   if (kind === 'habit') return styles.dotHabit;
+  if (kind === 'activity') return styles.dotActivity;
   return styles.dotMeal;
 }
 
@@ -220,6 +227,9 @@ const styles = StyleSheet.create({
   },
   dotHabit: {
     backgroundColor: Colors.textSecondary,
+  },
+  dotActivity: {
+    backgroundColor: Accent,
   },
   eventDescription: {
     color: Colors.text,

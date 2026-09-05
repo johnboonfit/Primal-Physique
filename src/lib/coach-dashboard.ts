@@ -1,3 +1,4 @@
+import { activityLabel, type ActivityType } from '@/lib/activity-logs';
 import { getComplianceScore } from '@/lib/compliance';
 import { listClients } from '@/lib/clients';
 import { getOpenReports } from '@/lib/community';
@@ -87,7 +88,8 @@ export async function getClientsNeedingAttention(limit = 5): Promise<ClientAtten
 
 export type ActivityEvent =
   | { kind: 'meal'; at: string; clientName: string; meal: string; calories: number }
-  | { kind: 'workout'; at: string; clientName: string; workoutName: string };
+  | { kind: 'workout'; at: string; clientName: string; workoutName: string }
+  | { kind: 'activity'; at: string; clientName: string; activityLabel: string; durationMinutes: number };
 
 type ProfileEmbed = { full_name: string | null; email: string } | null;
 
@@ -111,7 +113,7 @@ function displayName(profile: ProfileEmbed): string {
  * the query is already sorted desc) row per assignment.
  */
 export async function getRecentClientActivity(limit = 10): Promise<ActivityEvent[]> {
-  const [foodResult, logsResult] = await Promise.all([
+  const [foodResult, logsResult, activityResult] = await Promise.all([
     supabase
       .from('food_logs')
       .select('meal, calories, created_at, profiles!client_id(full_name, email)')
@@ -122,10 +124,16 @@ export async function getRecentClientActivity(limit = 10): Promise<ActivityEvent
       .select('assignment_id, created_at, assignments(status, workouts(name), profiles!client_id(full_name, email))')
       .order('created_at', { ascending: false })
       .limit(limit * 10),
+    supabase
+      .from('activity_logs')
+      .select('activity_type, custom_label, duration_minutes, created_at, profiles!client_id(full_name, email)')
+      .order('created_at', { ascending: false })
+      .limit(limit),
   ]);
 
   if (foodResult.error) throw foodResult.error;
   if (logsResult.error) throw logsResult.error;
+  if (activityResult.error) throw activityResult.error;
 
   const mealEvents: ActivityEvent[] = (foodResult.data ?? []).map((row) => ({
     kind: 'meal',
@@ -133,6 +141,14 @@ export async function getRecentClientActivity(limit = 10): Promise<ActivityEvent
     clientName: displayName(row.profiles as unknown as ProfileEmbed),
     meal: row.meal as string,
     calories: row.calories as number,
+  }));
+
+  const activityEvents: ActivityEvent[] = (activityResult.data ?? []).map((row) => ({
+    kind: 'activity',
+    at: row.created_at as string,
+    clientName: displayName(row.profiles as unknown as ProfileEmbed),
+    activityLabel: activityLabel(row.activity_type as ActivityType, row.custom_label as string | null),
+    durationMinutes: row.duration_minutes as number,
   }));
 
   const seenAssignments = new Set<string>();
@@ -157,13 +173,21 @@ export async function getRecentClientActivity(limit = 10): Promise<ActivityEvent
     });
   }
 
-  return [...mealEvents, ...workoutEvents].sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+  return [...mealEvents, ...workoutEvents, ...activityEvents].sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
 }
 
 export type ClientActivityEvent = (
   | { kind: 'meal'; meal: string; calories: number; protein: number | null }
   | { kind: 'habit'; habitName: string }
   | { kind: 'workout'; workoutName: string; totalWeightLifted: number; durationMinutes: number | null; sessionRpe: number | null }
+  | {
+      kind: 'activity';
+      activityLabel: string;
+      durationMinutes: number;
+      distance: number | null;
+      distanceUnit: 'km' | 'mi' | null;
+      calories: number | null;
+    }
 ) & {
   at: string;
   clientId: string;
@@ -189,7 +213,7 @@ export type ClientActivityEvent = (
  * delivery of new events.
  */
 export async function getClientActivityFeed(limit = 30): Promise<ClientActivityEvent[]> {
-  const [foodResult, habitResult, logsResult] = await Promise.all([
+  const [foodResult, habitResult, logsResult, activityResult] = await Promise.all([
     supabase
       .from('food_logs')
       .select('client_id, meal, calories, protein, created_at, profiles!client_id(full_name, email)')
@@ -205,11 +229,17 @@ export async function getClientActivityFeed(limit = 30): Promise<ClientActivityE
       .select('assignment_id, created_at, assignments(client_id, status, workouts(name), profiles!client_id(full_name, email))')
       .order('created_at', { ascending: false })
       .limit(limit * 10),
+    supabase
+      .from('activity_logs')
+      .select('client_id, activity_type, custom_label, duration_minutes, distance, distance_unit, calories, created_at, profiles!client_id(full_name, email)')
+      .order('created_at', { ascending: false })
+      .limit(limit),
   ]);
 
   if (foodResult.error) throw foodResult.error;
   if (habitResult.error) throw habitResult.error;
   if (logsResult.error) throw logsResult.error;
+  if (activityResult.error) throw activityResult.error;
 
   const mealEvents: ClientActivityEvent[] = (foodResult.data ?? []).map((row) => ({
     kind: 'meal',
@@ -235,6 +265,20 @@ export async function getClientActivityFeed(limit = 30): Promise<ClientActivityE
       complianceScore: null,
     };
   });
+
+  const activityEvents: ClientActivityEvent[] = (activityResult.data ?? []).map((row) => ({
+    kind: 'activity',
+    at: row.created_at as string,
+    clientId: row.client_id as string,
+    clientName: displayName(row.profiles as unknown as ProfileEmbed),
+    activityLabel: activityLabel(row.activity_type as ActivityType, row.custom_label as string | null),
+    durationMinutes: row.duration_minutes as number,
+    distance: row.distance as number | null,
+    distanceUnit: row.distance_unit as 'km' | 'mi' | null,
+    calories: row.calories as number | null,
+    momentumScore: null,
+    complianceScore: null,
+  }));
 
   // Same dedupe-by-assignment approach as getRecentClientActivity above
   // (workout_logs has one row per SET, not per completed workout) --
@@ -284,7 +328,9 @@ export async function getClientActivityFeed(limit = 30): Promise<ClientActivityE
     })
   );
 
-  const merged = [...mealEvents, ...habitEvents, ...workoutEvents].sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+  const merged = [...mealEvents, ...habitEvents, ...workoutEvents, ...activityEvents]
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .slice(0, limit);
 
   // Momentum/Compliance computed once per distinct client on this page,
   // not once per event -- several events from the same client would
@@ -323,6 +369,7 @@ export function subscribeToClientActivity(onChange: () => void): () => void {
     .channel('client-activity-feed')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'food_logs' }, onChange)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'habit_logs' }, onChange)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity_logs' }, onChange)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'assignments', filter: 'status=eq.completed' }, onChange)
     .subscribe();
 

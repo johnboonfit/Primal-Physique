@@ -7,6 +7,10 @@ export type MomentumBreakdown = {
   nutritionRate: number;
   habitRate: number;
   activeDaysRate: number;
+  /** True if at least one activity (a run, swim, ride, etc. -- see
+   * activity-logs.ts) was logged this week -- the flat +0.5 bonus below
+   * was applied. */
+  activityLoggedThisWeek: boolean;
   weekStart: string;
   weekEnd: string;
 };
@@ -36,7 +40,7 @@ export function getCurrentWeekRange() {
 export async function getMomentumScore(clientId: string): Promise<MomentumBreakdown> {
   const { start, end } = getCurrentWeekRange();
 
-  const [assignmentsRes, foodRes, habitRes] = await Promise.all([
+  const [assignmentsRes, foodRes, habitRes, activityRes] = await Promise.all([
     supabase
       .from('assignments')
       .select('assigned_date, status')
@@ -55,11 +59,18 @@ export async function getMomentumScore(clientId: string): Promise<MomentumBreakd
       .eq('client_id', clientId)
       .gte('log_date', start)
       .lte('log_date', end),
+    supabase
+      .from('activity_logs')
+      .select('log_date')
+      .eq('client_id', clientId)
+      .gte('log_date', start)
+      .lte('log_date', end),
   ]);
 
   if (assignmentsRes.error) throw assignmentsRes.error;
   if (foodRes.error) throw foodRes.error;
   if (habitRes.error) throw habitRes.error;
+  if (activityRes.error) throw activityRes.error;
 
   const assignments = assignmentsRes.data ?? [];
   const scheduledCount = assignments.length;
@@ -71,15 +82,25 @@ export async function getMomentumScore(clientId: string): Promise<MomentumBreakd
   const workoutDoneDays = new Set(completedAssignments.map((row) => row.assigned_date as string));
   const foodDays = new Set((foodRes.data ?? []).map((row) => row.log_date as string));
   const habitDays = new Set((habitRes.data ?? []).map((row) => row.log_date as string));
+  const activityDays = new Set((activityRes.data ?? []).map((row) => row.log_date as string));
 
   const nutritionRate = foodDays.size / 7;
   const habitRate = habitDays.size / 7;
 
-  const activeDays = new Set<string>([...workoutDoneDays, ...foodDays, ...habitDays]);
+  // A logged activity counts as "did something today" exactly like a
+  // completed workout, a logged meal, or a logged habit -- same active-day
+  // treatment, no separate rate/weight of its own.
+  const activeDays = new Set<string>([...workoutDoneDays, ...foodDays, ...habitDays, ...activityDays]);
   const activeDaysRate = activeDays.size / 7;
 
   const average = (workoutRate + nutritionRate + habitRate + activeDaysRate) / 4;
-  const score = 1 + 9 * average;
+  // On top of that: a flat, capped bonus for logging an activity at all
+  // this week -- not every client's programme includes cardio, so this is
+  // a direct reward for optional conditioning work the other four rates
+  // wouldn't otherwise recognize (folding it into activeDaysRate alone
+  // wouldn't move the score on a day the client also logged food/a habit).
+  const activityLoggedThisWeek = activityDays.size > 0;
+  const score = Math.min(10, 1 + 9 * average + (activityLoggedThisWeek ? 0.5 : 0));
 
   return {
     score,
@@ -87,6 +108,7 @@ export async function getMomentumScore(clientId: string): Promise<MomentumBreakd
     nutritionRate,
     habitRate,
     activeDaysRate,
+    activityLoggedThisWeek,
     weekStart: start,
     weekEnd: end,
   };

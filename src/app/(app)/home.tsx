@@ -68,11 +68,19 @@ function ActivityRow({ event, isLast }: { event: ActivityEvent; isLast: boolean 
   const description =
     event.kind === 'meal'
       ? `logged ${event.meal} (${event.calories} cal)`
-      : `completed ${event.workoutName}`;
+      : event.kind === 'activity'
+        ? `logged a ${event.activityLabel} (${event.durationMinutes} min)`
+        : `completed ${event.workoutName}`;
 
   return (
     <View style={[styles.activityRow, isLast && styles.rowNoBorder]}>
-      <View style={[styles.activityDot, event.kind === 'workout' && styles.activityDotWorkout]} />
+      <View
+        style={[
+          styles.activityDot,
+          event.kind === 'workout' && styles.activityDotWorkout,
+          event.kind === 'activity' && styles.activityDotActivity,
+        ]}
+      />
       <View style={styles.activityTextGroup}>
         <ThemedText type="small">
           <ThemedText type="smallBold">{event.clientName}</ThemedText> {description}
@@ -357,6 +365,9 @@ const styles = StyleSheet.create({
   },
   activityDotWorkout: {
     backgroundColor: Colors.tealDeepLight,
+  },
+  activityDotActivity: {
+    backgroundColor: Accent,
   },
   activityTextGroup: {
     flex: 1,
