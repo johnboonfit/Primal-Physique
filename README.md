@@ -2415,6 +2415,16 @@ While tracking down what you'd actually circled in your screenshot, found the re
 
 **How you verify this yourself:** run `supabase/challenge-progress.sql` in the Supabase SQL Editor (after `challenges.sql`). Log a few real sets against a session dated inside an active challenge's window, then open that challenge (as the coach or a joined client) and confirm your total looks right — weight × reps summed for Volume, completed sessions counted for Consistency. Log a set on a *different* device or account while the leaderboard screen stays open on this one, and confirm the standings reorder on their own within a second or two, with nothing to refresh. Then find (or create, with a short date range) a challenge whose end date has already passed — confirm it now reads "Final Standings," the top participant has a trophy, and Join/Leave is no longer tappable.
 
+## Community: an explicit "Back to home" for a client too, not just the coach
+
+**What/why**: you flagged a screenshot of Community with no way back — checked the tab bar it should have sat above, and the layout code says it should be there, but rather than leave a client's only way out riding on how reliably that renders on any given device or browser, Community now shows the exact same "Back to home" link the coach's view already had, for a client too. It was previously coach-only on the reasoning that a client reaches Community as a real tab, so Home is one tap away already, same as Training/Nutrition/Progress/Chat — that reasoning still holds for those other tabs, but Community is getting its own explicit, always-visible link now rather than leaving it to be the one tab that's different only by omission.
+
+**Changed**: `community/index.tsx` — the "Back to home" link (bottom of the screen, same spot it already used for the coach) is no longer gated by `isCoach`; it now routes to `/home` for a coach and `/client` for a client.
+
+**Verified here**: a generic in-memory fake of `supabase.from()`, rendered through the real Community screen as a client with zero posts — confirmed "Back to home" renders directly under the empty-state message and tapping it lands on `/client`.
+
+**How you verify this yourself:** open Community as a client — "Back to home" should now show right under the feed (or under "No posts yet" if there's nothing posted), and tapping it should take you straight to your Home tab.
+
 ## Project structure reference
 
 ```

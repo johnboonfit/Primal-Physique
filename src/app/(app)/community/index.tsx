@@ -316,15 +316,15 @@ export default function CommunityFeedScreen() {
 
         {activeTab === 'leaderboards' && <LeaderboardPanel />}
 
-        {/* A client reaches this screen as their own Community tab now —
-         * Home is one tap away in the tab bar, same as every other
-         * client tab, none of which show this link either. The coach
-         * still reaches it by pushing from a NavCard, so they keep it. */}
-        {isCoach && (
-          <Pressable style={styles.backButton} onPress={() => router.replace('/home')}>
-            <ThemedText type="linkPrimary">Back to home</ThemedText>
-          </Pressable>
-        )}
+        {/* A client reaches this screen as their own Community tab —
+         * Home is technically one tap away in the tab bar the same as
+         * every other client tab, but this link stays explicit and
+         * visible here rather than relying on that, so there's always
+         * an unambiguous way back regardless of how the tab bar renders
+         * on any given device. */}
+        <Pressable style={styles.backButton} onPress={() => router.replace(isCoach ? '/home' : '/client')}>
+          <ThemedText type="linkPrimary">Back to home</ThemedText>
+        </Pressable>
       </SafeAreaView>
 
       <ConfirmDialog
