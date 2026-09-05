@@ -913,10 +913,7 @@ const styles = StyleSheet.create({
   savedMealsLink: {
     fontSize: 14,
   },
-  title: {
-    fontSize: 28,
-    lineHeight: 33,
-  },
+  title: {},
   date: {
     textAlign: 'center',
   },
