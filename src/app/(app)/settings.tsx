@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
@@ -22,6 +23,14 @@ import { getWearableConnections, type WearableConnection } from '@/lib/wearables
  * the right value, immediately, same as every other simple on/off
  * preference in this app (e.g. Community's own hide toggle) rather
  * than waiting on the Profile settings card's Save button. */
+/** Read straight from the running build's own config -- app.json's
+ * `expo.version` field -- rather than a second hardcoded string that
+ * would inevitably drift out of sync with it. `expoConfig` is Expo's
+ * current recommended field for this (the older `manifest`/
+ * `expoManifest` shape is deprecated); it's undefined only in a raw
+ * bare-workflow context this app doesn't use, hence the fallback. */
+const APP_VERSION = Constants.expoConfig?.version ?? 'Unknown';
+
 const NOTIFICATION_TOGGLES: { key: NotificationPreferenceKey; label: string; description: string }[] = [
   { key: 'push_notifications_enabled', label: 'Push notifications', description: 'Allow this device to receive push notifications.' },
   { key: 'workout_reminders_enabled', label: 'Workout reminders', description: 'Reminders for your scheduled workouts.' },
@@ -349,6 +358,15 @@ export default function SettingsScreen() {
               </ThemedText>
             </Pressable>
           </ThemedView>
+
+          <ThemedView type="backgroundElement" style={[styles.card, styles.versionCard]}>
+            <ThemedText type="small" themeColor="textSecondary">
+              App Version
+            </ThemedText>
+            <ThemedText type="smallBold" themeColor="textSecondary">
+              {APP_VERSION}
+            </ThemedText>
+          </ThemedView>
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -478,6 +496,11 @@ const styles = StyleSheet.create({
   },
   signOutCard: {
     padding: 0,
+  },
+  versionCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   signOutButton: {
     borderRadius: Spacing.three,

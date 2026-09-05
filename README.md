@@ -2446,6 +2446,18 @@ While tracking down what you'd actually circled in your screenshot, found the re
 
 **How you verify this yourself:** run `supabase/resources.sql` in the Supabase SQL Editor (after `challenge-progress.sql`). As the coach, open Home → Resource Library → + New, add a link (any URL) into a new folder you name on the spot, then add another item — this time upload an actual PDF or photo — and pick "Specific Clients," choosing just one of your clients. Confirm both show up grouped correctly with the right audience badge. As that specific client, open Resource Library from Home and confirm you see both; as a different client, confirm you only see the open-to-all one. Tap an item as a client to confirm it actually opens (the link in a browser, the file wherever your phone opens PDFs/images).
 
+## App Version card on Settings
+
+**What/why**: the last remaining piece of the Settings screen — a plain static card showing the app's current version number, underneath Sign out.
+
+**How it's pulled**: `Constants.expoConfig?.version` from `expo-constants` (already a project dependency, just not previously used anywhere) — this reads directly from the running build's own config, which is `app.json`'s `expo.version` field (currently `"1.0.0"`), not a second hardcoded string maintained separately. `expoConfig` is Expo's current, non-deprecated field for this (the older `manifest`/`expoManifest` shape is deprecated); it falls back to the literal text "Unknown" only in a bare-workflow context this app doesn't use.
+
+**Changed**: `settings.tsx` — one `APP_VERSION` constant read at module scope, and one small card (label left, version right, same row style the Wearable card's Status/Last synced rows already use) added after the Sign out card.
+
+**Verified here**: a generic in-memory fake of `supabase.from()`, rendered through the real Settings screen — confirmed the card renders "App Version" / "1.0.0", exactly matching `app.json`'s `"version": "1.0.0"` at the time of this chunk, directly below Sign out.
+
+**How you verify this yourself:** open Settings and scroll to the very bottom — the App Version card should show whatever `"version"` currently reads in `app.json`. Bump that field for a real release and confirm the card picks up the new number automatically, with no other code changes needed.
+
 ## Project structure reference
 
 ```
@@ -2464,7 +2476,7 @@ src/
       health-advisory.tsx  # step 4, conditional — only reached when a PARQ answer flagged the account; a checkbox + optional clearance note, both converging on the same acknowledged-at timestamp; not a dead end, just held
     (app)/
       home.tsx          # coach's home screen — a real dashboard (stat tiles, Needs Attention, a merged real Recent Activity preview with a "View all →" into activity.tsx) plus Manage/Coaching Hub nav grids covering every coach screen (including "Challenges" and "Resource Library" cards); a gear icon opens /settings (Sign out lives there now, not here); redirects clients to /client
-      settings.tsx      # shared coach/client Settings screen — Hero card (initials avatar, email, real tier or "Coach") + Profile settings card (name/email/phone, one Save; email changes go through Supabase Auth's real confirm-by-link flow, never an instant profiles.email overwrite) + Notification toggles card (4 switches, save-on-flip, preference storage only — no delivery built yet) + Wearable card (real getWearableConnections() read — shows "Not connected"/"Never" until a native HealthKit/Health Connect integration exists to actually write a connection, Force Sync stays disabled) + a Sign out card, the last thing on the screen
+      settings.tsx      # shared coach/client Settings screen — Hero card (initials avatar, email, real tier or "Coach") + Profile settings card (name/email/phone, one Save; email changes go through Supabase Auth's real confirm-by-link flow, never an instant profiles.email overwrite) + Notification toggles card (4 switches, save-on-flip, preference storage only — no delivery built yet) + Wearable card (real getWearableConnections() read — shows "Not connected"/"Never" until a native HealthKit/Health Connect integration exists to actually write a connection, Force Sync stays disabled) + a Sign out card + an App Version card (Constants.expoConfig?.version, straight off app.json — the true last thing on the screen now)
       activity.tsx      # coach-only "Client Activity" — the full, real-time, cross-client feed (meals/habits/completed workouts, each with that client's live Momentum + Compliance Score); see getClientActivityFeed()/subscribeToClientActivity() in coach-dashboard.ts
       messages/
         index.tsx        # coach-only inbox — every client, most-recently-messaged first, with a last-message preview and an online dot; header carries a megaphone icon (Send Bulk Message) and a calendar icon (Scheduled Messages)
