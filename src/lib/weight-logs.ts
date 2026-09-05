@@ -27,6 +27,31 @@ export async function hasWeightLogForDate(clientId: string, logDate: string): Pr
   return data !== null;
 }
 
+/** The single most recent weigh-in, or null if the client has never
+ * logged one -- used by Home's "Weight" ring so it doesn't have to fetch
+ * (and discard) the entire history just to read the newest row. */
+export async function getLatestWeightLog(clientId: string): Promise<WeightLogEntry | null> {
+  const { data, error } = await supabase
+    .from('weight_logs')
+    .select('id, log_date, weight, weight_trend, body_fat_percent, muscle_percent')
+    .eq('client_id', clientId)
+    .order('log_date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+
+  return {
+    id: data.id as string,
+    logDate: data.log_date as string,
+    weight: data.weight as number,
+    weightTrend: data.weight_trend as number,
+    bodyFatPercent: data.body_fat_percent as number | null,
+    musclePercent: data.muscle_percent as number | null,
+  };
+}
+
 export async function listWeightLogs(clientId: string): Promise<WeightLogEntry[]> {
   const { data, error } = await supabase
     .from('weight_logs')

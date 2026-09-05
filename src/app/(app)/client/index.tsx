@@ -27,7 +27,7 @@ import { getCurrentStreak } from '@/lib/streak';
 import { checkAndRecalculateTdeeIfDue, getCalorieTarget } from '@/lib/tdee';
 import { getTrainingReadiness, type TrainingReadinessBreakdown } from '@/lib/training-readiness';
 import { getDailyMetricsForDate } from '@/lib/wearables';
-import { hasWeightLogForDate } from '@/lib/weight-logs';
+import { getLatestWeightLog, hasWeightLogForDate, type WeightLogEntry } from '@/lib/weight-logs';
 import { awardHabitXp, getXpSummary, type XpSummary } from '@/lib/xp';
 
 function getGreeting() {
@@ -39,6 +39,14 @@ function getGreeting() {
 
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function displayDate(iso: string) {
+  return new Date(`${iso}T00:00:00.000Z`).toLocaleDateString(undefined, {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 /** Whatever "the next thing to do" actually is — a pending workout or a
@@ -84,6 +92,9 @@ export default function ClientHomeScreen() {
   const [xpLoading, setXpLoading] = useState(true);
 
   const [streak, setStreak] = useState<number | null>(null);
+
+  const [latestWeight, setLatestWeight] = useState<WeightLogEntry | null>(null);
+  const [latestWeightLoading, setLatestWeightLoading] = useState(true);
 
   const [weightLoggedToday, setWeightLoggedToday] = useState<boolean | null>(null);
   const [foodLoggedToday, setFoodLoggedToday] = useState<boolean | null>(null);
@@ -316,6 +327,27 @@ export default function ClientHomeScreen() {
       if (!session) return;
       let cancelled = false;
 
+      setLatestWeightLoading(true);
+      getLatestWeightLog(session.user.id)
+        .then((entry) => {
+          if (!cancelled) setLatestWeight(entry);
+        })
+        .catch((err) => console.error("Failed to load the client's latest weight:", err))
+        .finally(() => {
+          if (!cancelled) setLatestWeightLoading(false);
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [session])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+
       Promise.all([
         hasWeightLogForDate(session.user.id, logDate),
         listFoodLogsForDate(session.user.id, logDate),
@@ -495,45 +527,6 @@ export default function ClientHomeScreen() {
             </ThemedView>
           )}
 
-          <View style={styles.sectionHeaderRow}>
-            <ThemedText type="smallBold" style={styles.sectionLabel}>
-              Up Next
-            </ThemedText>
-            {!upNextLoading && !upNextError && upNext.length > 0 && (
-              <ThemedText type="smallBold" themeColor="textSecondary">
-                {upNext.length} pending
-              </ThemedText>
-            )}
-          </View>
-
-          {upNextLoading && <ActivityIndicator style={styles.loader} />}
-
-          {!upNextLoading && upNextError && <ThemedText style={styles.error}>{upNextError}</ThemedText>}
-
-          {!upNextLoading && !upNextError && upNext.length === 0 && (
-            <ThemedText themeColor="textSecondary">Nothing pending — you&apos;re all caught up.</ThemedText>
-          )}
-
-          {!upNextLoading &&
-            !upNextError &&
-            upNext.map((item) => (
-              <ThemedView key={`${item.kind}-${item.id}`} type="backgroundElement" style={styles.upNextCard}>
-                <View style={styles.upNextInfo}>
-                  <ThemedText type="smallBold">{item.title}</ThemedText>
-                  <ThemedText type="small" themeColor="textSecondary">
-                    {item.date}
-                  </ThemedText>
-                </View>
-                <Pressable
-                  style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}
-                  onPress={() => router.push(item.kind === 'workout' ? `/assigned/${item.id}` : `/checkins/${item.id}`)}>
-                  <ThemedText type="smallBold" style={styles.startButtonText}>
-                    {item.kind === 'workout' ? 'Start' : 'Fill out'}
-                  </ThemedText>
-                </Pressable>
-              </ThemedView>
-            ))}
-
           {!momentumLoading && momentumError && <ThemedText style={styles.error}>{momentumError}</ThemedText>}
 
           <View style={styles.ringGrid}>
@@ -578,6 +571,26 @@ export default function ClientHomeScreen() {
                 onPress={() => router.push('/client/nutrition')}
               />
             </View>
+            <View style={styles.ringGridRow}>
+              <StatRing
+                value={!loading && !error ? String(assignments.length) : '--'}
+                label="Workouts"
+                subtitle="assigned"
+                style={styles.ringTile}
+                onPress={() => router.push('/client/training')}
+              />
+              {!latestWeightLoading && !latestWeight ? (
+                <StatRing value="--" label="Weight" subtitle="Log one in Progress" muted style={styles.ringTile} />
+              ) : (
+                <StatRing
+                  value={latestWeightLoading || !latestWeight ? '--' : String(latestWeight.weight)}
+                  label="Weight"
+                  subtitle={latestWeightLoading || !latestWeight ? undefined : displayDate(latestWeight.logDate)}
+                  style={styles.ringTile}
+                  onPress={() => router.push('/client/progress')}
+                />
+              )}
+            </View>
           </View>
 
           <View style={styles.progressRow}>
@@ -606,6 +619,45 @@ export default function ClientHomeScreen() {
               </ThemedView>
             )}
           </View>
+
+          <View style={styles.sectionHeaderRow}>
+            <ThemedText type="smallBold" style={styles.sectionLabel}>
+              Up Next
+            </ThemedText>
+            {!upNextLoading && !upNextError && upNext.length > 0 && (
+              <ThemedText type="smallBold" themeColor="textSecondary">
+                {upNext.length} pending
+              </ThemedText>
+            )}
+          </View>
+
+          {upNextLoading && <ActivityIndicator style={styles.loader} />}
+
+          {!upNextLoading && upNextError && <ThemedText style={styles.error}>{upNextError}</ThemedText>}
+
+          {!upNextLoading && !upNextError && upNext.length === 0 && (
+            <ThemedText themeColor="textSecondary">Nothing pending — you&apos;re all caught up.</ThemedText>
+          )}
+
+          {!upNextLoading &&
+            !upNextError &&
+            upNext.map((item) => (
+              <ThemedView key={`${item.kind}-${item.id}`} type="backgroundElement" style={styles.upNextCard}>
+                <View style={styles.upNextInfo}>
+                  <ThemedText type="smallBold">{item.title}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {item.date}
+                  </ThemedText>
+                </View>
+                <Pressable
+                  style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}
+                  onPress={() => router.push(item.kind === 'workout' ? `/assigned/${item.id}` : `/checkins/${item.id}`)}>
+                  <ThemedText type="smallBold" style={styles.startButtonText}>
+                    {item.kind === 'workout' ? 'Start' : 'Fill out'}
+                  </ThemedText>
+                </Pressable>
+              </ThemedView>
+            ))}
 
           <View style={styles.sectionHeaderRow}>
             <ThemedText type="smallBold">Today's Habits</ThemedText>

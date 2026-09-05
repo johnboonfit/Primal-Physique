@@ -4,7 +4,6 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { HeroStat } from '@/components/hero-stat';
 import { LogActivityModal } from '@/components/log-activity-modal';
 import { PillRow } from '@/components/pill-row';
 import { ThemedText } from '@/components/themed-text';
@@ -242,8 +241,6 @@ export default function ClientTrainingScreen() {
             { key: 'form-check', label: 'Form Check', onPress: () => router.push('/client/form-check') },
           ]}
         />
-
-        {!loading && !error && <HeroStat value={assignments.length} label="Workouts Assigned" />}
 
         <FlatList
           data={assignments}

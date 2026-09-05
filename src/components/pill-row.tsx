@@ -13,9 +13,12 @@ type PillRowProps = {
   items: PillItem[];
   /** Which item (if any) should render in the selected/Accent-filled
    * state -- Progress's Metrics/Measure/Exercise/Photos switcher passes
-   * the current sub-tab; a row of plain navigation pills (Training's
-   * View Calendar/Log Activity/Form Check, Nutrition's Saved Meals)
-   * leaves this unset, so every pill renders in the same resting look. */
+   * the current sub-tab, so only that one pill is red/white and the rest
+   * sit in the plain resting look. Left unset entirely for a row of
+   * plain navigation pills (Training's View Calendar/Log Activity/Form
+   * Check, Nutrition's Saved Meals) -- there's no "selected" concept for
+   * a one-shot action button, so every pill in that kind of row renders
+   * red/white by default instead. */
   activeKey?: string;
 };
 
@@ -30,7 +33,7 @@ export function PillRow({ items, activeKey }: PillRowProps) {
   return (
     <View style={styles.row}>
       {items.map((item) => {
-        const active = item.key === activeKey;
+        const active = activeKey === undefined ? true : item.key === activeKey;
         return (
           <Pressable key={item.key} onPress={item.onPress}>
             <View style={[styles.pill, active && styles.pillActive]}>
