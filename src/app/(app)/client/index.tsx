@@ -646,6 +646,14 @@ export default function ClientHomeScreen() {
               );
             })}
 
+          <Pressable onPress={() => router.push('/challenges')}>
+            <ThemedView type="backgroundElement" style={styles.challengesCard}>
+              <ThemedText type="smallBold">Challenges</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                See what's open to join
+              </ThemedText>
+            </ThemedView>
+          </Pressable>
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -728,6 +736,12 @@ const styles = StyleSheet.create({
   },
   habitCheckPending: {
     color: Colors.textSecondary,
+  },
+  challengesCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    gap: Spacing.half,
+    marginTop: Spacing.two,
   },
   ringGrid: {
     gap: Spacing.three,
