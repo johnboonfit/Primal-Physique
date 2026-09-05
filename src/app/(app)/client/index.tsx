@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
@@ -23,6 +24,7 @@ import { listFoodLogsForDate } from '@/lib/food-logs';
 import { ensureCheckInsUpToDate, listUpNextCheckIns, type UpNextCheckIn } from '@/lib/form-check-ins';
 import { completeHabit, listMyHabits, listTodaysCompletedHabitIds, type MyHabit } from '@/lib/habits';
 import { getMomentumScore, type MomentumBreakdown } from '@/lib/momentum';
+import { getAvatarUrl, initials } from '@/lib/profile-avatar';
 import { getCurrentStreak } from '@/lib/streak';
 import { checkAndRecalculateTdeeIfDue, getCalorieTarget } from '@/lib/tdee';
 import { getTrainingReadiness, type TrainingReadinessBreakdown } from '@/lib/training-readiness';
@@ -66,6 +68,8 @@ export default function ClientHomeScreen() {
   const [assignments, setAssignments] = useState<ClientAssignmentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
   const [checkIns, setCheckIns] = useState<UpNextCheckIn[]>([]);
   const [checkInsLoading, setCheckInsLoading] = useState(true);
@@ -127,6 +131,24 @@ export default function ClientHomeScreen() {
     useCallback(() => {
       loadAssignments();
     }, [loadAssignments])
+  );
+
+  // Refetched on every focus (not just once on mount) so a photo just
+  // uploaded in Settings shows up here the instant this tab is back in
+  // view, not only after a fresh app launch.
+  useFocusEffect(
+    useCallback(() => {
+      if (!session) return;
+      let cancelled = false;
+      getAvatarUrl(session.user.id)
+        .then((url) => {
+          if (!cancelled) setAvatarUrl(url);
+        })
+        .catch((err) => console.error('Failed to load your profile picture:', err));
+      return () => {
+        cancelled = true;
+      };
+    }, [session])
   );
 
   // Runs once when the app opens (not on every tab visit) rather than as
@@ -458,9 +480,22 @@ export default function ClientHomeScreen() {
             <ThemedText type="title" style={styles.greeting}>
               {getGreeting()}, {displayName}
             </ThemedText>
-            <Pressable onPress={() => router.push('/settings')} hitSlop={8} accessibilityLabel="Settings">
-              <Ionicons name="settings-outline" size={22} color={theme.textSecondary} />
-            </Pressable>
+            <View style={styles.headerActions}>
+              <Pressable onPress={() => router.push('/settings')} accessibilityLabel="Profile">
+                <View style={styles.headerAvatar}>
+                  {avatarUrl ? (
+                    <Image source={{ uri: avatarUrl }} style={styles.headerAvatarImage} contentFit="cover" />
+                  ) : (
+                    <ThemedText type="small" style={styles.headerAvatarText}>
+                      {initials(profile?.full_name ?? null, profile?.email ?? '')}
+                    </ThemedText>
+                  )}
+                </View>
+              </Pressable>
+              <Pressable onPress={() => router.push('/settings')} hitSlop={8} accessibilityLabel="Settings">
+                <Ionicons name="settings-outline" size={22} color={theme.textSecondary} />
+              </Pressable>
+            </View>
           </View>
 
           {loggingNudge && (
@@ -738,6 +773,28 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 22,
     lineHeight: 27,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+  },
+  headerAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.tealDeep,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  headerAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  headerAvatarText: {
+    fontSize: 12,
+    lineHeight: 14,
   },
   sectionLabel: {
     marginTop: Spacing.two,

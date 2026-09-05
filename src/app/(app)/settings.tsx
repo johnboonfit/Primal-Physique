@@ -1,3 +1,5 @@
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -12,6 +14,7 @@ import { useAuth } from '@/context/auth-context';
 import { useTheme } from '@/hooks/use-theme';
 import { CLIENT_TIERS, getMyTier, type ClientTier } from '@/lib/leaderboard';
 import { PLAN_UPGRADE_OPTIONS, startPlanUpgrade } from '@/lib/plan-upgrades';
+import { getAvatarUrl, initials, removeAvatar, uploadAvatar } from '@/lib/profile-avatar';
 import {
   requestEmailChange,
   setNotificationPreference,
@@ -19,6 +22,14 @@ import {
   type NotificationPreferenceKey,
 } from '@/lib/settings';
 import { getWearableConnections, type WearableConnection } from '@/lib/wearables';
+
+const AVATAR_PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
+  mediaTypes: 'images',
+  base64: true,
+  quality: 0.7,
+  allowsEditing: true,
+  aspect: [1, 1],
+};
 
 /** Preference storage only -- see notification-preferences.sql. No real
  * delivery reads these yet (Phase 14); each switch just needs to save
@@ -40,13 +51,6 @@ const NOTIFICATION_TOGGLES: { key: NotificationPreferenceKey; label: string; des
   { key: 'community_updates_enabled', label: 'Community updates', description: 'New posts and activity in Community.' },
 ];
 
-/** Two-letter initials for the Hero card's avatar circle -- first
- * letter of the first two words of whatever name is available, or the
- * first two characters of the email if there's no name at all. No real
- * profile-picture upload exists yet anywhere in the app, so this is the
- * only avatar there is right now (same placeholder-initials approach
- * leaderboard-panel.tsx already uses, just two letters instead of one
- * for this larger, more prominent card). */
 const PROVIDER_LABEL: Record<WearableConnection['provider'], string> = {
   apple_health: 'Apple Health',
   google_health: 'Google Health',
@@ -62,16 +66,6 @@ function formatRelativeTime(iso: string): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-function initials(fullName: string | null, email: string): string {
-  const source = (fullName ?? '').trim();
-  if (source) {
-    const parts = source.split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-    return source.slice(0, 2).toUpperCase();
-  }
-  return (email.trim().slice(0, 2) || '?').toUpperCase();
 }
 
 export default function SettingsScreen() {
@@ -106,6 +100,11 @@ export default function SettingsScreen() {
   const [upgradeError, setUpgradeError] = useState<string | null>(null);
   const [upgradeNotice, setUpgradeNotice] = useState<string | null>(null);
 
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!profile || formInitialized) return;
     setFullName(profile.full_name ?? '');
@@ -136,6 +135,13 @@ export default function SettingsScreen() {
     getWearableConnections(session.user.id)
       .then(setWearableConnections)
       .catch((err) => console.error('Failed to load wearable connections:', err));
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    getAvatarUrl(session.user.id)
+      .then(setAvatarUrl)
+      .catch((err) => console.error('Failed to load your profile picture:', err));
   }, [session]);
 
   const handleSave = async () => {
@@ -211,6 +217,55 @@ export default function SettingsScreen() {
     }
   };
 
+  const handlePickAvatar = async (source: 'camera' | 'library') => {
+    if (!session) return;
+    setAvatarError(null);
+
+    const permission =
+      source === 'camera'
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setAvatarError(
+        source === 'camera' ? 'Camera access is needed to take a photo.' : 'Photo library access is needed to choose a photo.'
+      );
+      return;
+    }
+
+    const result =
+      source === 'camera'
+        ? await ImagePicker.launchCameraAsync(AVATAR_PICKER_OPTIONS)
+        : await ImagePicker.launchImageLibraryAsync(AVATAR_PICKER_OPTIONS);
+
+    if (result.canceled || !result.assets?.[0]?.base64) return;
+
+    setAvatarBusy(true);
+    try {
+      const url = await uploadAvatar(session.user.id, result.assets[0].base64, result.assets[0].mimeType ?? 'image/jpeg');
+      setAvatarUrl(url);
+      setAvatarMenuOpen(false);
+    } catch (err) {
+      setAvatarError(err instanceof Error ? err.message : 'Something went wrong uploading that photo.');
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    if (!session) return;
+    setAvatarError(null);
+    setAvatarBusy(true);
+    try {
+      await removeAvatar(session.user.id);
+      setAvatarUrl(null);
+      setAvatarMenuOpen(false);
+    } catch (err) {
+      setAvatarError(err instanceof Error ? err.message : 'Something went wrong removing that photo.');
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
   if (!profile) {
     return (
       <ThemedView style={styles.container}>
@@ -234,11 +289,33 @@ export default function SettingsScreen() {
           </ThemedText>
 
           <ThemedView type="backgroundElement" style={[styles.card, styles.heroCard, Glow.teal]}>
-            <View style={styles.avatar}>
-              <ThemedText type="title" style={styles.avatarText}>
-                {initials(profile.full_name, profile.email)}
-              </ThemedText>
-            </View>
+            {isCoach ? (
+              <View style={styles.avatar}>
+                {avatarUrl ? (
+                  <Image source={{ uri: avatarUrl }} style={styles.avatarImage} contentFit="cover" />
+                ) : (
+                  <ThemedText type="title" style={styles.avatarText}>
+                    {initials(profile.full_name, profile.email)}
+                  </ThemedText>
+                )}
+              </View>
+            ) : (
+              <Pressable
+                style={({ pressed }) => [styles.avatar, pressed && styles.pressed]}
+                onPress={() => setAvatarMenuOpen(true)}
+                accessibilityLabel="Change profile picture">
+                {avatarUrl ? (
+                  <Image source={{ uri: avatarUrl }} style={styles.avatarImage} contentFit="cover" />
+                ) : (
+                  <ThemedText type="title" style={styles.avatarText}>
+                    {initials(profile.full_name, profile.email)}
+                  </ThemedText>
+                )}
+                <View style={styles.avatarEditBadge}>
+                  <ThemedText style={styles.avatarEditBadgeText}>✎</ThemedText>
+                </View>
+              </Pressable>
+            )}
             <View style={styles.heroInfo}>
               <ThemedText type="smallBold" numberOfLines={1}>
                 {profile.email}
@@ -248,6 +325,8 @@ export default function SettingsScreen() {
               </ThemedText>
             </View>
           </ThemedView>
+
+          {!isCoach && avatarError && <ThemedText style={styles.error}>{avatarError}</ThemedText>}
 
           {!isCoach && (
             <>
@@ -454,6 +533,53 @@ export default function SettingsScreen() {
           </ThemedView>
         </View>
       </Modal>
+
+      <Modal
+        visible={avatarMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAvatarMenuOpen(false)}>
+        <View style={styles.modalOverlay}>
+          <ThemedView type="backgroundElement" style={styles.modalCard}>
+            <ThemedText type="smallBold" style={styles.modalTitle}>
+              Profile picture
+            </ThemedText>
+
+            <Pressable
+              style={({ pressed }) => [styles.planOption, pressed && styles.pressed]}
+              onPress={() => handlePickAvatar('camera')}
+              disabled={avatarBusy}>
+              <ThemedText type="smallBold" style={styles.planOptionText}>
+                Take Photo
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.planOption, pressed && styles.pressed]}
+              onPress={() => handlePickAvatar('library')}
+              disabled={avatarBusy}>
+              <ThemedText type="smallBold" style={styles.planOptionText}>
+                Choose from Library
+              </ThemedText>
+            </Pressable>
+            {avatarUrl && (
+              <Pressable
+                style={({ pressed }) => [styles.planOption, styles.removeAvatarOption, pressed && styles.pressed]}
+                onPress={handleRemoveAvatar}
+                disabled={avatarBusy}>
+                <ThemedText type="smallBold" themeColor="textSecondary">
+                  Remove Photo
+                </ThemedText>
+              </Pressable>
+            )}
+
+            {avatarBusy && <ActivityIndicator color={Colors.text} style={styles.avatarBusyIndicator} />}
+
+            <Pressable style={styles.cancelButton} onPress={() => setAvatarMenuOpen(false)} disabled={avatarBusy}>
+              <ThemedText themeColor="textSecondary">Cancel</ThemedText>
+            </Pressable>
+          </ThemedView>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -488,10 +614,33 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.tealDeep,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
   },
   avatarText: {
     fontSize: 22,
     lineHeight: 26,
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: Colors.backgroundElement,
+  },
+  avatarEditBadgeText: {
+    color: Colors.text,
+    fontSize: 11,
+    lineHeight: 13,
   },
   heroInfo: {
     flex: 1,
@@ -640,6 +789,12 @@ const styles = StyleSheet.create({
   },
   planOptionText: {
     color: Accent,
+  },
+  removeAvatarOption: {
+    borderColor: Colors.backgroundSelected,
+  },
+  avatarBusyIndicator: {
+    marginTop: Spacing.one,
   },
   cancelButton: {
     alignItems: 'center',
