@@ -39,6 +39,18 @@ const PRICE_ID_BY_TIER: Record<string, string> = {
   precision: 'price_1UCKfKIrI0JCZBzSXbeSaqJ6',
 };
 
+// Checkout's `mode` has to match how each Price is actually configured
+// in Stripe -- 'subscription' for a recurring price, 'payment' for a
+// one-time one -- or Stripe rejects the whole session outright. club
+// ("Plan Update (Base Customers Only)") is a genuine one-time charge;
+// accelerator/precision are recurring memberships. If a tier's Price
+// type ever changes in Stripe, update its mode here to match.
+const MODE_BY_TIER: Record<string, Stripe.Checkout.SessionCreateParams.Mode> = {
+  club: 'payment',
+  accelerator: 'subscription',
+  precision: 'subscription',
+};
+
 // Deep links back into the app itself (see app.json's "scheme") --
 // WebBrowser.openAuthSessionAsync on the client closes itself the
 // moment the in-app browser navigates to either of these, so there's
@@ -115,7 +127,8 @@ Deno.serve(async (req) => {
   }
 
   const priceId = PRICE_ID_BY_TIER[upgradeRequest.requested_tier as string];
-  if (!priceId) {
+  const mode = MODE_BY_TIER[upgradeRequest.requested_tier as string];
+  if (!priceId || !mode) {
     return jsonResponse({ error: `No Stripe price configured for tier "${upgradeRequest.requested_tier}".` }, 500);
   }
 
@@ -128,7 +141,7 @@ Deno.serve(async (req) => {
   let session: Stripe.Checkout.Session;
   try {
     session = await stripe.checkout.sessions.create({
-      mode: 'subscription',
+      mode,
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: SUCCESS_URL,
       cancel_url: CANCEL_URL,

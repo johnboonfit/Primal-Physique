@@ -2596,6 +2596,14 @@ Reproduced directly: a generic in-memory fake of `supabase.from()`, seeded with 
 5. In the Stripe Dashboard: **Developers → Webhooks → Add endpoint**, pointed at your `stripe-webhook` function's URL, subscribed to the `checkout.session.completed` event — Stripe shows you the signing secret (`whsec_...`) right there, which is what goes into step 4.
 6. Tap **Upgrade Plan** as a client, pick a plan, and complete a test-mode payment — confirm your plan updates (Settings' hero card, and the Leaderboard tier if you have access) within a few seconds of paying.
 
+## Upgrade Plan fix: Base is a one-time charge, not a subscription
+
+**The bug**: after deploying the Stripe integration above, Accelerator and Precision worked but "Request New Plan (Base Members)" didn't. Turned out `price_1UCKhBIrI0JCZBzSZjpn6rMM` ("Plan Update (Base Customers Only)") is configured in Stripe as a genuine **one-time** charge, not a recurring price — but `create-checkout-session` had every tier hardcoded to Checkout's `mode: 'subscription'`, and Stripe rejects a session outright the moment its mode doesn't match how the Price itself is set up. Accelerator/Precision are real recurring memberships, so they happened to work; Base never could have.
+
+**The fix**: `create-checkout-session/index.ts` now looks up each tier's Checkout mode from a small map (`MODE_BY_TIER`) instead of assuming `'subscription'` everywhere — `club` uses `'payment'`, `accelerator`/`precision` stay `'subscription'`. Nothing else about the flow changes: `stripe-webhook` already reacted to `checkout.session.completed` generically (that event fires for both modes), so no change was needed there.
+
+**How you deploy this fix**: re-paste `supabase/functions/create-checkout-session/index.ts`'s updated contents over the existing `create-checkout-session` function in the Supabase Dashboard and re-deploy — same function, same secrets, nothing else to reconfigure. Then re-test "Request New Plan (Base Members)" with the Stripe test card.
+
 ## Project structure reference
 
 ```
