@@ -1,14 +1,16 @@
 import { Image } from 'expo-image';
-import { router } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Accent, Colors, Spacing } from '@/constants/theme';
+import { Accent, Colors, Glow, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
+  deleteCustomExercise,
   getExerciseDetail,
   listExerciseLibrarySummaries,
   MUSCLE_GROUPS,
@@ -36,27 +38,30 @@ export default function ExerciseLibraryScreen() {
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
 
-  // This is a one-time-imported reference table, not something that
-  // changes while browsing it — fetched once on mount rather than
-  // refetched every time this screen comes back into focus.
-  useEffect(() => {
-    let cancelled = false;
+  const [deleteTarget, setDeleteTarget] = useState<ExerciseSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  const load = useCallback(() => {
+    setLoading(true);
+    setDetails({});
+    setExpandedId(null);
     listExerciseLibrarySummaries()
-      .then((data) => {
-        if (!cancelled) setExercises(data);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load the exercise library.');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
+      .then((data) => setExercises(data))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load the exercise library.'))
+      .finally(() => setLoading(false));
   }, []);
+
+  // The ~872 seeded rows never change, but a coach's own custom exercises
+  // can be added, edited, or deleted from sub-screens of this one -- so,
+  // unlike before this chunk, this refetches every time the screen comes
+  // back into focus (e.g. after saving a new custom exercise), not just
+  // once on mount.
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -87,6 +92,21 @@ export default function ExerciseLibraryScreen() {
     }
   };
 
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteError(null);
+    setDeleting(true);
+    try {
+      await deleteCustomExercise(deleteTarget.id);
+      setDeleteTarget(null);
+      load();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete that exercise.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -96,6 +116,12 @@ export default function ExerciseLibraryScreen() {
             <ThemedText type="linkPrimary">Back</ThemedText>
           </Pressable>
         </View>
+
+        <Pressable style={styles.addCustomButton} onPress={() => router.push('/exercise-library/new')}>
+          <ThemedText type="smallBold" style={styles.addCustomButtonText}>
+            + Add Custom Exercise
+          </ThemedText>
+        </Pressable>
 
         <TextInput
           value={search}
@@ -157,6 +183,11 @@ export default function ExerciseLibraryScreen() {
                       <ThemedText type="smallBold" style={styles.cardName}>
                         {item.name}
                       </ThemedText>
+                      {item.isCustom && (
+                        <ThemedText type="small" style={styles.customBadge}>
+                          Custom
+                        </ThemedText>
+                      )}
                       <ThemedText type="small" style={styles.muscleGroupBadge}>
                         {titleCase(item.muscleGroup)}
                       </ThemedText>
@@ -195,9 +226,32 @@ export default function ExerciseLibraryScreen() {
                                 No instructions recorded for this exercise.
                               </ThemedText>
                             )}
+                            {detail.videoUrl && (
+                              <Pressable
+                                onPress={() => Linking.openURL(detail.videoUrl as string).catch(() => undefined)}
+                                hitSlop={8}>
+                                <ThemedText type="small" style={styles.videoLink}>
+                                  ▶ Watch video
+                                </ThemedText>
+                              </Pressable>
+                            )}
                             <ThemedText type="small" themeColor="textSecondary" style={styles.attribution}>
                               {detail.attribution}
                             </ThemedText>
+                            {item.isCustom && (
+                              <View style={styles.customActionsRow}>
+                                <Pressable onPress={() => router.push(`/exercise-library/edit/${item.id}`)} hitSlop={8}>
+                                  <ThemedText type="small" style={styles.editText}>
+                                    Edit
+                                  </ThemedText>
+                                </Pressable>
+                                <Pressable onPress={() => setDeleteTarget(item)} hitSlop={8}>
+                                  <ThemedText type="small" style={styles.deleteText}>
+                                    Delete
+                                  </ThemedText>
+                                </Pressable>
+                              </View>
+                            )}
                           </>
                         )}
                       </View>
@@ -209,6 +263,25 @@ export default function ExerciseLibraryScreen() {
           />
         )}
       </SafeAreaView>
+
+      <ConfirmDialog
+        visible={deleteTarget !== null}
+        title="Delete this exercise?"
+        message={
+          deleteTarget
+            ? `"${deleteTarget.name}" will be permanently removed from the library. This can't be undone.${
+                deleteError ? `\n\n${deleteError}` : ''
+              }`
+            : ''
+        }
+        confirmLabel="Delete"
+        busy={deleting}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
+      />
     </ThemedView>
   );
 }
@@ -221,6 +294,17 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: Spacing.three,
+  },
+  addCustomButton: {
+    ...Glow.oxblood,
+    backgroundColor: Accent,
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.two,
+    alignItems: 'center',
+    marginBottom: Spacing.three,
+  },
+  addCustomButtonText: {
+    color: Colors.text,
   },
   input: {
     borderWidth: 1,
@@ -285,6 +369,10 @@ const styles = StyleSheet.create({
   muscleGroupBadge: {
     color: Colors.tealBright,
   },
+  customBadge: {
+    color: Accent,
+    fontWeight: '700',
+  },
   detailSection: {
     marginTop: Spacing.two,
     gap: Spacing.two,
@@ -310,5 +398,20 @@ const styles = StyleSheet.create({
   attribution: {
     fontStyle: 'italic',
     marginTop: Spacing.two,
+  },
+  videoLink: {
+    color: Colors.tealBright,
+    fontWeight: '700',
+  },
+  customActionsRow: {
+    flexDirection: 'row',
+    gap: Spacing.three,
+    marginTop: Spacing.two,
+  },
+  editText: {
+    color: Colors.tealBright,
+  },
+  deleteText: {
+    color: Accent,
   },
 });
