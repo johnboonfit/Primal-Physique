@@ -21,6 +21,15 @@ export type ClientChallenge = {
   joined: boolean;
 };
 
+export type ChallengeDetail = {
+  id: string;
+  name: string;
+  type: ChallengeType;
+  startDate: string;
+  endDate: string;
+  openToAll: boolean;
+};
+
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -119,6 +128,43 @@ export async function listClientChallenges(clientId: string): Promise<ClientChal
     endDate: row.end_date as string,
     joined: joinedIds.has(row.id as string),
   }));
+}
+
+/** One challenge's own basic details — the same columns whichever list
+ * screen the viewer came from already had, refetched fresh for the
+ * detail/leaderboard screen so a direct link or a stale list still
+ * shows current data. Relies entirely on challenges.sql's own select
+ * policies (coach owns it, or a client it's eligible for) — no
+ * separate permission check needed here. */
+export async function getChallengeDetail(challengeId: string): Promise<ChallengeDetail> {
+  const { data, error } = await supabase
+    .from('challenges')
+    .select('id, name, type, start_date, end_date, open_to_all')
+    .eq('id', challengeId)
+    .single();
+  if (error) throw error;
+  return {
+    id: data.id as string,
+    name: data.name as string,
+    type: data.type as ChallengeType,
+    startDate: data.start_date as string,
+    endDate: data.end_date as string,
+    openToAll: data.open_to_all as boolean,
+  };
+}
+
+/** Whether THIS client has already joined — the detail screen's own
+ * Join/Leave button needs this the same way the list screen does, just
+ * for one challenge instead of all of them at once. */
+export async function getMyChallengeParticipation(challengeId: string, clientId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('challenge_participants')
+    .select('client_id')
+    .eq('challenge_id', challengeId)
+    .eq('client_id', clientId)
+    .maybeSingle();
+  if (error) throw error;
+  return data !== null;
 }
 
 export async function joinChallenge(challengeId: string, clientId: string): Promise<void> {

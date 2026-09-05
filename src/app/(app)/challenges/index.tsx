@@ -92,6 +92,13 @@ export default function ChallengesScreen() {
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
+        <Pressable
+          style={styles.backLink}
+          hitSlop={8}
+          onPress={() => router.replace(isCoach ? '/home' : '/client')}>
+          <ThemedText type="linkPrimary">‹ Back</ThemedText>
+        </Pressable>
+
         <View style={styles.header}>
           <ThemedText type="title">Challenges</ThemedText>
           {isCoach && (
@@ -122,53 +129,60 @@ export default function ChallengesScreen() {
           <ScrollView contentContainerStyle={styles.list}>
             {isCoach &&
               coachChallenges.map((challenge) => (
-                <ThemedView key={challenge.id} type="backgroundElement" style={styles.card}>
-                  <View style={styles.cardHeaderRow}>
-                    <ThemedText type="smallBold" style={styles.cardName}>
-                      {challenge.name}
+                <Pressable key={challenge.id} onPress={() => router.push(`/challenges/${challenge.id}`)}>
+                  <ThemedView type="backgroundElement" style={styles.card}>
+                    <View style={styles.cardHeaderRow}>
+                      <ThemedText type="smallBold" style={styles.cardName}>
+                        {challenge.name}
+                      </ThemedText>
+                      <ThemedText type="small" style={styles.typeBadge}>
+                        {TYPE_LABEL[challenge.type]}
+                      </ThemedText>
+                    </View>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {formatDate(challenge.startDate)} – {formatDate(challenge.endDate)} ·{' '}
+                      {challenge.openToAll ? 'All clients' : 'Specific clients'}
                     </ThemedText>
-                    <ThemedText type="small" style={styles.typeBadge}>
-                      {TYPE_LABEL[challenge.type]}
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {challenge.participantCount} joined · tap for standings
                     </ThemedText>
-                  </View>
-                  <ThemedText type="small" themeColor="textSecondary">
-                    {formatDate(challenge.startDate)} – {formatDate(challenge.endDate)} ·{' '}
-                    {challenge.openToAll ? 'All clients' : 'Specific clients'}
-                  </ThemedText>
-                  <ThemedText type="small" themeColor="textSecondary">
-                    {challenge.participantCount} joined
-                  </ThemedText>
-                </ThemedView>
+                  </ThemedView>
+                </Pressable>
               ))}
 
             {!isCoach &&
               clientChallenges.map((challenge) => (
-                <ThemedView key={challenge.id} type="backgroundElement" style={styles.card}>
-                  <View style={styles.cardHeaderRow}>
-                    <ThemedText type="smallBold" style={styles.cardName}>
-                      {challenge.name}
-                    </ThemedText>
-                    <ThemedText type="small" style={styles.typeBadge}>
-                      {TYPE_LABEL[challenge.type]}
-                    </ThemedText>
-                  </View>
-                  <ThemedText type="small" themeColor="textSecondary">
-                    {isUpcoming(challenge.startDate) ? 'Starts' : 'Ends'}{' '}
-                    {formatDate(isUpcoming(challenge.startDate) ? challenge.startDate : challenge.endDate)}
-                  </ThemedText>
-                  <Pressable
-                    style={[styles.joinButton, challenge.joined && styles.leaveButton]}
-                    disabled={joiningId === challenge.id}
-                    onPress={() => (challenge.joined ? handleLeave(challenge.id) : handleJoin(challenge.id))}>
-                    {joiningId === challenge.id ? (
-                      <ActivityIndicator size="small" color={challenge.joined ? Colors.textSecondary : Colors.text} />
-                    ) : (
-                      <ThemedText type="smallBold" style={challenge.joined ? styles.leaveButtonText : styles.joinButtonText}>
-                        {challenge.joined ? 'Leave' : 'Join'}
+                <Pressable key={challenge.id} onPress={() => router.push(`/challenges/${challenge.id}`)}>
+                  <ThemedView type="backgroundElement" style={styles.card}>
+                    <View style={styles.cardHeaderRow}>
+                      <ThemedText type="smallBold" style={styles.cardName}>
+                        {challenge.name}
                       </ThemedText>
-                    )}
-                  </Pressable>
-                </ThemedView>
+                      <ThemedText type="small" style={styles.typeBadge}>
+                        {TYPE_LABEL[challenge.type]}
+                      </ThemedText>
+                    </View>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {isUpcoming(challenge.startDate) ? 'Starts' : 'Ends'}{' '}
+                      {formatDate(isUpcoming(challenge.startDate) ? challenge.startDate : challenge.endDate)}
+                    </ThemedText>
+                    <Pressable
+                      style={[styles.joinButton, challenge.joined && styles.leaveButton]}
+                      disabled={joiningId === challenge.id}
+                      onPress={(event) => {
+                        event.stopPropagation();
+                        challenge.joined ? handleLeave(challenge.id) : handleJoin(challenge.id);
+                      }}>
+                      {joiningId === challenge.id ? (
+                        <ActivityIndicator size="small" color={challenge.joined ? Colors.textSecondary : Colors.text} />
+                      ) : (
+                        <ThemedText type="smallBold" style={challenge.joined ? styles.leaveButtonText : styles.joinButtonText}>
+                          {challenge.joined ? 'Leave' : 'Join'}
+                        </ThemedText>
+                      )}
+                    </Pressable>
+                  </ThemedView>
+                </Pressable>
               ))}
           </ScrollView>
         )}
@@ -180,6 +194,10 @@ export default function ChallengesScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1, paddingHorizontal: Spacing.four, paddingTop: Spacing.four },
+  backLink: {
+    marginBottom: Spacing.two,
+    alignSelf: 'flex-start',
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
