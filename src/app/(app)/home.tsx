@@ -248,6 +248,7 @@ export default function HomeScreen() {
                 <NavCard title="Meal Plans" subtitle="Plan templates" href="/meal-plans" />
                 <NavCard title="External Forms" subtitle="Shareable, no login" href="/external-forms" />
                 <NavCard title="Challenges" subtitle="Create & manage" href="/challenges" />
+                <NavCard title="Resource Library" subtitle="Docs & links" href="/resources" />
               </View>
             </>
           )}

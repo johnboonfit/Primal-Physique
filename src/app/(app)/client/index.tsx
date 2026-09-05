@@ -654,6 +654,15 @@ export default function ClientHomeScreen() {
               </ThemedText>
             </ThemedView>
           </Pressable>
+
+          <Pressable onPress={() => router.push('/resources')}>
+            <ThemedView type="backgroundElement" style={styles.challengesCard}>
+              <ThemedText type="smallBold">Resource Library</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                Guides, docs & links from your coach
+              </ThemedText>
+            </ThemedView>
+          </Pressable>
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
